@@ -1,0 +1,29 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Packaging / build artifacts
+*.egg-info/
+build/
+dist/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Tool state
+.code-review-cache/
+*.corrupt
+*.history.json.tmp
