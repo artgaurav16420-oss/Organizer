@@ -6,7 +6,8 @@ from fermi_organizer import fsops
 from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (build_pdf_index, copy_superseded,
                                    find_organized_pdfs, is_system_dir,
-                                   place_files, scan_output_tree)
+                                   place_files, retire_adopted_orphans,
+                                   scan_output_tree)
 
 
 def test_is_system_dir_convention():
@@ -247,3 +248,30 @@ def test_find_organized_pdfs_canonicalizes_hyphen_names(tmp_path):
 
     assert list(organized) == ["F10126106_A_DWG1"]
     assert organized["F10126106_A_DWG1"] == [pdf]
+
+
+def test_retire_adopted_orphans_includes_superseded_stems(tmp_path):
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    sup_orph = orphans_dir / "F10126107.pdf"
+    unrelated_orph = orphans_dir / "F10126108.pdf"
+    sup_orph.write_bytes(b"old rev")
+    unrelated_orph.write_bytes(b"parked")
+
+    # Empty default keeps old behavior: superseded-only orphan stays.
+    logged = []
+    n = retire_adopted_orphans({"F10126107": sup_orph, "F10126108": unrelated_orph},
+                               out, False, logged.append)
+    assert n == 0
+    assert sup_orph.is_file()
+    assert unrelated_orph.is_file()
+
+    # Superseded stem retires even though not live in the tree.
+    logged = []
+    n = retire_adopted_orphans({"F10126107": sup_orph, "F10126108": unrelated_orph},
+                               out, False, logged.append,
+                               superseded={"F10126107"})
+    assert n == 1
+    assert not sup_orph.exists()
+    assert unrelated_orph.is_file()

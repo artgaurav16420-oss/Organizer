@@ -575,11 +575,12 @@ def test_swap_revision_counts_only_actual_writes(tmp_path):
     assert copies == 2
     assert (out1 / "_superseded" / "F10126107.pdf").read_bytes() == b"old"
 
-    # Archive target already present -> only the replacement copy is written.
+    # Archive target already present with identical bytes -> only the
+    # replacement copy is written (different bytes suffix instead: C-001).
     out2 = tmp_path / "out2"
     sup2 = out2 / "_superseded"
     sup2.mkdir(parents=True)
-    (sup2 / "F10126107.pdf").write_bytes(b"already archived")
+    (sup2 / "F10126107.pdf").write_bytes(b"old")
     old2 = out2 / "F10126107 Base part" / "F10126107.pdf"
     old2.parent.mkdir()
     old2.write_bytes(b"old")
@@ -587,7 +588,7 @@ def test_swap_revision_counts_only_actual_writes(tmp_path):
                                           out2, False, lambda msg: None)
     assert copies == 1
     assert (old2.parent / "F10126107_A.pdf").read_bytes() == b"new"
-    assert (sup2 / "F10126107.pdf").read_bytes() == b"already archived"
+    assert (sup2 / "F10126107.pdf").read_bytes() == b"old"
 
 
 def test_run_full_processes_hyphen_named_standalone(tmp_path, make_pdf):

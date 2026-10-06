@@ -591,12 +591,33 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
         target_new = p.parent / new_pdf.name
         staging = target_new.with_name(f"{target_new.name}.supersede_tmp.{os.getpid()}")
         rel_old = p.relative_to(output)
-        # The archive copy is skipped when the target already exists; count
-        # only the writes actually performed (1 in that case, else 2).
+        # Archive collision: the target may already exist with different
+        # content (never delete the tree copy without archiving it). Equal
+        # size = assume duplicate, keep the old skip behavior; OSError on
+        # getsize means differ (safer). Differing content archives under a
+        # numeric suffix (<stem>.1.pdf, incrementing until free).
+        archive_target = target_old
         archived = not target_old.exists()
+        if not archived:
+            try:
+                same = os.path.getsize(target_old) == os.path.getsize(p)
+            except OSError:
+                same = False
+            if same:
+                archived = False
+            else:
+                base = target_old.stem
+                ext = target_old.suffix
+                n = 1
+                candidate = sup_dir / f"{base}.{n}{ext}"
+                while candidate.exists():
+                    n += 1
+                    candidate = sup_dir / f"{base}.{n}{ext}"
+                archive_target = candidate
+                archived = True
         if dry_run:
             note = "" if archived else " (archive skipped: exists)"
-            log(f"  [DRY-RUN] supersede: {rel_old} -> _superseded/{p.name}; "
+            log(f"  [DRY-RUN] supersede: {rel_old} -> _superseded/{archive_target.name}; "
                 f"copy {new_pdf.name} -> {target_new.relative_to(output)}{note}")
         else:
             # Atomic-ish swap: stage the new revision next to its target first,
@@ -605,7 +626,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
                 sup_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(new_pdf, staging)
                 if archived:
-                    shutil.copy2(p, target_old)
+                    shutil.copy2(p, archive_target)
                 os.replace(staging, target_new)
             except OSError as e:
                 if staging.exists():
@@ -623,7 +644,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
             except OSError as e:
                 log(f"  WARNING: {rel_old}: old revision left in tree "
                     f"(could not remove): {e}")
-            log(f"  superseded: {rel_old} -> _superseded/{p.name}")
+            log(f"  superseded: {rel_old} -> _superseded/{archive_target.name}")
         copies += 2 if archived else 1
         moved.append(target_new)
     return moved, copies
@@ -1017,7 +1038,7 @@ def _incremental_prepare(folder, output, dry_run, log):
     # Archive superseded copies even when there is nothing new to place.
     total_copies = copy_superseded(old_new, output, dry_run, log)
     return (organized, sup_dir, stored_orphans, new_index, chk_stems,
-            supersede_pairs, new_duplicates, total_copies)
+            supersede_pairs, new_duplicates, total_copies, set(old_new))
 
 
 def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
@@ -1152,12 +1173,13 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
                            new_boms, new_used_on, new_index, new_stems,
                            org_stems, all_stems, sup_dir, output, dry_run,
                            log, total_copies):
-    """In-place revision swaps + child moves. Returns (moved_dirs, moves, copies, stems)."""
+    """In-place revision swaps + child moves. Returns (moved_dirs, moves, copies, stems, swapped_old)."""
     # Supersede in place. When a new revision supersedes an organized one, the
     # old revision's PDF(s) move to _superseded/ and the new revision's PDF takes their
     # place in the tree. The new stem is then treated as organized for this run.
     moved_dirs = {}  # old_folder -> new_folder
     total_moves = 0
+    swapped_old: list = []
     if supersede_pairs:
         swapped = []
         for s, o in supersede_pairs:
@@ -1178,6 +1200,7 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             new_stems.discard(s)
             if moved:
                 organized[s] = moved
+                swapped_old.append(o)
             org_stems.discard(o)
             org_stems.add(s)
             swapped.append(s)
@@ -1188,7 +1211,7 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             total_moves = _move_children_under_superseding(swapped, organized, org_boms,
                                                            org_stems, output, dry_run,
                                                            moved_dirs, log)
-    return moved_dirs, total_moves, total_copies, all_stems
+    return moved_dirs, total_moves, total_copies, all_stems, swapped_old
 
 
 def _incremental_graph(new_boms, org_boms, new_used_on, org_used_on,
@@ -1272,12 +1295,14 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           total_copies, total_moves, warning_count, unmatched,
                           chk_stems, new_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
-                          bom_names) -> RunContext:
+                          bom_names, superseded=()) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
-    # exists live in the tree (adopted into an earlier or this run's placement).
+    # exists live in the tree (adopted into an earlier or this run's placement)
+    # or was superseded (its archived copy lives in _superseded/).
     if stored_orphans:
-        retire_adopted_orphans(stored_orphans, output, dry_run, log)
+        retire_adopted_orphans(stored_orphans, output, dry_run, log,
+                               superseded=superseded)
     log("")
     _log_summary([
         "--- Summary ---",
@@ -1339,7 +1364,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
 
     jobs = resolve_jobs(jobs)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
-        supersede_pairs, new_duplicates, total_copies = \
+        supersede_pairs, new_duplicates, total_copies, superseded_new = \
         _incremental_prepare(folder, output, dry_run, log)
 
     if not new_index:
@@ -1364,7 +1389,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
                                                            all_stems, log)
 
-    moved_dirs, total_moves, total_copies, all_stems = \
+    moved_dirs, total_moves, total_copies, all_stems, swapped_old = \
         _incremental_supersede(supersede_pairs, organized, org_boms,
                                org_used_on, new_boms, new_used_on, new_index,
                                new_stems, org_stems, all_stems, sup_dir,
@@ -1384,4 +1409,5 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
                                  total_moves, warning_count, unmatched,
                                  chk_stems, new_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
-                                 new_names, bom_names)
+                                 new_names, bom_names,
+                                 superseded=set(superseded_new) | set(swapped_old))

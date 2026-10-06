@@ -95,7 +95,8 @@ def find_used_on_bugs(bom_edges, used_on_of, stems):
             for m in match_pdfs(val, stems):
                 if m == child:
                     continue
-                if child not in set(bom_edges.get(m, ())):
+                children_of_m = set(bom_edges.get(m, ()))
+                if child not in children_of_m:
                     out.append((m, child))
     return out
 

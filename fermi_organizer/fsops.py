@@ -356,8 +356,9 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
     return n
 
 
-def retire_adopted_orphans(stored_orphans, folder, dry_run, log):
-    """Delete parked _orphans/ copies whose stem is now live in the tree.
+def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=()):
+    """Delete parked _orphans/ copies whose stem is now live in the tree,
+    or whose stem was superseded (its archived copy lives in _superseded/).
     Returns the number retired."""
     live_pdfs = defaultdict(list)
     for p in scan_output_tree(folder)["tree"]:
@@ -365,9 +366,10 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log):
         if stem:
             live_pdfs[stem].append(p)
     retired = 0
+    sup = set(superseded)
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
-        if not live:
+        if not live and o not in sup:
             continue
         if opath.is_symlink():
             log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")

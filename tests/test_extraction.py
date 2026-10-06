@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 
+import pytest
 import pymupdf as fitz
 
 from fermi_organizer import extraction
@@ -418,6 +419,7 @@ def test_ensure_tesseract_unparseable_version_is_none(tmp_path, monkeypatch):
     assert ocr.version is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PATH/drive-letter semantics")
 def test_ensure_tesseract_path_prepend_idempotent(monkeypatch):
     cand = r"C:\Program Files\Tesseract-OCR"
     fake_exe = os.path.join(cand, "tesseract.exe")
