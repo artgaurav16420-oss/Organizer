@@ -84,3 +84,26 @@ def test_swap_archive_collision_dry_run_logs_suffixed_name(tmp_path):
     assert "_superseded/F10126107.1.pdf" in text
     assert "(archive skipped: exists)" not in text
     assert moved == [old.parent / "F10126107_A.pdf"]
+
+
+def test_swap_archive_collision_suffixes_on_same_size_different_content(tmp_path):
+    # Byte-size equality is not identity: same length, different bytes must
+    # archive under a numeric suffix instead of deleting the only clean copy.
+    out, sup, old, new_pdf = _setup_collision(
+        tmp_path, "out_samesize", b"abcd", b"WXYZ")
+    logged = []
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    assert copies == 2
+    # Pre-existing archive untouched.
+    assert (sup / "F10126107.pdf").read_bytes() == b"WXYZ"
+    # Old revision archived under numeric suffix with correct contents.
+    assert (sup / "F10126107.1.pdf").read_bytes() == b"abcd"
+    # Tree holds the new revision, old tree copy gone.
+    assert (old.parent / "F10126107_A.pdf").read_bytes() == b"new"
+    assert not old.exists()
+    assert moved == [old.parent / "F10126107_A.pdf"]
+    text = "\n".join(logged)
+    assert "superseded:" in text
+    assert "_superseded/F10126107.1.pdf" in text

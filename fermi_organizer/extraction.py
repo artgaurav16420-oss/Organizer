@@ -1000,13 +1000,13 @@ def _word_row_has_item_before(row_words, x):
     return False
 
 
-def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words):
+def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # Same row: a drawing-size token (A0-A9) marks the title block.
     for _, w in row_words:
         if SIZE_RE.match(w):
             return True
     # Nearby rows: title-block keywords or size tokens.
-    y_idx = sorted_y_keys.index(y_key)
+    y_idx = y_index[y_key]
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1045,6 +1045,7 @@ def _extract_bom_positional(page, page_num, issues=None):
     best_x_min = min(best_cluster) - 10
     best_x_max = max(best_cluster) + 10
     sorted_y_keys = sorted(rows.keys())
+    y_index = {y: i for i, y in enumerate(sorted_y_keys)}
     for x, y_key, word in fermi_positions:
         if not best_x_min <= x <= best_x_max:
             continue
@@ -1052,7 +1053,7 @@ def _extract_bom_positional(page, page_num, issues=None):
         row_text = " ".join(w for _, w in row_words)
         if "USED ON" in row_text.upper():
             continue
-        if _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words):
+        if _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
             continue
         if _word_row_has_item_before(row_words, x):
             val = normalize(word)

@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pymupdf==1.28.2",
-    "openpyxl==3.1.5",
 ]
+
+[project.optional-dependencies]
+excel = ["openpyxl==3.1.5"]
 
 [project.scripts]
 fermi-organize = "fermi_organizer.cli:main"
