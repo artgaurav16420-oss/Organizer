@@ -145,12 +145,14 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     renames = renames or {}
     # Memoize copy counts: a diamond DAG would otherwise blow up exponentially.
     copy_count_memo = {}
-    def count_copies(stem):
+    def count_copies(stem, depth=0):
+        if depth > TREE_MAX_DEPTH:
+            return 0
         if stem in copy_count_memo:
             return copy_count_memo[stem]
         total = 1
         for child in children.get(stem, ()):
-            total += count_copies(child)
+            total += count_copies(child, depth + 1)
         copy_count_memo[stem] = total
         return total
     total_planned = sum(count_copies(root) for root in roots)
@@ -356,10 +358,12 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
     return n
 
 
-def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=()):
+def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
+                           planned=()):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    Returns the number retired."""
+    In dry-run only, stems in planned (placed by this run but not yet on
+    disk) also count as live. Returns the number retired."""
     live_pdfs = defaultdict(list)
     for p in scan_output_tree(folder)["tree"]:
         stem = canonical_stem(p.stem)
@@ -367,9 +371,13 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=()):
             live_pdfs[stem].append(p)
     retired = 0
     sup = set(superseded)
+    # Planned stems count only for dry-run reporting: in a real run the
+    # placed copies are already on disk, and a failed copy must not retire
+    # the orphan that adoption never actually reached.
+    planned_set = set(planned) if dry_run else set()
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
-        if not live and o not in sup:
+        if not live and o not in sup and o not in planned_set:
             continue
         if opath.is_symlink():
             log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")

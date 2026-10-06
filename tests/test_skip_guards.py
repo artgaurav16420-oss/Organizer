@@ -69,13 +69,10 @@ def test_page_cap_tasks_return_skip_shape(tmp_path, make_pdf, monkeypatch,
     assert "skipped:" in flat and "page cap" in flat
 
 
-def test_multipage_bom_on_page_two(make_pdf_pages):
+def test_multipage_bom_on_page_two(tmp_path, make_pdf_pages):
     # T-020 multi-page fixture variant: BOM lives on page 2 only (page_num 2
     # in the entry proves the second page was scanned).
-    from pathlib import Path
-    import tempfile
-    tmp = Path(tempfile.mkdtemp())
-    pdf = make_pdf_pages(tmp / "F10126106.pdf", [
+    pdf = make_pdf_pages(tmp_path / "F10126106.pdf", [
         ["NAME", "Parent"],
         ["FERMI PART LIST", "F10126107 CHILD PART"],
     ])

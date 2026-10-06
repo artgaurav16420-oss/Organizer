@@ -275,3 +275,41 @@ def test_retire_adopted_orphans_includes_superseded_stems(tmp_path):
     assert n == 1
     assert not sup_orph.exists()
     assert unrelated_orph.is_file()
+
+
+def test_retire_adopted_orphans_planned_covers_dry_run_placement(tmp_path):
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    orph = orphans_dir / "F10126108.pdf"
+    orph.write_bytes(b"parked")
+
+    # Old behavior (default): nothing live on disk, dry-run stays silent.
+    logged = []
+    n = retire_adopted_orphans({"F10126108": orph}, out, True, logged.append)
+    assert n == 0
+    assert orph.is_file()
+    assert "retire orphan copy" not in "\n".join(logged)
+
+    # Planned (adopted by this run's placement, not yet copied in dry-run):
+    # dry-run reports it without touching disk.
+    logged = []
+    n = retire_adopted_orphans({"F10126108": orph}, out, True, logged.append,
+                               planned={"F10126108"})
+    assert n == 0
+    assert orph.is_file()
+    text = "\n".join(logged)
+    assert "[DRY-RUN] retire orphan copy:" in text
+    assert "F10126108" in text
+
+
+def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    logged = []
+
+    total = place_files({"F10126106": ["F10126106"]}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True, logged.append)
+
+    assert total >= 1

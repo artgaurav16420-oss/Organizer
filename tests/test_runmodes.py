@@ -130,6 +130,34 @@ def test_run_incremental_adopts_stored_orphan(tmp_path, make_pdf):
     assert "Retired 1 orphan copy(ies) from _orphans/ (adopted into tree)" in text
 
 
+def test_run_incremental_dry_run_reports_planned_orphan_retirement(tmp_path, make_pdf):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+    assert (out / "_orphans" / "F10126108.pdf").is_file()
+
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST",
+        "F10126108 STANDALONE PART",
+        "NAME",
+        "New assembly",
+    ])
+
+    logged = []
+    run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    assert "[DRY-RUN] retire orphan copy:" in text
+    assert "F10126108" in text
+    # Dry-run touches nothing on disk.
+    assert (out / "_orphans" / "F10126108.pdf").is_file()
+    assert not (out / "F10126109 New assembly").exists()
+
+
 def test_run_full_returns_structured_ctx(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Full and incremental organization runs."""
+import filecmp
 import os
 import re
 import shutil
@@ -593,14 +594,14 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
         rel_old = p.relative_to(output)
         # Archive collision: the target may already exist with different
         # content (never delete the tree copy without archiving it). Equal
-        # size = assume duplicate, keep the old skip behavior; OSError on
-        # getsize means differ (safer). Differing content archives under a
+        # bytes = assume duplicate, keep the old skip behavior; OSError on
+        # compare means differ (safer). Differing content archives under a
         # numeric suffix (<stem>.1.pdf, incrementing until free).
         archive_target = target_old
         archived = not target_old.exists()
         if not archived:
             try:
-                same = os.path.getsize(target_old) == os.path.getsize(p)
+                same = filecmp.cmp(target_old, p, shallow=False)
             except OSError:
                 same = False
             if same:
@@ -1295,14 +1296,16 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           total_copies, total_moves, warning_count, unmatched,
                           chk_stems, new_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
-                          bom_names, superseded=()) -> RunContext:
+                          bom_names, superseded=(), planned=()) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
     # exists live in the tree (adopted into an earlier or this run's placement)
-    # or was superseded (its archived copy lives in _superseded/).
+    # or was superseded (its archived copy lives in _superseded/). In dry-run
+    # this run's placements copied nothing, so planned tree stems (passed via
+    # planned=) also count as live for the retirement report.
     if stored_orphans:
         retire_adopted_orphans(stored_orphans, output, dry_run, log,
-                               superseded=superseded)
+                               superseded=superseded, planned=planned)
     log("")
     _log_summary([
         "--- Summary ---",
@@ -1403,6 +1406,23 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
         new_stems, new_parents, org_parents_of, org_children_of, new_children,
         new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
         output, dry_run, log, rekeyed, total_copies, total_moves)
+    # Planned tree stems for orphan retirement: in dry-run the placements
+    # above logged but copied nothing, so a stored orphan adopted by this
+    # run's placement is not yet live on disk. BOM-less standalone roots stay
+    # parked in _orphans/ (never placed) and are excluded, mirroring
+    # _incremental_place's already-parked branch.
+    planned = set()
+    for _r in new_roots:
+        if not (org_parents_of.get(_r) or org_children_of.get(_r)
+                or new_boms.get(_r) or new_children.get(_r)):
+            continue
+        _stack = [_r]
+        while _stack:
+            _s = _stack.pop()
+            if _s in planned:
+                continue
+            planned.add(_s)
+            _stack.extend(new_children.get(_s, ()))
     return _incremental_finalize(stored_orphans, output, dry_run, log,
                                  scanned_new, organized, new_roots,
                                  new_children, removed, total_copies,
@@ -1410,4 +1430,5 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
                                  chk_stems, new_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
-                                 superseded=set(superseded_new) | set(swapped_old))
+                                 superseded=set(superseded_new) | set(swapped_old),
+                                 planned=planned)
