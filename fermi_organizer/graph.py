@@ -3,8 +3,7 @@
 import re
 from collections import defaultdict
 
-from .config import TREE_MAX_DEPTH
-from .extraction import is_processable_ref
+from .config import TREE_MAX_DEPTH, is_processable_ref
 
 
 def is_chk_stem(stem):
@@ -96,9 +95,13 @@ def find_used_on_bugs(bom_edges, used_on_of, stems):
             for m in match_pdfs(val, stems):
                 if m == child:
                     continue
-                if child not in set(bom_edges.get(m, ())):
+                children_of_m = set(bom_edges.get(m, ()))
+                if child not in children_of_m:
                     out.append((m, child))
     return out
+
+
+_LOOSE_RE_CACHE = {}
 
 
 def match_pdfs(val, stems):
@@ -110,7 +113,11 @@ def match_pdfs(val, stems):
         # startswith pins the base; return the highest revision among matches.
         return [max(with_rev, key=revision_rank)]
     # Negative lookahead keeps loose prefix matches from extending the base.
-    loose = sorted(s for s in stems if re.match(re.escape(val) + r"(?![0-9A-Z])", s))
+    pat = _LOOSE_RE_CACHE.get(val)
+    if pat is None:
+        pat = re.compile(re.escape(val) + r"(?![0-9A-Z])")
+        _LOOSE_RE_CACHE[val] = pat
+    loose = sorted(s for s in stems if pat.match(s))
     return loose
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import TREE_MAX_DEPTH
 from .extraction import (OCR, resolve_jobs)
-from .runmodes import run_full, run_incremental, NoPDFsFoundError
+from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
 from .report_glue import names_from_tree
 
 
@@ -19,7 +19,7 @@ def build_parser():
     parser.add_argument("--output", help="Output folder for organized structure (default: same as input)")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without creating folders or copying files")
     parser.add_argument("--incremental", action="store_true",
-                        help="Only process new PDFs at the top level; existing subfolders stay put except supersede swaps and parent-adoption moves")
+                        help="Process only stems not already in the output tree plus stored _orphans/ (input scan is recursive); existing subfolders stay put except supersede swaps and parent-adoption moves")
     parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
     parser.add_argument("--jobs", type=int, default=0,
                         help="Parallel extraction workers (0=auto = CPU count, 1=serial)")
@@ -49,7 +49,7 @@ def run_mode_label(dry_run, incremental):
     return "DRY-RUN" if dry_run else "EXECUTE"
 
 
-def _refresh_workbook(ctx, output, report_path, log_lines, dry_run, incremental, log):
+def _refresh_workbook(ctx: RunContext, output, report_path, log_lines, dry_run, incremental, log):
     try:
         import fermi_report_xlsx as fx
     except ImportError as e:
@@ -60,13 +60,15 @@ def _refresh_workbook(ctx, output, report_path, log_lines, dry_run, incremental,
         names = dict(ctx["names"])
         for base, name in names_from_tree(output).items():
             names.setdefault(base, name)
+        # Explicit remap: RunContext uses used_on_mismatches, refresh_from_run wants mismatches.
+        mismatches: list[tuple[str, str, list[str]]] = ctx["used_on_mismatches"]
         xlsx = fx.refresh_from_run(
             output=str(output), run_mode=run_mode_label(dry_run, incremental),
             run_time=run_time, counters=ctx["counters"], missing=ctx["missing"],
             chk=ctx["chk"], orphans=ctx["orphans"],
             report_txt=report_path if output.is_dir() else None,
             names=names, roots=ctx["roots"],
-            mismatches=ctx["used_on_mismatches"],
+            mismatches=mismatches,
             used_on_bugs=ctx["used_on_bugs"],
             titleblock_mismatches=ctx["titleblock_mismatches"],
             scanned=ctx["scanned"], watermarks=ctx["watermarks"], log=log)
@@ -83,6 +85,8 @@ def main():
     # Recursion guard (deep/degenerate DAGs): allow deep recursive traversals
     # in break_cycles/place_files rather than a hard RecursionError.
     # 10000 == TREE_MAX_DEPTH * 20 (headroom over the DFS depth cap).
+    # Safe: max() never lowers the existing limit; both DFSs depth-cap at
+    # TREE_MAX_DEPTH=500, so the bump only adds headroom.
     sys.setrecursionlimit(max(sys.getrecursionlimit(), TREE_MAX_DEPTH * 20))
 
     folder = Path(args.folder).resolve()

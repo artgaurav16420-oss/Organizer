@@ -149,6 +149,10 @@ def test_find_used_on_bugs_flags_parent_not_in_bom():
     # F10126108 is named in C's USED ON but its BOM does not list C.
     assert find_used_on_bugs(bom_edges, used_on_of, stems) == \
         [("F10126108", "F10126107")]
+    # Duplicate USED ON values still report a single bug entry.
+    assert find_used_on_bugs(
+        bom_edges, {"F10126107": ["F10126108", "F10126108"]}, stems) == \
+        [("F10126108", "F10126107")]
 
 
 def test_find_used_on_bugs_ignores_consistent_used_on():

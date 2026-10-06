@@ -2,9 +2,11 @@
 import os
 from pathlib import Path
 
+import pytest
 import pymupdf as fitz
 
 from fermi_organizer import extraction
+from fermi_organizer.config import is_fermi_value
 
 
 def test_single_line_bom_detection(tmp_path, make_pdf):
@@ -98,11 +100,11 @@ def test_merge_bom_entries_dedupes_by_value_first_wins():
 def test_normalize_and_is_fermi_value():
     assert extraction.normalize(" f 101 261 07 ") == "F10126107"
     assert extraction.normalize(None) == ""
-    assert extraction.is_fermi_value("F10126107")
-    assert not extraction.is_fermi_value("FC10126107")
-    assert not extraction.is_fermi_value("f10126107")
-    assert not extraction.is_fermi_value("")
-    assert not extraction.is_fermi_value(None)
+    assert is_fermi_value("F10126107")
+    assert not is_fermi_value("FC10126107")
+    assert not is_fermi_value("f10126107")
+    assert not is_fermi_value("")
+    assert not is_fermi_value(None)
 
 
 def test_extract_used_on_and_drawing_name(tmp_path, make_pdf):
@@ -417,6 +419,7 @@ def test_ensure_tesseract_unparseable_version_is_none(tmp_path, monkeypatch):
     assert ocr.version is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PATH/drive-letter semantics")
 def test_ensure_tesseract_path_prepend_idempotent(monkeypatch):
     cand = r"C:\Program Files\Tesseract-OCR"
     fake_exe = os.path.join(cand, "tesseract.exe")

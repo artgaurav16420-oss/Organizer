@@ -40,13 +40,14 @@ python organize_fermi_pdfs.py <input-folder> [--output <folder>] [--dry-run] [--
 ```
 
 Input is scanned recursively — every `*.pdf` under the input folder counts, at any depth,
-except those under a top-level `Output/` or `_`-prefixed folder. Use `--output` to point
+except those under a top-level `Output/` (case-insensitive) or `_`-prefixed folder
+(a nested `sub/Output/` is scanned). Use `--output` to point
 the organized tree elsewhere (typically `<input-folder>/Output`).
 
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Print the plan without copying files. Still writes the timestamped `.txt` report when the output folder exists, and always rebuilds the `.xlsx` workbook + history sidecar; a missing `--output` folder is created for the workbook only (report-only). Always run this first. |
-| `--incremental` | Process only new PDFs at top level; existing organized folders stay put except when a new revision supersedes an old one or a parent adoption moves them. |
+| `--incremental` | Process only stems not already in the output tree plus stored `_orphans/` (adoption); the input scan is recursive. Existing organized folders stay put except when a new revision supersedes an old one or a parent adoption moves them. |
 | `--output <dir>` | Organized tree target (default: the input folder itself — in-place). |
 | `--no-ocr` | Disable the OCR fallback for scanned PDFs. |
 | `--jobs N` | Parallel extraction workers (0=auto = CPU count, 1=serial). |
@@ -88,6 +89,7 @@ python organize_fermi_pdfs.py "D:\data\more-pdfs" --incremental --output "D:\dat
 organize_fermi_pdfs.py     launcher (thin shim)
 fermi_report_xlsx.py       live Excel workbook writer (openpyxl, optional)
 fermi_organizer/
+  __init__.py            pymupdf-direct import guard (never the legacy `fitz` shim)
   cli.py                   argparse + logging + report wiring
   config.py                constants + regexes + OCR geometry
   extraction.py            BOM/USED ON/NAME extraction + OCR fallback + run-scoped OCR context
@@ -96,7 +98,7 @@ fermi_organizer/
   fsops.py                 input indexing, placement, tree scans, supersede/orphan copies
   runmodes.py              run_full + run_incremental (return a structured run context)
   report_glue.py           tree-derived NAME fallback
-tests/                     pytest suite (99 tests; PDFs generated at test time)
+tests/                     pytest suite (100+ tests (see `pytest` output); PDFs generated at test time)
 ```
 
 ## Recovery & safe operation
@@ -146,4 +148,5 @@ tests/                     pytest suite (99 tests; PDFs generated at test time)
 - The drawing's own title block is authoritative: its drawing number, revision,
   and NAME are compared against the filename, and disagreements are listed in
   the Title block check sheet (misnamed files, stale revisions). Placement
-  still follows the filename in this version.
+  still follows the filename in this version, unless `--rekey-titleblock` opts
+  into title-block authority for misnamed text-layer files.

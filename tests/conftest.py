@@ -29,9 +29,28 @@ def make_pdf(path, lines):
     return Path(path)
 
 
+def make_pdf_pages(path, pages_lines):
+    """Multi-page variant of make_pdf: one page per entry, same geometry."""
+    doc = fitz.open()
+    for lines in pages_lines:
+        page = doc.new_page()
+        y = 72
+        for line in lines:
+            page.insert_text((72, y), line, fontsize=11)
+            y += 16
+    doc.save(str(path))
+    doc.close()
+    return Path(path)
+
+
 @pytest.fixture(name="make_pdf")
 def _make_pdf():
     return make_pdf
+
+
+@pytest.fixture(name="make_pdf_pages")
+def _make_pdf_pages():
+    return make_pdf_pages
 
 
 def ensure_ocr_off():

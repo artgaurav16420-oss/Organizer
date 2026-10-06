@@ -22,7 +22,7 @@ from .config import (canonical_stem,
                      TB_REV_DX_LEFT, TB_REV_DX_RIGHT, TB_REV_DY_BOTTOM,
                      TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT, TB_NUM_DY_BOTTOM,
                      TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM,
-                     FERMI_ANY_RE, FERMI_VAL_RE, FERMI_RE, FERMI_RE_SEARCH,
+                     FERMI_ANY_RE, FERMI_RE, FERMI_RE_SEARCH,
                      FERMI_HEADER_RE, OCR_MIN_CHARS, OCR_MAIN_DPI, OCR_STRIP_DPI,
                      OCR_VAL_RE, OCR_CORR, ITEM_RE, BAD_DESC_RE, SIZE_RE,
                      SINGLE_LINE_RE, TOKEN_RE, USED_RE, STOP_RE,
@@ -41,6 +41,23 @@ from .config import (canonical_stem,
                       OCR_ITEM_COL_DX_LEFT, OCR_ITEM_FERMI_MIN_GAP,
                       OCR_ITEM_X_FALLBACK, OCR_ROW_STRIP_DY_TOP,
                       OCR_ROW_STRIP_DY_BOTTOM, OCR_MAX_RENDER_MP)
+
+# Resource-exhaustion guards (T-018) + OCR memo bound (T-006).
+# OCR_MIN_CHARS itself lives in config.py; these thresholds sit here so
+# extraction.py stays the only touched module. Thresholds are best-judgment
+# values ([uncertain] per fix-plan: 500MB / 200 pages / 512 memo entries).
+MAX_PDF_BYTES = 500 * 1024 * 1024  # skip-with-issue files over ~500MB
+MAX_PDF_PAGES = 200  # skip-with-issue documents beyond 200 pages
+_OCR_MEMO_MAX_ENTRIES = 512  # oldest-first cap per memo dict (never events)
+
+
+def _memo_put(memo, key, value):
+    """Store + oldest-first evict so run-scoped OCR memos stay bounded."""
+    memo[key] = value
+    while len(memo) > _OCR_MEMO_MAX_ENTRIES:
+        memo.pop(next(iter(memo)))
+    return value
+
 
 # ISO A-series landscape page sizes in points (72 dpi). A sheet is stored
 # either at its ISO size or as the same sheet at the scanner's dpi (1 px =
@@ -134,7 +151,7 @@ class _OcrContext:
             return None
         try:
             ver = subprocess.run([exe, "--version"], capture_output=True, timeout=20)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self.reason = f"tesseract not runnable ({exe}): {e}"
             return None
         self.tesseract_path = exe
@@ -176,11 +193,14 @@ class _OcrContext:
                 # (tuned for 72 dpi pages) also fit scans stored at scanner dpi.
                 words = [(w[0] / scale, w[1] / scale, w[2] / scale,
                           w[3] / scale) + tuple(w[4:]) for w in words]
-            self.page_scale[key] = scale
-        except Exception as e:
+            _memo_put(self.page_scale, key, scale)
+        except (RuntimeError, OSError, ValueError) as e:
+            # RuntimeError covers pymupdf's mupdf errors (FileDataError /
+            # EmptyFileError subclass RuntimeError; no generic pymupdf.Error
+            # exists in 1.28.2).
             if issues is not None:
                 issues.append(f"{page_label}: OCR failed: {e}")
-        self.words_memo[key] = words
+        _memo_put(self.words_memo, key, words)
         return words
 
     def analyze_page(self, page, issues=None, page_label=""):
@@ -225,8 +245,9 @@ class _OcrContext:
                         if z_used:
                             used = z_used
                             name = z_name or name
-                    except Exception:
-                        pass
+                    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+                        if issues is not None:
+                            issues.append(f"{page_label}: title-block zoom OCR failed: {e}")
                 result = (used, name, bom)
                 if not ev["used_on"] and used:
                     ev["used_on"] = list(used)
@@ -236,7 +257,7 @@ class _OcrContext:
                     if v not in ev["bom"]:
                         ev["bom"].append(v)
             ev["secs"] += (datetime.now() - t0).total_seconds()
-        self.page_memo[key] = result
+        _memo_put(self.page_memo, key, result)
         return result
 
     def report_lines(self):
@@ -312,19 +333,6 @@ def normalize(s):
     return re.sub(r"\s+", "", str(s) if s is not None else "").upper().strip()
 
 
-def is_fermi_value(val):
-    return bool(val) and bool(FERMI_VAL_RE.match(val))
-
-
-def is_processable_ref(val):
-    """True if val is a FERMI part reference the graph should process.
-
-    FC-prefixed common components are tracked separately (skipped_fc) and
-    never become graph edges, so they are filtered out here.
-    """
-    return bool(val) and is_fermi_value(val) and not val.startswith("FC")
-
-
 # ---------------------------------------------------------------------------
 # OCR (scanned / image-only PDFs)
 # ---------------------------------------------------------------------------
@@ -360,12 +368,35 @@ def _is_fermi_label(text):
 
 def _find_used_anchor(words):
     """First 'USED'+'ON' label pair ('ON' immediately right, same visual row)."""
+    # Row index of ON candidates (same tolerance-3 clustering as
+    # _words_by_row) so each USED word scans only nearby rows, not the full
+    # word list. Identical results: the row prefilter (TOL+3) admits every
+    # word the exact check (TOL) could match (triangle inequality), and the
+    # exact x-gap / y-band check is re-applied per word; outer order (first
+    # USED in words order) is preserved.
+    on_rows = {}
+    for w2 in words:
+        t2 = re.sub(r"[^A-Za-z]", "", w2[4].upper()) if len(w2[4]) <= 4 else ""
+        if t2 != "ON":
+            continue
+        y0 = w2[1]
+        placed = False
+        for ry in on_rows:
+            if abs(ry - y0) < 3:
+                on_rows[ry].append(w2)
+                placed = True
+                break
+        if not placed:
+            on_rows[y0] = [w2]
     for w in words:
         t = re.sub(r"[^A-Z]", "", w[4].upper())  # OCR glues borders: '«USED' -> USED
-        if t == "USED":
-            for w2 in words:
-                t2 = re.sub(r"[^A-Za-z]", "", w2[4].upper()) if len(w2[4]) <= 4 else ""
-                if (t2 == "ON" and 0 <= w2[0] - w[2] < OCR_USED_ON_GAP_MAX
+        if t != "USED":
+            continue
+        for ry, members in on_rows.items():
+            if abs(ry - w[1]) >= OCR_ROW_TOL + 3:
+                continue
+            for w2 in members:
+                if (0 <= w2[0] - w[2] < OCR_USED_ON_GAP_MAX
                         and abs(w2[1] - w[1]) < OCR_ROW_TOL):
                     return w
     return None
@@ -714,14 +745,14 @@ def extract_bom_from_tables(doc, issues=None):
     for page_num, page in enumerate(doc, 1):
         try:
             tables = page.find_tables().tables
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             if issues is not None:
                 issues.append(f"page {page_num}: table detection failed: {e}")
             tables = []
         for table in tables:
             try:
                 data = table.extract()
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
                 if issues is not None:
                     issues.append(f"page {page_num}: table extract failed: {e}")
                 continue
@@ -891,7 +922,7 @@ def _positional_row_entries(page, page_num, entries, issues):
                     if val not in existing:
                         entries.append((val, page_num, "text-positional"))
                         existing.add(val)
-    except Exception as e:
+    except (RuntimeError, ValueError, KeyError, TypeError) as e:
         if issues is not None:
             issues.append(f"page {page_num}: positional grouping failed: {e}")
 
@@ -997,7 +1028,7 @@ def _extract_bom_positional(page, page_num, issues=None):
     found = []
     try:
         words = page.get_text("words")
-    except Exception as e:
+    except (RuntimeError, ValueError) as e:
         if issues is not None:
             issues.append(f"page {page_num}: word extraction failed: {e}")
         return found
@@ -1056,7 +1087,15 @@ def extract_bom_from_doc(doc, issues):
 def extract_bom_entries(pdf_path):
     """Returns (entries, method, issues)."""
     issues = []
+    size_msg = _pdf_size_issue(pdf_path)
+    if size_msg is not None:
+        issues.append(size_msg)
+        return [], "skipped", issues
     with _open_pdf(pdf_path) as doc:
+        pages_msg = _doc_pages_issue(doc)
+        if pages_msg is not None:
+            issues.append(pages_msg)
+            return [], "skipped", issues
         entries, method = extract_bom_from_doc(doc, issues)
     return entries, method, issues
 
@@ -1232,7 +1271,7 @@ def extract_title_block(doc):
             return None, None
         try:
             words = OCR.words_cached(page)
-        except Exception:
+        except (RuntimeError, OSError, ValueError):
             return None, None
 
         def from_words(ws):
@@ -1257,7 +1296,7 @@ def extract_title_block(doc):
             for psm in ("11", "6"):
                 try:
                     zoom_words += _ocr_words_zoom(page, clip, 8, psm)
-                except Exception:
+                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
                     break
                 number, rev = from_words(zoom_words)
                 if number and rev:
@@ -1281,7 +1320,7 @@ def _span_chars(span):
     return "".join(chr(c[0]) for c in span.get("chars", ()))
 
 
-def detect_watermark(doc):
+def detect_watermark(doc, issues=None):
     """Best-effort watermark detection for one open document.
 
     Returns a short evidence string (e.g. "watermark text: PRELIMINARY",
@@ -1290,25 +1329,33 @@ def detect_watermark(doc):
     common watermark signatures (transparency, diagonal or light large text,
     watermark layers, stamp annotations, keyword phrases) while ignoring
     template text such as the rotated title-block 'TEMPLATE VERSION' or the
-    'Drafting' label.
+    'Drafting' label. Check failures still return None (fail-open) but are
+    recorded into `issues` when provided, so a failed check never silently
+    passes as clean in runs that pass their issues list.
     """
     try:
         for v in (doc.get_ocgs() or {}).values():
             name = v.get("name") or ""
             if "watermark" in name.lower():
                 return f"watermark layer: {name}"
-    except Exception:
-        pass
+    except (RuntimeError, ValueError, AttributeError) as e:
+        if issues is not None:
+            issues.append(f"watermark layer check failed: {e}")
     for page in list(doc)[:WATERMARK_MAX_PAGES]:
         try:
             m = WATERMARK_TEXT_RE.search(page.get_text())
-        except Exception:
+        except (RuntimeError, ValueError) as e:
+            if issues is not None:
+                issues.append("watermark text check failed: "
+                              f"{e}")
             m = None
         if m:
             return f"watermark text: {m.group(0).upper()}"
         try:
             annots = page.annots()
-        except Exception:
+        except (RuntimeError, ValueError) as e:
+            if issues is not None:
+                issues.append(f"watermark annotation check failed: {e}")
             annots = None
         for a in annots or ():
             content = ((a.info or {}).get("content") or "").strip()
@@ -1316,7 +1363,9 @@ def detect_watermark(doc):
                 return f"watermark annotation: {content[:40]}"
         try:
             spans = page.get_texttrace()
-        except Exception:
+        except (RuntimeError, ValueError) as e:
+            if issues is not None:
+                issues.append(f"watermark visual check failed: {e}")
             spans = ()
         for span in spans:
             text = _span_chars(span).strip()
@@ -1352,7 +1401,7 @@ def _ocr_worker_init(ocr_enabled):
     if ocr_enabled:
         try:
             OCR.ensure_tesseract()
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
             OCR.reason = f"tesseract check failed: {e}"
 
 
@@ -1390,19 +1439,54 @@ def _doc_is_scanned(doc):
     return len(doc[0].get_text().strip()) < OCR_MIN_CHARS
 
 
+def _pdf_size_issue(pdf_path):
+    """File-size guard message, or None (stat failures fall through to open)."""
+    try:
+        size = os.path.getsize(pdf_path)
+    except OSError:
+        return None
+    if size > MAX_PDF_BYTES:
+        return (f"skipped: file size {size / (1024 * 1024):.0f}MB exceeds "
+                f"{MAX_PDF_BYTES // (1024 * 1024)}MB cap")
+    return None
+
+
+def _doc_pages_issue(doc):
+    """Page-count guard message, or None."""
+    try:
+        count = doc.page_count
+    except (RuntimeError, ValueError, AttributeError):
+        return None
+    if count > MAX_PDF_PAGES:
+        return f"skipped: {count} pages exceeds {MAX_PDF_PAGES}-page cap"
+    return None
+
+
 def bom_task(pdf_path):
     before = set(OCR.events)
     try:
         issues = []
-        with _open_pdf(pdf_path) as doc:
-            entries, method = extract_bom_from_doc(doc, issues)
-            entries = _strip_self_bom(entries, pdf_path)
-            watermark = detect_watermark(doc)
-            number, rev = extract_title_block(doc)
-            name = extract_drawing_name(doc)
-            scanned = _doc_is_scanned(doc)
-        out = ("ok", entries, method, issues, watermark, number, rev, name, scanned)
-    except Exception as e:
+        size_msg = _pdf_size_issue(pdf_path)
+        if size_msg is not None:
+            issues.append(size_msg)
+            out = ("ok", [], "skipped", issues, None, None, None, None, False)
+        else:
+            with _open_pdf(pdf_path) as doc:
+                pages_msg = _doc_pages_issue(doc)
+                if pages_msg is not None:
+                    issues.append(pages_msg)
+                    out = ("ok", [], "skipped", issues, None, None, None,
+                           None, False)
+                else:
+                    entries, method = extract_bom_from_doc(doc, issues)
+                    entries = _strip_self_bom(entries, pdf_path)
+                    watermark = detect_watermark(doc, issues)
+                    number, rev = extract_title_block(doc)
+                    name = extract_drawing_name(doc)
+                    scanned = _doc_is_scanned(doc)
+                    out = ("ok", entries, method, issues, watermark, number,
+                           rev, name, scanned)
+    except (RuntimeError, OSError, ValueError) as e:
         out = ("error", str(e), None, None, None, None, None, None, None)
     return out + (OCR.event_delta(before),)
 
@@ -1410,10 +1494,20 @@ def bom_task(pdf_path):
 def title_task(pdf_path):
     before = set(OCR.events)
     try:
-        with _open_pdf(pdf_path) as doc:
-            out = ("ok", _strip_self_ref(extract_used_on(doc), pdf_path),
-                   extract_drawing_name(doc))
-    except Exception as e:
+        # No issues slot in this task's return shape; oversized documents
+        # surface as error tuples so the run log still shows them.
+        size_msg = _pdf_size_issue(pdf_path)
+        if size_msg is not None:
+            out = ("error", size_msg, None)
+        else:
+            with _open_pdf(pdf_path) as doc:
+                pages_msg = _doc_pages_issue(doc)
+                if pages_msg is not None:
+                    out = ("error", pages_msg, None)
+                else:
+                    out = ("ok", _strip_self_ref(extract_used_on(doc), pdf_path),
+                           extract_drawing_name(doc))
+    except (RuntimeError, OSError, ValueError) as e:
         out = ("error", str(e), None)
     return out + (OCR.event_delta(before),)
 
@@ -1422,17 +1516,29 @@ def org_task(pdf_path):
     before = set(OCR.events)
     try:
         issues = []
-        with _open_pdf(pdf_path) as doc:
-            entries, method = extract_bom_from_doc(doc, issues)
-            entries = _strip_self_bom(entries, pdf_path)
-            used = _strip_self_ref(extract_used_on(doc), pdf_path)
-            watermark = detect_watermark(doc)
-            number, rev = extract_title_block(doc)
-            name = extract_drawing_name(doc)
-            scanned = _doc_is_scanned(doc)
-        out = ("ok", entries, method, used, issues, watermark, number, rev, name,
-               scanned)
-    except Exception as e:
+        size_msg = _pdf_size_issue(pdf_path)
+        if size_msg is not None:
+            issues.append(size_msg)
+            out = ("ok", [], "skipped", [], issues, None, None, None, None,
+                   False)
+        else:
+            with _open_pdf(pdf_path) as doc:
+                pages_msg = _doc_pages_issue(doc)
+                if pages_msg is not None:
+                    issues.append(pages_msg)
+                    out = ("ok", [], "skipped", [], issues, None, None, None,
+                           None, False)
+                else:
+                    entries, method = extract_bom_from_doc(doc, issues)
+                    entries = _strip_self_bom(entries, pdf_path)
+                    used = _strip_self_ref(extract_used_on(doc), pdf_path)
+                    watermark = detect_watermark(doc, issues)
+                    number, rev = extract_title_block(doc)
+                    name = extract_drawing_name(doc)
+                    scanned = _doc_is_scanned(doc)
+                    out = ("ok", entries, method, used, issues, watermark,
+                           number, rev, name, scanned)
+    except (RuntimeError, OSError, ValueError) as e:
         out = ("error", str(e), None, None, None, None, None, None, None, None)
     return out + (OCR.event_delta(before),)
 
@@ -1446,9 +1552,19 @@ def dup_meta_task(pdf_path):
     """
     before = set(OCR.events)
     try:
-        with _open_pdf(pdf_path) as doc:
-            out = ("ok", detect_watermark(doc), _doc_is_scanned(doc))
-    except Exception as e:
+        # No issues slot in this task's return shape; oversized documents
+        # surface as error tuples so the run log still shows them.
+        size_msg = _pdf_size_issue(pdf_path)
+        if size_msg is not None:
+            out = ("error", size_msg, None)
+        else:
+            with _open_pdf(pdf_path) as doc:
+                pages_msg = _doc_pages_issue(doc)
+                if pages_msg is not None:
+                    out = ("error", pages_msg, None)
+                else:
+                    out = ("ok", detect_watermark(doc), _doc_is_scanned(doc))
+    except (RuntimeError, OSError, ValueError) as e:
         out = ("error", str(e), None)
     return out + (OCR.event_delta(before),)
 
