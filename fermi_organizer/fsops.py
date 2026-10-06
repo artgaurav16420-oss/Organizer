@@ -94,7 +94,11 @@ def build_pdf_index(folder, log=None):
     ignored = []
     dupes = []
     skips = {"skip_output": 0, "skip_sys": 0}
+    skipped_symlinks = 0
     for p in sorted(folder.rglob("*.pdf")):
+        if p.is_symlink():
+            skipped_symlinks += 1
+            continue
         kind, stem, payload = _classify_input_pdf(p, folder, index)
         if kind in skips:
             skips[kind] += 1
@@ -111,6 +115,8 @@ def build_pdf_index(folder, log=None):
         else:
             index[stem] = payload
     _log_scan_skips(log, skips["skip_output"], skips["skip_sys"])
+    if log and skipped_symlinks:
+        log(f"Skipped {skipped_symlinks} PDF(s) that are symlinks (symlinks are never input)")
     _log_capped(log, f"WARNING: {len(dupes)} duplicate stem(s) across input subfolders "
                      "(shallowest path kept):",
                 dupes, lambda d: f"  {d[0]}  (kept {d[1]})")
@@ -164,6 +170,12 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
         pdf = index[stem]
         target_name = renames.get(stem, pdf.name)
         target = current_folder / target_name
+        if pdf.is_symlink() or target.is_symlink():
+            log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
+            failed_count += 1
+            for child in sorted(children.get(stem, ())):
+                dfs(child, current_folder / fname(child), depth + 1)
+            return
         # Dir path checked against MAX_DIR, full target against MAX_PATH.
         if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
             log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
@@ -268,6 +280,9 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         target = sf / pdf.name
         if not overwrite and target.exists():
             continue
+        if pdf.is_symlink() or target.is_symlink():
+            log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
+            continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
         else:
@@ -292,6 +307,9 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     sf = folder / "_superseded"
     for p in sorted(paths):
         target = sf / p.name
+        if p.is_symlink() or target.is_symlink():
+            log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
+            continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
         else:
@@ -317,6 +335,9 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
             continue
         target_name = renames.get(o, pdf.name)
         target = orphans_dir / target_name
+        if pdf.is_symlink() or target.is_symlink():
+            log(f"  WARNING: {o}: copy skipped (symlink refused): {pdf} -> {target}")
+            continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
         else:
@@ -347,6 +368,9 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log):
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
         if not live:
+            continue
+        if opath.is_symlink():
+            log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
             continue
         if dry_run:
             log(f"  [DRY-RUN] retire orphan copy: {opath.relative_to(folder)} (now placed in tree)")

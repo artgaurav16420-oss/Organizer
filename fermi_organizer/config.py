@@ -4,6 +4,20 @@ import re
 FERMI_ANY_RE = re.compile(r"^F[0-9A-Za-z]")
 FERMI_VAL_RE = re.compile(r"^F(?!C)[0-9][0-9A-Za-z]*$")
 
+
+def is_fermi_value(val):
+    return bool(val) and bool(FERMI_VAL_RE.match(val))
+
+
+def is_processable_ref(val):
+    """True if val is a FERMI part reference the graph should process.
+
+    FC-prefixed common components are tracked separately (skipped_fc) and
+    never become graph edges, so they are filtered out here.
+    """
+    return bool(val) and is_fermi_value(val) and not val.startswith("FC")
+
+
 # Shared regex patterns
 FERMI_RE = re.compile(r"^(F\d{1,8}[A-Za-z]?|FC\d{1,8}[A-Za-z]?)$")
 FERMI_RE_SEARCH = re.compile(r"\bF\d{1,8}[A-Za-z]?\b|\bFC\d{1,8}[A-Za-z]?\b")

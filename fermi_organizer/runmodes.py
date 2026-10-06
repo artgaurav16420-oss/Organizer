@@ -5,9 +5,10 @@ import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
+from typing import TypedDict
 
-from .config import canonical_stem, filename_title, TB_NUM_VAL_RE
-from .extraction import (is_processable_ref, resolve_jobs, bom_task,
+from .config import canonical_stem, filename_title, TB_NUM_VAL_RE, is_processable_ref
+from .extraction import (resolve_jobs, bom_task,
                          title_task, org_task, dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
@@ -17,6 +18,30 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     find_organized_pdfs, find_latest_report, copy_superseded,
                     copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans)
+
+
+class RunCounters(TypedDict):
+    """Workbook counters for a run: scanned/roots/copies/cycles/warnings."""
+    scanned: int
+    roots: int
+    copies: int
+    cycles: int
+    warnings: int
+
+
+class RunContext(TypedDict):
+    """Structured run context consumed by the Excel workbook."""
+    counters: RunCounters
+    missing: list[tuple[str, str]]
+    chk: list[str]
+    orphans: list[str]
+    roots: list[tuple[str, list[str]]]
+    used_on_mismatches: list[tuple[str, str, list[str]]]
+    used_on_bugs: list[tuple[str, str]]
+    titleblock_mismatches: list[tuple[str, str, str, str]]
+    scanned: list[tuple[str, list[int]]]
+    watermarks: list[tuple[str, str]]
+    names: dict[str, str]
 
 
 class NoPDFsFoundError(RuntimeError):
@@ -456,7 +481,7 @@ def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_
 # ---------------------------------------------------------------------------
 # Incremental state: candidate set, revision conflicts, supersede swaps
 # ---------------------------------------------------------------------------
-def _collect_incremental_candidates(top_level, output):
+def _collect_incremental_candidates(scan_index, output):
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
@@ -472,7 +497,7 @@ def _collect_incremental_candidates(top_level, output):
     orphans_dir = output / "_orphans"
     stored_orphans = {s: p for p in orphans_dir.glob("*.pdf")
                       if (s := canonical_stem(p.stem))} if orphans_dir.is_dir() else {}
-    new_index = {s: p for s, p in top_level.items() if s not in organized and s not in already_sup}
+    new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
     for o, p in stored_orphans.items():
         if o in new_index:
             # same stem arrived both at top level and in _orphans - top level wins
@@ -564,7 +589,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
     for p in old_paths:
         target_old = sup_dir / p.name
         target_new = p.parent / new_pdf.name
-        staging = target_new.with_name(target_new.name + ".supersede_tmp")
+        staging = target_new.with_name(f"{target_new.name}.supersede_tmp.{os.getpid()}")
         rel_old = p.relative_to(output)
         # The archive copy is skipped when the target already exists; count
         # only the writes actually performed (1 in that case, else 2).
@@ -765,27 +790,8 @@ def _live_orphan_stems(output):
                    if (s := canonical_stem(p.stem))})
 
 
-def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
-    """Full run: index all of `folder` and place the whole tree under `output`.
-
-    Returns the structured run context consumed by the Excel workbook:
-    counters {scanned, roots, copies, cycles, warnings},
-    missing [(referencing stem, missing ref)], chk [stem], orphans [stem],
-    roots [(stem, [used_on])], used_on_mismatches [(parent, child, actual)],
-    names {stem/ref: NAME}. Raises NoPDFsFoundError on an empty input.
-    """
-    # Count 'EXTRACTION WARNING' lines for the workbook context (the same
-    # number the workbook previously recovered by parsing the log text).
-    warning_count = 0
-    base_log = log
-
-    def log(msg):
-        nonlocal warning_count
-        if "EXTRACTION WARNING" in msg:
-            warning_count += 1
-        base_log(msg)
-
-    jobs = resolve_jobs(jobs)
+def _full_prepare_index(folder, jobs, log):
+    """Build index, report CHK/superseded, resolve same-revision duplicates."""
     index, duplicates = build_pdf_index(folder, log)
     if not index:
         log("No PDFs found in folder.")
@@ -803,7 +809,11 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
     # shallowest) BEFORE extraction, so BOM/NAME/title block come from the
     # copy that will actually be placed.
     index, watermarked_dupes = _resolve_duplicates(index, duplicates, jobs, log)
+    return index, chk_stems, old, watermarked_dupes
 
+
+def _full_scan_boms(index, jobs, log, rekey, chk_stems):
+    """BOM scan + opt-in re-key + watermark/title-block logs + OCR snap."""
     log("--- Scanning BOM tables ---")
     bom_of, bom_names, watermarks, titleblocks = _scan_boms(
         sorted(index.items()), jobs, log, require_desc=True)
@@ -818,7 +828,11 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
     tb_mismatches = _titleblock_mismatches(titleblocks, log)
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(bom_of, index, log)
+    return index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems
 
+
+def _full_build_edges(bom_of, index, bom_names, log):
+    """BOM edges + missing/FC logs. Returns (children, parents, unmatched)."""
     children = defaultdict(set)
     parents = defaultdict(set)
     unmatched = []
@@ -839,41 +853,46 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
                     continue
                 children[stem].add(m)
                 parents[m].add(stem)
-
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
     if unmatched:
         _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
                           unmatched, bom_names, log)
         log("")
+    return children, parents, unmatched
 
-    # Unapproved CHK drawings: approved DWG should be downloaded from Teamcenter
-    if chk_stems:
-        _log_chk_block(chk_stems, log)
 
+def _full_scan_used_on(index, jobs, log):
+    """USED ON + NAME scan + OCR snap + missing-NAME log."""
     used_on_of, names_of = _scan_used_on(sorted(index.items()), jobs,
                                          "--- Scanning USED ON fields ---", log)
     _snap_used_on(used_on_of, index, log)
     _log_missing_names(index, names_of, log)
+    return used_on_of, names_of
 
+
+def _full_analyze(bom_of, index, children, parents, used_on_of, names_of, log):
+    """USED ON cross-checks, cycles, roots/orphans."""
     # BOM is the only source of truth for parent-child edges. USED ON is a
     # cross-check only: a child whose USED ON names a parent the parent's BOM
     # does not list has a buggy USED ON field (not a placement edge).
     used_on_bugs = _collect_used_on_bugs_full(used_on_of, index, children, log)
-
     # USED ON consistency: parent BOM lists the part but the part USED ON
     # omits the parent -> almost certainly a wrong USED ON number.
     full_bom_edges, _ = _graph_edges(bom_of, index)
     used_mism = find_used_on_mismatches(full_bom_edges, used_on_of)
     if used_mism:
         _log_used_on_mismatches(used_mism, names_of, log)
-
     removed = _log_cycle_detection("--- Cycle detection ---",
                                    children, parents, log)
-
     roots, orphans = _classify_roots(index, parents, bom_of, children)
     _log_roots_and_orphans(roots, orphans, used_on_of, names_of, log)
+    return used_on_bugs, used_mism, removed, roots, orphans
 
+
+def _full_place(children, roots, orphans, old, watermarked_dupes, index,
+                names_of, output, dry_run, log, rekeyed):
+    """Folder creation + orphan/superseded/duplicate copies."""
     log("--- Creating folder structure ---")
     folder_names = build_folder_names(children, roots, index, names_of, output, log)
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
@@ -891,9 +910,15 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
     log("")
+    return total_copies
 
+
+def _full_finalize(roots, children, index, orphans, removed, total_copies,
+                   warning_count, unmatched, chk_stems, used_on_of, used_mism,
+                   used_on_bugs, tb_mismatches, watermarks, names_of,
+                   bom_names, log) -> RunContext:
+    """Unplaced log + summary + structured RunContext for the workbook."""
     _log_unplaced(roots, children, index, orphans, log)
-
     _log_summary([
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",
@@ -902,7 +927,6 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
         f"  Cycles broken:       {len(removed)}",
         f"  PDF copies written:  {total_copies}",
     ], log)
-
     return {
         "counters": {
             "scanned": len(index),
@@ -924,16 +948,17 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False):
     }
 
 
-def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
-    """Incremental run: process only new top-level PDFs (plus stored orphans).
+def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+    """Full run: index all of `folder` and place the whole tree under `output`.
 
-    Returns the same structured run context as run_full: counters {scanned,
-    roots, copies, cycles, warnings}, missing [(referencing stem, missing ref)],
-    chk [stem], orphans [stem], roots [(stem, [used_on])],
-    used_on_mismatches [(parent, child, actual)],
-    used_on_bugs [(parent, child)], scanned [(stem, [pages])],
-    watermarks [(stem, evidence)], names {stem/ref: NAME}.
-    Raises NoPDFsFoundError when the input has no indexable PDFs.
+    Returns the structured run context consumed by the Excel workbook:
+    counters {scanned, roots, copies, cycles, warnings},
+    missing [(referencing stem, missing ref)], chk [stem], orphans [stem],
+    roots [(stem, [used_on])], used_on_mismatches [(parent, child, actual)],
+    used_on_bugs [(parent, child)],
+    titleblock_mismatches [(stem, field, filename value, title-block value)],
+    scanned [(stem, [pages])], watermarks [(stem, evidence)],
+    names {stem/ref: NAME}. Raises NoPDFsFoundError on an empty input.
     """
     # Count 'EXTRACTION WARNING' lines for the workbook context (the same
     # number the workbook previously recovered by parsing the log text).
@@ -947,66 +972,96 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
         base_log(msg)
 
     jobs = resolve_jobs(jobs)
-    top_level, top_duplicates = build_pdf_index(folder, log)
-    if not top_level:
+    index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
+    index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems = \
+        _full_scan_boms(index, jobs, log, rekey, chk_stems)
+
+    children, parents, unmatched = _full_build_edges(bom_of, index, bom_names, log)
+
+    # Unapproved CHK drawings: approved DWG should be downloaded from Teamcenter
+    if chk_stems:
+        _log_chk_block(chk_stems, log)
+
+    used_on_of, names_of = _full_scan_used_on(index, jobs, log)
+
+    used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
+        bom_of, index, children, parents, used_on_of, names_of, log)
+    total_copies = _full_place(children, roots, orphans, old,
+                               watermarked_dupes, index, names_of, output,
+                               dry_run, log, rekeyed)
+    return _full_finalize(roots, children, index, orphans, removed,
+                          total_copies, warning_count, unmatched, chk_stems,
+                          used_on_of, used_mism, used_on_bugs, tb_mismatches,
+                          watermarks, names_of, bom_names, log)
+
+
+def _incremental_prepare(folder, output, dry_run, log):
+    """Collect candidates, log counts, archive superseded among new PDFs."""
+    scan_index, top_duplicates = build_pdf_index(folder, log)
+    if not scan_index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
-
     organized, sup_dir, stored_orphans, new_index, chk_stems = \
-        _collect_incremental_candidates(top_level, output)
+        _collect_incremental_candidates(scan_index, output)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
     new_duplicates = {stem: paths for stem, paths in top_duplicates.items()
                       if stem in new_index}
     if old_new:
         log(f"Found {len(old_new)} superseded revision(s) among new PDFs")
-
-    log(f"PDFs at top level:              {len(top_level)}")
+    log(f"PDFs at top level:              {len(scan_index)}")
     log(f"Already organized (subfolders): {len(organized)}")
     log(f"New PDFs to process:            {len(new_index)}")
-
     _log_previous_report(output, log)
     log("")
-
     # Archive superseded copies even when there is nothing new to place.
     total_copies = copy_superseded(old_new, output, dry_run, log)
+    return (organized, sup_dir, stored_orphans, new_index, chk_stems,
+            supersede_pairs, new_duplicates, total_copies)
 
-    if not new_index:
-        log("No new PDFs at top level - nothing to do.")
-        log("")
-        # CHK arrivals are still reported even when there is nothing to place
-        if chk_stems:
-            _log_chk_block(chk_stems, log)
-        _log_summary([
-            "--- Summary ---",
-            "  New PDFs scanned:     0",
-            f"  Already organized:    {len(organized)}",
-            "  New graph roots:      0",
-            "  BOM edges kept:       0",
-            "  Cycles broken:        0",
-            f"  PDF copies written:   {total_copies}",
-            "  Root folders moved:   0",
-        ], log)
-        return {
-            "counters": {
-                "scanned": 0,
-                "roots": 0,
-                "copies": total_copies,
-                "cycles": 0,
-                "warnings": warning_count,
-            },
-            "missing": [],
-            "chk": chk_stems,
-            "orphans": _live_orphan_stems(output),
-            "roots": [],
-            "used_on_mismatches": [],
-            "used_on_bugs": [],
-            "titleblock_mismatches": [],
-            "scanned": OCR.scanned_stems(),
-            "watermarks": [],
-            "names": {},
-        }
 
+def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
+                            warning_count, log) -> RunContext:
+    """Early-exit context when there is nothing new to place."""
+    log("No new PDFs at top level - nothing to do.")
+    log("")
+    # CHK arrivals are still reported even when there is nothing to place
+    if chk_stems:
+        _log_chk_block(chk_stems, log)
+    _log_summary([
+        "--- Summary ---",
+        "  New PDFs scanned:     0",
+        f"  Already organized:    {len(organized)}",
+        "  New graph roots:      0",
+        "  BOM edges kept:       0",
+        "  Cycles broken:        0",
+        f"  PDF copies written:   {total_copies}",
+        "  Root folders moved:   0",
+    ], log)
+    return {
+        "counters": {
+            "scanned": 0,
+            "roots": 0,
+            "copies": total_copies,
+            "cycles": 0,
+            "warnings": warning_count,
+        },
+        "missing": [],
+        "chk": chk_stems,
+        "orphans": _live_orphan_stems(output),
+        "roots": [],
+        "used_on_mismatches": [],
+        "used_on_bugs": [],
+        "titleblock_mismatches": [],
+        "scanned": OCR.scanned_stems(),
+        "watermarks": [],
+        "names": {},
+    }
+
+
+def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
+                               organized, chk_stems):
+    """Dedup + BOM scan + re-key + watermark log + OCR snap for new PDFs."""
     new_stems = set(new_index)
     org_stems = set(organized)
     scanned_new = len(new_index)
@@ -1015,7 +1070,6 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
     # copy that will actually be placed.
     new_index, watermarked_dupes = _resolve_duplicates(
         new_index, new_duplicates, jobs, log)
-
     log("--- Scanning BOM tables (new PDFs) ---")
     new_boms, bom_names, new_watermarks, new_titleblocks = _scan_boms(
         sorted(new_index.items()), jobs, log, require_desc=False)
@@ -1033,15 +1087,16 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
     _log_watermarks(new_watermarks, log)
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(new_boms, all_stems, log)
-    # Archive the watermarked duplicates that lost the pre-scan resolution.
-    if watermarked_dupes:
-        total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
-                                                    dry_run, log)
+    return (new_index, watermarked_dupes, new_boms, bom_names,
+            new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
+            scanned_new, all_stems, chk_stems)
 
+
+def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
+    """Missing/FC logs for new BOMs + CHK block. Returns unmatched."""
     skipped_fc = sorted({v for vals in new_boms.values() for v in vals if v.startswith("FC")})
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
-
     unmatched = []
     for nstem, vals in sorted(new_boms.items()):
         for v in vals:
@@ -1053,12 +1108,16 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
         _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
                           unmatched, bom_names, log)
     log("")
-
     # Unapproved CHK drawings among the new PDFs: approved DWG should be
     # downloaded from Teamcenter (same base drawing number, no CHK suffix)
     if chk_stems:
         _log_chk_block(chk_stems, log)
+    return unmatched
 
+
+def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
+                                new_watermarks, new_titleblocks, unmatched, log):
+    """Organized scan + snaps + watermark/title-block merge."""
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
@@ -1078,11 +1137,22 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
     all_titleblocks = dict(org_titleblocks)
     all_titleblocks.update(new_titleblocks)
     tb_mismatches = _titleblock_mismatches(all_titleblocks, log)
+    return org_boms, org_used_on, watermarks, tb_mismatches
 
+
+def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
+    """USED ON + NAME scan for new PDFs + OCR snap."""
     new_used_on, new_names = _scan_used_on(sorted(new_index.items()), jobs,
                                            "--- Scanning USED ON fields (new PDFs) ---", log)
     _snap_used_on(new_used_on, all_stems, log)
+    return new_used_on, new_names
 
+
+def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
+                           new_boms, new_used_on, new_index, new_stems,
+                           org_stems, all_stems, sup_dir, output, dry_run,
+                           log, total_copies):
+    """In-place revision swaps + child moves. Returns (moved_dirs, moves, copies, stems)."""
     # Supersede in place. When a new revision supersedes an organized one, the
     # old revision's PDF(s) move to _superseded/ and the new revision's PDF takes their
     # place in the tree. The new stem is then treated as organized for this run.
@@ -1118,19 +1188,20 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
             total_moves = _move_children_under_superseding(swapped, organized, org_boms,
                                                            org_stems, output, dry_run,
                                                            moved_dirs, log)
+    return moved_dirs, total_moves, total_copies, all_stems
 
+
+def _incremental_graph(new_boms, org_boms, new_used_on, org_used_on,
+                       new_names, all_stems, new_stems, org_stems, log):
+    """Graph edges + USED ON cross-checks + cycles + relationship notes."""
     _, org_parents_of = _graph_edges(org_boms, new_stems)
-
     org_children_of, _ = _graph_edges(new_boms, org_stems)
-
     new_children, new_parents = _graph_edges(new_boms, new_stems)
-
     # BOM is the only source of truth for parent-child edges; USED ON is a
     # cross-check only. Report children whose USED ON names a parent the
     # parent's BOM does not list as USED ON bugs (never placement edges).
     used_on_bugs = _collect_used_on_bugs_incremental(
         new_boms, org_boms, new_used_on, org_used_on, all_stems, log)
-
     # USED ON consistency (BOM-derived edges only): parent BOM lists the part
     # but the part USED ON omits the parent.
     incr_bom_edges, _ = _graph_edges(new_boms, all_stems)
@@ -1142,14 +1213,19 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
     incr_mism = find_used_on_mismatches(incr_bom_edges, used_all)
     if incr_mism:
         _log_used_on_mismatches(incr_mism, new_names, log)
-
     removed = _log_cycle_detection("--- Cycle detection (new PDFs) ---",
                                    new_children, new_parents, log)
-
     _log_relationship_notes(new_stems, new_parents, org_parents_of, org_children_of, log)
+    return (new_children, new_parents, org_parents_of, org_children_of,
+            used_on_bugs, incr_mism, removed)
 
+
+def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
+                       new_children, new_index, new_names, new_boms,
+                       organized, moved_dirs, stored_orphans, output, dry_run,
+                       log, rekeyed, total_copies, total_moves):
+    """Placement decisions for new roots. Returns (new_roots, copies, moves)."""
     new_roots = sorted(s for s in new_stems if not new_parents.get(s))
-
     log("--- Placement decisions ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
     standalone_orphans = []
@@ -1188,14 +1264,21 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
         total_copies += copy_orphans(standalone_orphans, new_index, output, dry_run, log,
                                      renames=renames)
     log("")
+    return new_roots, total_copies, total_moves
 
+
+def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
+                          organized, new_roots, new_children, removed,
+                          total_copies, total_moves, warning_count, unmatched,
+                          chk_stems, new_used_on, incr_mism, used_on_bugs,
+                          tb_mismatches, watermarks, new_names,
+                          bom_names) -> RunContext:
+    """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
     # exists live in the tree (adopted into an earlier or this run's placement).
     if stored_orphans:
         retire_adopted_orphans(stored_orphans, output, dry_run, log)
-
     log("")
-
     _log_summary([
         "--- Summary ---",
         f"  New PDFs scanned:     {scanned_new}",
@@ -1206,7 +1289,6 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
         f"  PDF copies written:   {total_copies}",
         f"  Root folders moved:   {total_moves}",
     ], log)
-
     return {
         "counters": {
             "scanned": scanned_new,
@@ -1226,3 +1308,80 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False):
         "watermarks": sorted(watermarks.items()),
         "names": _ctx_names(new_names, unmatched, bom_names),
     }
+
+
+def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+    """Incremental run: process only stems not already in the output tree plus stored orphans.
+
+    The input scan is recursive; already-organized subfolders are never
+    re-sorted (supersede swaps and parent-adoption moves still touch them).
+
+    Returns the same structured run context as run_full: counters {scanned,
+    roots, copies, cycles, warnings}, missing [(referencing stem, missing ref)],
+    chk [stem], orphans [stem], roots [(stem, [used_on])],
+    used_on_mismatches [(parent, child, actual)],
+    used_on_bugs [(parent, child)],
+    titleblock_mismatches [(stem, field, filename value, title-block value)],
+    scanned [(stem, [pages])], watermarks [(stem, evidence)],
+    names {stem/ref: NAME}.
+    Raises NoPDFsFoundError when the input has no indexable PDFs.
+    """
+    # Count 'EXTRACTION WARNING' lines for the workbook context (the same
+    # number the workbook previously recovered by parsing the log text).
+    warning_count = 0
+    base_log = log
+
+    def log(msg):
+        nonlocal warning_count
+        if "EXTRACTION WARNING" in msg:
+            warning_count += 1
+        base_log(msg)
+
+    jobs = resolve_jobs(jobs)
+    organized, sup_dir, stored_orphans, new_index, chk_stems, \
+        supersede_pairs, new_duplicates, total_copies = \
+        _incremental_prepare(folder, output, dry_run, log)
+
+    if not new_index:
+        return _incremental_no_new_ctx(organized, chk_stems, output,
+                                       total_copies, warning_count, log)
+
+    new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
+        new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
+        all_stems, chk_stems = _incremental_scan_new_boms(
+            new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
+    # Archive the watermarked duplicates that lost the pre-scan resolution.
+    if watermarked_dupes:
+        total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
+                                                    dry_run, log)
+    unmatched = _incremental_new_missing(new_boms, all_stems, bom_names,
+                                         chk_stems, log)
+
+    org_boms, org_used_on, watermarks, tb_mismatches = \
+        _incremental_scan_organized(organized, all_stems, jobs, bom_names,
+                                    new_watermarks, new_titleblocks,
+                                    unmatched, log)
+    new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
+                                                           all_stems, log)
+
+    moved_dirs, total_moves, total_copies, all_stems = \
+        _incremental_supersede(supersede_pairs, organized, org_boms,
+                               org_used_on, new_boms, new_used_on, new_index,
+                               new_stems, org_stems, all_stems, sup_dir,
+                               output, dry_run, log, total_copies)
+    new_children, new_parents, org_parents_of, org_children_of, used_on_bugs, \
+        incr_mism, removed = _incremental_graph(
+            new_boms, org_boms, new_used_on, org_used_on, new_names,
+            all_stems, new_stems, org_stems, log)
+
+    new_roots, total_copies, total_moves = _incremental_place(
+        new_stems, new_parents, org_parents_of, org_children_of, new_children,
+        new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
+        output, dry_run, log, rekeyed, total_copies, total_moves)
+    return _incremental_finalize(stored_orphans, output, dry_run, log,
+                                 scanned_new, organized, new_roots,
+                                 new_children, removed, total_copies,
+                                 total_moves, warning_count, unmatched,
+                                 chk_stems, new_used_on, incr_mism,
+                                 used_on_bugs, tb_mismatches, watermarks,
+                                 new_names, bom_names)

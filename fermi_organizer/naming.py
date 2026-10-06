@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Folder naming and path-length policy."""
+import os
 import re
 
 from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES
@@ -28,9 +29,18 @@ def folder_name_for(stem, names_of):
 def _collect_placements(children, roots):
     """Root-to-leaf component tuples, pre-order; roots and children sorted."""
     placements = []
+    seen = set()
+    visited = set()
 
     def walk(stem, comps):
-        placements.append(tuple(comps))
+        key = tuple(comps)
+        if key in seen:
+            return
+        seen.add(key)
+        placements.append(key)
+        if stem in visited:
+            return
+        visited.add(stem)
         for child in sorted(children.get(stem, ())):
             walk(child, comps + (child,))
 
@@ -42,17 +52,21 @@ def _collect_placements(children, roots):
 def _placement_len(comps, base_folder, index, get_name):
     p = str(base_folder)
     for c in comps:
-        p += "\\" + get_name(c)
-    p += "\\" + index[comps[-1]].name
+        p += os.sep + get_name(c)
+    p += os.sep + index[comps[-1]].name
     return len(p)
 
 
 def _shorten_names(placements, names, get_name, total_len):
     """Trim folder names in place until every path fits MAX_PATH or no progress."""
+    cache = {}
     for _ in range(NAME_SHORTEN_MAX_PASSES):
         over = None
         for comps in placements:
-            tl = total_len(comps)
+            tl = cache.get(comps)
+            if tl is None:
+                tl = total_len(comps)
+                cache[comps] = tl
             if tl > MAX_PATH:
                 over = (comps, tl)
                 break
@@ -61,6 +75,7 @@ def _shorten_names(placements, names, get_name, total_len):
         comps, tl = over
         excess = tl - MAX_PATH
         changed = False
+        renamed = set()
         for c in reversed(comps):
             cur = get_name(c)
             floor = len(c.split("_")[0])  # base part number, e.g. F10126106
@@ -71,10 +86,15 @@ def _shorten_names(placements, names, get_name, total_len):
                     new_name = cur[:floor]
                 if new_name != cur:
                     names[c] = new_name
+                    renamed.add(c)
                     excess -= len(cur) - len(new_name)
                     changed = True
                     if excess <= 0:
                         break
+        if renamed:
+            for key in list(cache):
+                if any(c in renamed for c in key):
+                    cache.pop(key, None)
         if not changed:
             break
 
@@ -86,7 +106,7 @@ def _log_name_shortening(placements, names, get_name, index, names_of, total_len
         log(f"  WARNING: {len(still_over)} placement(s) still exceed {MAX_PATH} chars "
             f"after shortening (will be skipped):")
         for comps in still_over[:5]:
-            path_disp = "\\".join(get_name(c) for c in comps) + "\\" + index[comps[-1]].name
+            path_disp = os.sep.join(get_name(c) for c in comps) + os.sep + index[comps[-1]].name
             log(f"    {path_disp}")
         if len(still_over) > 5:
             log(f"    ... and {len(still_over) - 5} more")

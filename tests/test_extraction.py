@@ -5,6 +5,7 @@ from pathlib import Path
 import pymupdf as fitz
 
 from fermi_organizer import extraction
+from fermi_organizer.config import is_fermi_value
 
 
 def test_single_line_bom_detection(tmp_path, make_pdf):
@@ -98,11 +99,11 @@ def test_merge_bom_entries_dedupes_by_value_first_wins():
 def test_normalize_and_is_fermi_value():
     assert extraction.normalize(" f 101 261 07 ") == "F10126107"
     assert extraction.normalize(None) == ""
-    assert extraction.is_fermi_value("F10126107")
-    assert not extraction.is_fermi_value("FC10126107")
-    assert not extraction.is_fermi_value("f10126107")
-    assert not extraction.is_fermi_value("")
-    assert not extraction.is_fermi_value(None)
+    assert is_fermi_value("F10126107")
+    assert not is_fermi_value("FC10126107")
+    assert not is_fermi_value("f10126107")
+    assert not is_fermi_value("")
+    assert not is_fermi_value(None)
 
 
 def test_extract_used_on_and_drawing_name(tmp_path, make_pdf):

@@ -18,6 +18,21 @@ PRODUCTION_MODULES = sorted(
 # Only true re-exports would belong here (module -> allowlisted binding names).
 ALLOWLIST = {}
 
+# NODOC gate (T-026): public top-level functions without docstrings in
+# fermi_organizer/*.py. Production code is frozen, so the 9 currently
+# undocumented helpers stay allowlisted; the gate fails on any NEW one.
+NODOC_ALLOWLIST = {
+    "cli.py:build_parser",
+    "cli.py:run_mode_label",
+    "config.py:is_fermi_value",
+    "extraction.py:bom_task",
+    "extraction.py:org_task",
+    "extraction.py:title_task",
+    "extraction.py:normalize",
+    "fsops.py:find_latest_report",
+    "fsops.py:pick_shallowest",
+}
+
 
 def _imported_bindings(tree):
     for node in ast.walk(tree):
@@ -46,3 +61,25 @@ def test_no_dead_imports(path):
             for name, lineno in _imported_bindings(tree)
             if name not in referenced and name not in allowed]
     assert not dead, "dead imports found: " + "; ".join(dead)
+
+
+def _undocumented_public_functions(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    out = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("_"):
+                continue
+            if ast.get_docstring(node) is None:
+                out.append(f"{path.name}:{node.name}")
+    return out
+
+
+def test_no_undocumented_public_functions():
+    new_undoc = []
+    for path in sorted((ROOT / "fermi_organizer").glob("*.py")):
+        for item in _undocumented_public_functions(path):
+            if item not in NODOC_ALLOWLIST:
+                new_undoc.append(item)
+    assert not new_undoc, \
+        "undocumented public functions found: " + "; ".join(new_undoc)

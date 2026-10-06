@@ -67,6 +67,8 @@ tests/                   — pytest suite (PDFs generated at test time)
 - Recreate the venv if missing: `uv venv --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.txt pytest -e .` (`-e .` restores the editable install; tests alone work without it because `conftest.py` shims the repo root onto `sys.path`).
 - For end-to-end checks, run `--dry-run` against a real drawing folder and inspect the log output + `.xlsx`.
 
+Line-length is an informal norm only: code stays ~≤100 cols (`fermi_report_xlsx.py` has legacy long lines); no formatter is enforced.
+
 ## Stale docs
 
 - `codebase-health-report.md` is a superseded one-time review snapshot (banner at top). Its findings were largely fixed by the 2026-09-30 review response; verify against code before acting on it.
