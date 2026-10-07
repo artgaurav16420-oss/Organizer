@@ -41,10 +41,11 @@ def test_load_history_missing_sidecar_returns_empty_quietly(tmp_path, capsys):
     assert "run history not loaded" not in capsys.readouterr().out
 
 
-def test_load_history_non_list_json_preserves_corrupt_copy(tmp_path):
+@pytest.mark.parametrize("payload", ["{}", "123", '"string_data"', "true", "45.67"])
+def test_load_history_non_list_json_preserves_corrupt_copy(tmp_path, payload):
     xlsx = tmp_path / "organize_fermi_report.xlsx"
     sidecar = Path(str(xlsx) + ".history.json")
-    sidecar.write_text("{}", encoding="utf-8")
+    sidecar.write_text(payload, encoding="utf-8")
     logged = []
 
     assert fx._load_history(xlsx, logged.append) == []
