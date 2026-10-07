@@ -5,7 +5,8 @@ import pymupdf as fitz
 import pytest
 
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
-                                      _swap_revision_files, _log_summary)
+                                      _swap_revision_files, _log_summary,
+                                      _log_unplaced)
 
 
 def _write_parent(make_pdf, folder, name="Test Parent"):
@@ -748,3 +749,53 @@ def test_log_summary():
     mixed_logged = []
     _log_summary(["Header", 123, ("Tuple", 1)], mixed_logged.append)
     assert mixed_logged == ["Header", 123, ("Tuple", 1)]
+
+
+def test_log_unplaced_none_unplaced():
+    logged = []
+    roots = ["F10126106"]
+    children = {"F10126106": {"F10126107"}}
+    index = {"F10126106": "p1.pdf", "F10126107": "p2.pdf", "F10126108": "p3.pdf"}
+    orphans = ["F10126108"]
+
+    _log_unplaced(roots, children, index, orphans, logged.append)
+    assert logged == []
+
+
+def test_log_unplaced_with_unplaced_items():
+    logged = []
+    roots = ["F10126106"]
+    children = {"F10126106": {"F10126107"}}
+    index = {
+        "F10126106": "p1.pdf",
+        "F10126107": "p2.pdf",
+        "F10126108": "p3.pdf",
+        "F10126109": "p4.pdf",
+        "F10126110": "p5.pdf",
+    }
+    orphans = ["F10126108"]
+
+    _log_unplaced(roots, children, index, orphans, logged.append)
+
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (2) ---" in text
+    assert "  F10126109" in text
+    assert "  F10126110" in text
+
+
+def test_log_unplaced_handles_multiple_unplaced_sorted():
+    logged = []
+    roots = []
+    children = {}
+    index = {"F10126110": "a.pdf", "F10126108": "b.pdf", "F10126109": "c.pdf"}
+    orphans = []
+
+    _log_unplaced(roots, children, index, orphans, logged.append)
+
+    assert logged == [
+        "--- Unplaced PDFs (3) ---",
+        "  F10126108",
+        "  F10126109",
+        "  F10126110",
+        "",
+    ]
