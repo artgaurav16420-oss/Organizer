@@ -20,8 +20,8 @@ def names_from_tree(output):
     if not o.is_dir():
         return names
     # root folders first (most authoritative), then nested folders
-    for d in sorted(o.rglob("*")):
-        if not d.is_dir() or is_system_dir(d.name) or " " not in d.name:
+    for d in sorted(o.rglob("*/")):
+        if is_system_dir(d.name) or " " not in d.name:
             continue
         rel = d.relative_to(o)
         if is_system_dir(rel.parts[0]):
