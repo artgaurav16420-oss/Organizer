@@ -50,11 +50,11 @@ def _collect_placements(children, roots):
 
 
 def _placement_len(comps, base_folder, index, get_name):
-    p = str(base_folder)
+    parts = [str(base_folder)]
     for c in comps:
-        p += os.sep + get_name(c)
-    p += os.sep + index[comps[-1]].name
-    return len(p)
+        parts.append(get_name(c))
+    parts.append(index[comps[-1]].name)
+    return len(os.sep.join(parts))
 
 
 def _shorten_names(placements, names, get_name, total_len):
