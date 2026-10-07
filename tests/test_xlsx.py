@@ -204,3 +204,71 @@ def test_build_workbook_lists_used_on_bugs(tmp_path):
     assert "USED ON BUGS (1)" in col_a
     assert "F10126108" in col_a
     assert "F10126107" in col_c
+
+
+def test_resolve_names_exact_match_and_fallback():
+    live = {
+        "tree": [Path("F10126106_REV_A.pdf"), Path("F10126107.pdf")],
+        "orph": [Path("F10126108_B.pdf")],
+    }
+    names_raw = {
+        "F10126106": "Base Bracket",
+        "F10126107": "Direct Name",
+        "F10126108_B": "Specific Orphan Rev",
+        "F10126109": "Standalone Extra",
+    }
+
+    resolved = fx._resolve_names(names_raw, live)
+
+    assert resolved == {
+        "F10126106_REV_A": "Base Bracket",
+        "F10126106": "Base Bracket",
+        "F10126107": "Direct Name",
+        "F10126108_B": "Specific Orphan Rev",
+        "F10126109": "Standalone Extra",
+    }
+
+
+def test_resolve_names_exact_match_takes_precedence():
+    live = {
+        "tree": [Path("F10126106_REV_A.pdf")],
+        "orph": [],
+    }
+    names_raw = {
+        "F10126106": "Base Bracket",
+        "F10126106_REV_A": "Specific Rev Bracket",
+    }
+
+    resolved = fx._resolve_names(names_raw, live)
+
+    assert resolved["F10126106_REV_A"] == "Specific Rev Bracket"
+    assert resolved["F10126106"] == "Base Bracket"
+
+
+def test_resolve_names_falsy_value_triggers_fallback():
+    live = {
+        "tree": [Path("F10126106_REV_A.pdf")],
+        "orph": [],
+    }
+    names_raw = {
+        "F10126106_REV_A": "",
+        "F10126106": "Base Bracket",
+    }
+
+    resolved = fx._resolve_names(names_raw, live)
+
+    assert resolved["F10126106_REV_A"] == "Base Bracket"
+
+
+def test_resolve_names_unresolved_and_empty_inputs():
+    live = {
+        "tree": [Path("F10126106.pdf"), Path("invalid_file.txt")],
+        "orph": [],
+    }
+    names_raw = {}
+
+    resolved = fx._resolve_names(names_raw, live)
+    assert resolved == {}
+
+    empty_resolved = fx._resolve_names({}, {"tree": [], "orph": []})
+    assert empty_resolved == {}
