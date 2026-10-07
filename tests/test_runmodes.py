@@ -5,7 +5,7 @@ import pymupdf as fitz
 import pytest
 
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
-                                      _swap_revision_files)
+                                      _swap_revision_files, _log_summary)
 
 
 def _write_parent(make_pdf, folder, name="Test Parent"):
@@ -724,3 +724,27 @@ def test_run_full_rekey_titleblock_places_under_real_number(tmp_path, make_pdf):
     assert not any("F10126106" in p.name for p in out.rglob("*.pdf"))
     # The number/revision disagreements are resolved by the re-key.
     assert not any(m[0] == "F10126106_A_DWG1" for m in ctx["titleblock_mismatches"])
+
+
+def test_log_summary():
+    logged = []
+    rows = [
+        "--- Summary ---",
+        "  PDFs scanned:        5",
+        "  Root assemblies:     1",
+        "  PDF copies written:  5",
+    ]
+    _log_summary(rows, logged.append)
+    assert logged == rows
+
+    empty_logged = []
+    _log_summary([], empty_logged.append)
+    assert empty_logged == []
+
+    gen_logged = []
+    _log_summary((r for r in ["row1", "row2"]), gen_logged.append)
+    assert gen_logged == ["row1", "row2"]
+
+    mixed_logged = []
+    _log_summary(["Header", 123, ("Tuple", 1)], mixed_logged.append)
+    assert mixed_logged == ["Header", 123, ("Tuple", 1)]
