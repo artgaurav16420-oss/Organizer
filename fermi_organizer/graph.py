@@ -64,14 +64,21 @@ def find_used_on_mismatches(bom_edges, used_on_of):
     Compares by base drawing number, so revisions never cause false flags.
     Returns [(parent, child, sorted_child_used)] sorted.
     """
+    child_info = {}
+    for children in bom_edges.values():
+        for child in children:
+            if child not in child_info:
+                actual = sorted(set(used_on_of.get(child, []) or ()))
+                child_info[child] = (actual, used_on_bases(actual))
+
     out = []
     for parent in sorted(bom_edges):
         pbase = parent.split("_")[0]
         for child in sorted(bom_edges[parent]):
             if child == parent:
                 continue
-            actual = sorted(set(used_on_of.get(child, []) or ()))
-            if pbase not in used_on_bases(actual):
+            actual, cbases = child_info[child]
+            if pbase not in cbases:
                 out.append((parent, child, actual))
     return out
 
