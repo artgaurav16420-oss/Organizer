@@ -11,10 +11,25 @@ from fermi_organizer.fsops import (build_pdf_index, copy_superseded,
 
 
 def test_is_system_dir_convention():
+    # System directories start with '_'
     assert is_system_dir("_superseded")
     assert is_system_dir("_orphans")
     assert is_system_dir("_anything")
+    assert is_system_dir("_")
+    assert is_system_dir("__double_underscore")
+
+    # Regular directories
     assert not is_system_dir("F10126106 Assembly")
+    assert not is_system_dir("Output")
+    assert not is_system_dir("output")
+    assert not is_system_dir("subfolder")
+
+    # Underscore not at start
+    assert not is_system_dir("F10126106_Assembly")
+    assert not is_system_dir("a_b_c")
+
+    # Edge cases
+    assert not is_system_dir("")
 
 
 def test_scan_output_tree_categorizes_by_system_dir(tmp_path):
