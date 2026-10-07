@@ -3,7 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from fermi_organizer.config import MAX_PATH
-from fermi_organizer.graph import (is_chk_stem, revision_letter_rank,
+from fermi_organizer.graph import (_edit1, is_chk_stem, revision_letter_rank,
                                    revision_rank, split_superseded,
                                    match_pdfs, used_on_bases,
                                    find_used_on_mismatches, find_used_on_bugs,
@@ -11,6 +11,56 @@ from fermi_organizer.graph import (is_chk_stem, revision_letter_rank,
                                    snap_ref)
 from fermi_organizer.naming import (sanitize_folder_name,
                                     folder_name_for, build_folder_names)
+
+
+def test_edit1():
+    # Identical strings: 0 edits -> False
+    assert not _edit1("F10126106", "F10126106")
+    assert not _edit1("", "")
+
+    # Length difference > 1 -> False
+    assert not _edit1("F10126106", "F101261")
+    assert not _edit1("F101261", "F10126106")
+
+    # Equal length: exactly 1 substitution -> True
+    assert _edit1("F10126106", "F10126107")
+    assert _edit1("cat", "bat")
+    assert _edit1("cat", "cot")
+    assert _edit1("cat", "car")
+
+    # Equal length: > 1 substitutions -> False
+    assert not _edit1("cat", "dog")
+    assert not _edit1("F10126106", "F10126177")
+
+    # Length diff 1: exactly 1 insertion / deletion -> True
+    # Start
+    assert _edit1("cat", "scat")
+    assert _edit1("scat", "cat")
+    # Middle
+    assert _edit1("cat", "cart")
+    assert _edit1("cart", "cat")
+    # End
+    assert _edit1("cat", "cats")
+    assert _edit1("cats", "cat")
+    # Empty vs single char
+    assert _edit1("", "a")
+    assert _edit1("a", "")
+
+    # Length diff 1: multiple character mismatches -> False
+    assert not _edit1("abc", "ax")
+    assert not _edit1("ax", "abc")
+
+    # Symmetry check
+    pairs = [
+        ("abc", "abc"),
+        ("abc", "a"),
+        ("cat", "bat"),
+        ("cat", "dog"),
+        ("cat", "scat"),
+        ("abc", "ax"),
+    ]
+    for x, y in pairs:
+        assert _edit1(x, y) == _edit1(y, x)
 
 
 def test_is_chk_stem():
