@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fermi_organizer import fsops
 from fermi_organizer.config import canonical_stem
-from fermi_organizer.fsops import (build_pdf_index, copy_superseded,
+from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_superseded,
                                    copy_watermarked_duplicates,
                                    find_organized_pdfs, is_system_dir,
                                    place_files, retire_adopted_orphans,
@@ -276,6 +276,35 @@ def test_copy_watermarked_duplicates_symlink_refused(tmp_path):
     assert n == 0
     assert not (out / "_superseded" / "F10126107.pdf").exists()
     assert "WARNING: F10126107.pdf: copy skipped (symlink refused)" in "\n".join(logged)
+
+
+def test_copy_orphans_failure_warns_and_continues(tmp_path, monkeypatch):
+    src = tmp_path / "in"
+    src.mkdir()
+    bad_pdf = src / "F10126106.pdf"
+    good_pdf = src / "F10126107.pdf"
+    bad_pdf.write_text("v1")
+    good_pdf.write_text("v2")
+    out = tmp_path / "out"
+    out.mkdir()
+    real_copy2 = fsops.shutil.copy2
+
+    def fake_copy2(s, d):
+        if Path(s).name == "F10126106.pdf":
+            raise OSError("permission denied")
+        return real_copy2(s, d)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    logged = []
+    index = {"F10126106": bad_pdf, "F10126107": good_pdf}
+    n = copy_orphans(["F10126106", "F10126107"], index, out, False, logged.append)
+
+    assert n == 1
+    assert (out / "_orphans" / "F10126107.pdf").is_file()
+    assert not (out / "_orphans" / "F10126106.pdf").exists()
+    text = "\n".join(logged)
+    assert "WARNING: F10126106: copy failed" in text
+    assert "Stored 1 orphan(s) in _orphans/" in text
 
 
 def test_canonical_stem_real_world_names():
