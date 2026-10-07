@@ -233,12 +233,11 @@ def scan_output_tree(output):
     if output.is_dir():
         for p in output.rglob("*.pdf"):
             top = p.relative_to(output).parts[0]
-            if top.startswith("_superseded"):
-                sup.append(p)
-            elif top.startswith("_orphans"):
-                orph.append(p)
-            elif is_system_dir(top):
-                continue
+            if is_system_dir(top):
+                if top.startswith("_superseded"):
+                    sup.append(p)
+                elif top.startswith("_orphans"):
+                    orph.append(p)
             else:
                 tree.append(p)
     return {"tree": tree, "sup": sup, "orph": orph}
