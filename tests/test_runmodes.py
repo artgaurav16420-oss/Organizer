@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _swap_revision_files, _log_summary,
-                                      _log_unplaced)
+                                      _log_unplaced, _titleblock_mismatches)
 
 
 def _write_parent(make_pdf, folder, name="Test Parent"):
@@ -834,3 +834,183 @@ def test_place_above_organized_children_mkdir_oserror(tmp_path, make_pdf):
     text = "\n".join(logged)
     assert "WARNING: F10126109: mkdir failed" in text
     assert "skipping child moves" in text
+
+
+def test_titleblock_mismatches_pure_rules():
+    logged = []
+
+    # 1. Empty titleblocks dict -> returns empty list, logs nothing
+    res = _titleblock_mismatches({}, logged.append)
+    assert res == []
+    assert logged == []
+
+    # 2. Perfect match -> returns empty list, logs nothing
+    tb_match = {
+        "F10126106_A_BRACKET": (
+            "F10126106_A BRACKET ASSEMBLY",
+            "F10126106",
+            "A",
+            "BRACKET ASSEMBLY",
+            False,
+        )
+    }
+    res = _titleblock_mismatches(tb_match, logged.append)
+    assert res == []
+    assert logged == []
+
+    # 3. Number mismatch only
+    tb_num = {
+        "F10126106_A": (
+            "F10126106_A",
+            "F10126107",
+            "A",
+            "SOME PART",
+            False,
+        )
+    }
+    res = _titleblock_mismatches(tb_num, logged.append)
+    assert res == [("F10126106_A", "number", "F10126106", "F10126107")]
+    assert any("Title block check (1 mismatch(es))" in line for line in logged)
+    assert any("F10126106_A: number: filename 'F10126106', title block 'F10126107'" in line for line in logged)
+
+    # 4. Revision mismatches:
+    # 4a. Filename revision 'A', title block revision 'B'
+    tb_rev1 = {
+        "F10126106_A": (
+            "F10126106_A",
+            "F10126106",
+            "B",
+            None,
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_rev1, logged.append)
+    assert res == [("F10126106_A", "revision", "A", "B")]
+
+    # 4b. Filename no revision, title block revision 'A'
+    tb_rev2 = {
+        "F10126106": (
+            "F10126106",
+            "F10126106",
+            "A",
+            None,
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_rev2, logged.append)
+    assert res == [("F10126106", "revision", "-", "A")]
+
+    # 4c. Filename revision 'A', title block revision '-'
+    tb_rev3 = {
+        "F10126106_A": (
+            "F10126106_A",
+            "F10126106",
+            "-",
+            None,
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_rev3, logged.append)
+    assert res == [("F10126106_A", "revision", "A", "-")]
+
+    # 4d. Title block revision is None -> no revision mismatch
+    tb_rev4 = {
+        "F10126106_A": (
+            "F10126106_A",
+            "F10126106",
+            None,
+            None,
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_rev4, logged.append)
+    assert res == []
+
+    # 4e. Both dash / empty revision -> no mismatch
+    tb_rev5 = {
+        "F10126106": (
+            "F10126106",
+            "F10126106",
+            "-",
+            None,
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_rev5, logged.append)
+    assert res == []
+
+    # 5. Name mismatch (no overlapping tokens) vs match (overlapping tokens)
+    # 5a. Disjoint name tokens
+    tb_name1 = {
+        "F10126108": (
+            "F10126108 KIT, SOMETHING ELSE",
+            "F10126108",
+            "-",
+            "COMPLETELY DIFFERENT",
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_name1, logged.append)
+    assert res == [("F10126108", "name", "KIT, SOMETHING ELSE", "COMPLETELY DIFFERENT")]
+
+    # 5b. Overlapping name tokens
+    tb_name2 = {
+        "F10126108": (
+            "F10126108 BRACKET ASSEMBLY",
+            "F10126108",
+            "-",
+            "ASSEMBLY FRAME",
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_name2, logged.append)
+    assert res == []
+
+    # 5c. Filename title tail empty -> no name mismatch
+    tb_name3 = {
+        "F10126108": (
+            "F10126108",
+            "F10126108",
+            "-",
+            "SOME TITLE",
+            False,
+        )
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_name3, logged.append)
+    assert res == []
+
+    # 6. Sorting order with multiple stems and multiple mismatch types
+    tb_multi = {
+        "F10126108": (
+            "F10126108 WRONG NAME",
+            "F10126108",
+            "-",
+            "OTHER TITLE",
+            False,
+        ),
+        "F10126106_A": (
+            "F10126106_A",
+            "F10126107",
+            "B",
+            None,
+            False,
+        ),
+    }
+    logged.clear()
+    res = _titleblock_mismatches(tb_multi, logged.append)
+    expected = [
+        ("F10126106_A", "number", "F10126106", "F10126107"),
+        ("F10126106_A", "revision", "A", "B"),
+        ("F10126108", "name", "WRONG NAME", "OTHER TITLE"),
+    ]
+    assert res == expected
+    text = "\n".join(logged)
+    assert "Title block check (3 mismatch(es))" in text
