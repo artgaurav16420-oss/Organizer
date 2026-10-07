@@ -159,12 +159,14 @@ def _titleblock_mismatches(titleblocks, log):
     return out
 
 
-def _snap_values(stem, vals, stems, log):
+def _snap_values(stem, vals, stems, log, bases=None):
     """Correct OCR near-miss refs to a unique known stem (in place per value)."""
     out = []
+    if bases is None:
+        bases = {s.split("_")[0] for s in stems}
     for v in vals:
         if is_processable_ref(v) and not match_pdfs(v, stems):
-            s = snap_ref(v, stems)
+            s = snap_ref(v, stems, bases=bases)
             if s:
                 log(f"  {stem}: OCR ref {v} corrected to {s}")
                 v = s
@@ -174,14 +176,16 @@ def _snap_values(stem, vals, stems, log):
 
 def _snap_boms(bom_of, stems, log):
     """Snap OCR near-misses in BOM values before edge/missing computation."""
+    bases = {s.split("_")[0] for s in stems}
     for stem in sorted(bom_of):
-        bom_of[stem] = _snap_values(stem, bom_of[stem], stems, log)
+        bom_of[stem] = _snap_values(stem, bom_of[stem], stems, log, bases=bases)
 
 
 def _snap_used_on(used_on_of, stems, log):
     """Snap OCR near-misses in USED ON values (keeps cross-checks aligned)."""
+    bases = {s.split("_")[0] for s in stems}
     for stem in sorted(used_on_of):
-        used_on_of[stem] = _snap_values(stem, used_on_of[stem], stems, log)
+        used_on_of[stem] = _snap_values(stem, used_on_of[stem], stems, log, bases=bases)
 
 
 def _rekey_misnamed(index, bom_of, watermarks, titleblocks, stems, log):
