@@ -4,6 +4,9 @@ import re
 import pymupdf as fitz
 import pytest
 
+from pathlib import Path
+from unittest.mock import patch
+
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _swap_revision_files, _log_summary,
                                       _log_unplaced)
@@ -799,3 +802,35 @@ def test_log_unplaced_handles_multiple_unplaced_sorted():
         "  F10126110",
         "",
     ]
+
+def test_place_above_organized_children_mkdir_oserror(tmp_path, make_pdf):
+    # Test uncaught OSError handling when creating target_folder in _place_above_organized_children.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+
+    # Add a new higher-level assembly referencing the organized child F10126107.
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST",
+        "F10126107 CHILD PART",
+        "NAME",
+        "Higher assembly",
+    ])
+
+    logged = []
+    original_mkdir = Path.mkdir
+
+    def mock_mkdir(self, *args, **kwargs):
+        if "F10126109" in str(self):
+            raise OSError("Mocked permission error")
+        return original_mkdir(self, *args, **kwargs)
+
+    with patch.object(Path, "mkdir", autospec=True, side_effect=mock_mkdir):
+        run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    assert "WARNING: F10126109: mkdir failed" in text
+    assert "skipping child moves" in text
