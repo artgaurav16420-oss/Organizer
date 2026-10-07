@@ -313,3 +313,38 @@ def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
                         {"F10126106": pdf}, folder, True, logged.append)
 
     assert total >= 1
+
+
+def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    orph1 = orphans_dir / "F10126107.pdf"
+    orph2 = orphans_dir / "F10126108.pdf"
+    orph1.write_bytes(b"orph1")
+    orph2.write_bytes(b"orph2")
+
+    real_unlink = Path.unlink
+
+    def fake_unlink(self, *args, **kwargs):
+        if "F10126107" in self.name:
+            raise OSError("Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    logged = []
+
+    retired = retire_adopted_orphans(
+        {"F10126107": orph1, "F10126108": orph2},
+        out,
+        dry_run=False,
+        log=logged.append,
+        superseded={"F10126107", "F10126108"},
+    )
+
+    assert retired == 1
+    assert orph1.is_file()
+    assert not orph2.exists()
+    log_text = "\n".join(logged)
+    assert "WARNING: could not retire orphan copy F10126107: Permission denied" in log_text
+    assert "Retired 1 orphan copy(ies) from _orphans/ (adopted into tree)" in log_text
