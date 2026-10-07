@@ -188,7 +188,9 @@ def test_move_children_under_superseding_oserror(tmp_path):
     assert moved_dirs == {child_folder2: s_folder / "F10126108 Child2"}
     text = "\n".join(logged)
     assert "WARNING: move failed for F10126107: Permission denied" in text
-    assert "moved: F10126108 Child2 -> F10126106 Parent/F10126108 Child2" in text
+    expected_move = (f"moved: {Path('F10126108 Child2')} -> "
+                     f"{Path('F10126106 Parent') / 'F10126108 Child2'}")
+    assert expected_move in text
 
 
 def test_copy_orphans_then_retire_adopted(tmp_path):
