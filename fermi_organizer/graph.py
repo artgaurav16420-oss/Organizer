@@ -39,10 +39,17 @@ def split_superseded(index):
     latest = {}
     for s in index:
         b = s.split("_")[0]
-        if b not in latest or revision_rank(s) > revision_rank(latest[b]):
-            latest[b] = s
-    active = {s: p for s, p in index.items() if latest[s.split("_")[0]] == s}
-    old = {s: p for s, p in index.items() if s not in active}
+        r = revision_rank(s)
+        if b not in latest or r > latest[b][0]:
+            latest[b] = (r, s)
+    active_stems = {s for _, s in latest.values()}
+    active = {}
+    old = {}
+    for s, p in index.items():
+        if s in active_stems:
+            active[s] = p
+        else:
+            old[s] = p
     return active, old
 
 
