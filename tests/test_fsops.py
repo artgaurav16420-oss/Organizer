@@ -5,6 +5,7 @@ from pathlib import Path
 from fermi_organizer import fsops
 from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (build_pdf_index, copy_superseded,
+                                   copy_watermarked_duplicates,
                                    find_organized_pdfs, is_system_dir,
                                    place_files, retire_adopted_orphans,
                                    scan_output_tree)
@@ -204,6 +205,77 @@ def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     assert (out / "_superseded" / "F10126107.pdf").is_file()
     assert not (out / "_superseded" / "F10126106.pdf").exists()
     assert "WARNING: F10126106: copy failed" in "\n".join(logged)
+
+
+def test_copy_watermarked_duplicates_success_and_dry_run(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    pdf1 = src / "F10126106.pdf"
+    pdf2 = src / "F10126107.pdf"
+    pdf1.write_text("v1")
+    pdf2.write_text("v2")
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+
+    n_dry = copy_watermarked_duplicates([pdf1, pdf2], out, dry_run=True, log=logged.append)
+    assert n_dry == 2
+    assert not (out / "_superseded" / "F10126106.pdf").exists()
+    assert "[DRY-RUN] mkdir+copy F10126106.pdf" in "\n".join(logged)
+
+    logged.clear()
+    n_real = copy_watermarked_duplicates([pdf1, pdf2], out, dry_run=False, log=logged.append)
+    assert n_real == 2
+    assert (out / "_superseded" / "F10126106.pdf").read_text() == "v1"
+    assert (out / "_superseded" / "F10126107.pdf").read_text() == "v2"
+
+
+def test_copy_watermarked_duplicates_failure_warns_and_continues(tmp_path, monkeypatch):
+    src = tmp_path / "in"
+    src.mkdir()
+    bad_pdf = src / "F10126106.pdf"
+    good_pdf = src / "F10126107.pdf"
+    bad_pdf.write_text("v1")
+    good_pdf.write_text("v2")
+    out = tmp_path / "out"
+    out.mkdir()
+    real_copy2 = fsops.shutil.copy2
+
+    def fake_copy2(s, d):
+        if Path(s).name == "F10126106.pdf":
+            raise OSError("permission denied")
+        return real_copy2(s, d)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    logged = []
+
+    n = copy_watermarked_duplicates([bad_pdf, good_pdf], out, dry_run=False, log=logged.append)
+
+    assert n == 1
+    assert (out / "_superseded" / "F10126107.pdf").is_file()
+    assert not (out / "_superseded" / "F10126106.pdf").exists()
+    assert "WARNING: F10126106.pdf: copy failed" in "\n".join(logged)
+
+
+def test_copy_watermarked_duplicates_symlink_refused(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    real_pdf = src / "F10126106.pdf"
+    real_pdf.write_text("v1")
+    link_pdf = src / "F10126107.pdf"
+    try:
+        link_pdf.symlink_to(real_pdf)
+    except (OSError, NotImplementedError):
+        return
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+
+    n = copy_watermarked_duplicates([link_pdf], out, dry_run=False, log=logged.append)
+
+    assert n == 0
+    assert not (out / "_superseded" / "F10126107.pdf").exists()
+    assert "WARNING: F10126107.pdf: copy skipped (symlink refused)" in "\n".join(logged)
 
 
 def test_canonical_stem_real_world_names():
