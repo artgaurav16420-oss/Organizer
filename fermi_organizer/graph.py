@@ -8,8 +8,8 @@ from .config import TREE_MAX_DEPTH, is_processable_ref
 
 def is_chk_stem(stem):
     """True if the stem beyond the base drawing number marks an unapproved CHK drawing."""
-    base = stem.split("_")[0]
-    return "CHK" in stem[len(base):].upper()
+    _, _, suffix = stem.partition("_")
+    return "CHK" in suffix.upper()
 
 
 def revision_letter_rank(stem):
