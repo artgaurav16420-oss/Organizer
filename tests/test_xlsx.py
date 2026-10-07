@@ -21,6 +21,21 @@ def test_load_history_corrupt_json_preserves_corrupt_copy(tmp_path, capsys):
     assert "run history not loaded" in capsys.readouterr().out
 
 
+def test_load_history_copy_oserror_handled_gracefully(tmp_path, monkeypatch, capsys):
+    xlsx = tmp_path / "organize_fermi_report.xlsx"
+    sidecar = Path(str(xlsx) + ".history.json")
+    sidecar.write_text("{not valid json", encoding="utf-8")
+
+    def mock_copy2(src, dst):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(fx.shutil, "copy2", mock_copy2)
+
+    assert fx._load_history(xlsx) == []
+    assert not Path(str(sidecar) + ".corrupt").exists()
+    assert "run history not loaded" in capsys.readouterr().out
+
+
 def test_load_history_missing_sidecar_returns_empty_quietly(tmp_path, capsys):
     assert fx._load_history(tmp_path / "nope.xlsx") == []
     assert "run history not loaded" not in capsys.readouterr().out
