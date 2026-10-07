@@ -5,6 +5,9 @@ import pytest
 
 import fermi_report_xlsx as fx
 from fermi_organizer import fsops
+import shutil
+from unittest.mock import patch
+
 from fermi_organizer.runmodes import (_detect_supersede_pairs,
                                       _move_children_under_superseding,
                                       run_full)
@@ -148,6 +151,44 @@ def test_move_children_under_superseding(tmp_path, dry_run):
     else:
         assert not child_folder.exists()
         assert (s_folder / "F10126107 Child" / "F10126107.pdf").is_file()
+
+
+def test_move_children_under_superseding_oserror(tmp_path):
+    out = tmp_path / "out"
+    s_folder = out / "F10126106 Parent"
+    s_folder.mkdir(parents=True)
+    (s_folder / "F10126106.pdf").write_bytes(b"%PDF")
+    child_folder1 = out / "F10126107 Child1"
+    child_folder1.mkdir(parents=True)
+    (child_folder1 / "F10126107.pdf").write_bytes(b"%PDF")
+    child_folder2 = out / "F10126108 Child2"
+    child_folder2.mkdir(parents=True)
+    (child_folder2 / "F10126108.pdf").write_bytes(b"%PDF")
+
+    organized = {"F10126106": [s_folder / "F10126106.pdf"],
+                 "F10126107": [child_folder1 / "F10126107.pdf"],
+                 "F10126108": [child_folder2 / "F10126108.pdf"]}
+    logged = []
+    moved_dirs = {}
+
+    orig_move = shutil.move
+
+    def mock_move(src, dst):
+        if "F10126107" in src:
+            raise OSError("Permission denied")
+        return orig_move(src, dst)
+
+    with patch("shutil.move", side_effect=mock_move):
+        moves = _move_children_under_superseding(
+            ["F10126106"], organized, {"F10126106": ["F10126107", "F10126108"]},
+            {"F10126106", "F10126107", "F10126108"}, out, False, moved_dirs, logged.append)
+
+    assert moves == 1
+    assert child_folder1 in organized["F10126107"][0].parents
+    assert moved_dirs == {child_folder2: s_folder / "F10126108 Child2"}
+    text = "\n".join(logged)
+    assert "WARNING: move failed for F10126107: Permission denied" in text
+    assert "moved: F10126108 Child2 -> F10126106 Parent/F10126108 Child2" in text
 
 
 def test_copy_orphans_then_retire_adopted(tmp_path):
