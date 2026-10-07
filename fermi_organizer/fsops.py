@@ -244,16 +244,20 @@ def scan_output_tree(output):
     return {"tree": tree, "sup": sup, "orph": orph}
 
 
-def find_organized_pdfs(folder):
+def find_organized_pdfs(folder, scan_res=None):
     """Map stem -> organized PDF paths nested under an output tree.
 
     Only nested (non-root) part-named PDFs outside "_"-prefixed system dirs
     count; callers pick the shallowest path when one stem has several copies.
+    Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
+    to avoid redundant filesystem scans.
     """
     # Exclude system dirs (_superseded/_orphans/_*): only PDFs nested under
     # the output root count as organized (list kept; pick shallowest later).
     organized = defaultdict(list)
-    for p in scan_output_tree(folder)["tree"]:
+    tree_pdfs = (scan_res["tree"] if scan_res is not None
+                 else scan_output_tree(folder)["tree"])
+    for p in tree_pdfs:
         rel = p.relative_to(folder)
         stem = canonical_stem(p.stem)
         if len(rel.parts) > 1 and stem:
@@ -359,13 +363,18 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
 
 
 def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
-                           planned=()):
+                           planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
     In dry-run only, stems in planned (placed by this run but not yet on
-    disk) also count as live. Returns the number retired."""
+    disk) also count as live. Returns the number retired.
+    Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
+    to avoid redundant filesystem scans when the tree on disk has not changed.
+    """
     live_pdfs = defaultdict(list)
-    for p in scan_output_tree(folder)["tree"]:
+    tree_pdfs = (scan_res["tree"] if scan_res is not None
+                 else scan_output_tree(folder)["tree"])
+    for p in tree_pdfs:
         stem = canonical_stem(p.stem)
         if stem:
             live_pdfs[stem].append(p)
