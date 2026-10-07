@@ -4,6 +4,8 @@
 
 Fermi lab PDF drawing organizer. Scans a folder of PDF drawings, extracts BOM tables / USED ON / NAME fields (with OCR fallback for scanned pages), detects watermarks, builds a parent-child graph, and copies files into a nested folder tree. Produces a timestamped `.txt` report and a live `.xlsx` workbook after every run.
 
+**Driving it from an AI agent**: the operator runbook is the repo skill `.opencode/skills/pdf-organizer/SKILL.md` (loaded automatically when a session runs inside this repo; other agent tools can point at the same file). Keep this file as the code reference; keep the skill as the golden path (dry-run -> review -> execute), flag decisions, reporting and troubleshooting.
+
 ## Run
 
 ```bash
@@ -23,9 +25,10 @@ python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental
 ## Dependencies
 
 - **PyMuPDF** — required; pinned `==1.28.2` in `pyproject.toml` / `requirements.txt`. Import as `pymupdf`, **never the legacy `fitz` shim** (the shim prints a deprecation notice through the stdout handle pymupdf captured at its import time, so it leaks into output whenever pymupdf was imported first).
-- **openpyxl** — optional at runtime; only for the `.xlsx` workbook (ImportError is caught and logged, run continues).
+- **openpyxl** — optional at runtime; only for the `.xlsx` workbook (ImportError is caught and logged, run continues). In `pyproject.toml` it is the `excel` extra (`pip install -e ".[excel]"`); `requirements.txt` still includes it.
 - **Tesseract** — needed only for scanned (image-only) PDFs. Auto-detected via `TESSERACT_EXE`, then `PATH`, then common Windows dirs (Program Files, Program Files (x86), `%LOCALAPPDATA%\Programs`); only the common-dir fallback prepends the install dir to `PATH` and sets `TESSDATA_PREFIX` for PyMuPDF's OCR.
 - `requirements.lock` is regenerated with `uv pip compile requirements.txt --generate-hashes -o requirements.lock` (command recorded in the lock header) whenever `requirements.txt` changes.
+- Pin/CVE notes for deps live in README's *Licensing & dependency notes* (e.g. PyMuPDF <=1.28.2 CVE scope, Tesseract 5.5.3+); check there before bumping a pin. `SECURITY.md` and `THIRD_PARTY_NOTICES.md` are licensing/reporting docs, not run instructions.
 
 ## Architecture
 
@@ -53,17 +56,24 @@ tests/                   — pytest suite (PDFs generated at test time)
 - **Title block check**: the drawing number, revision, and NAME printed in each scanned PDF's own title block are compared against the filename — the bottom-most `REV`/`NUMBER` labels are the title block (the revision-history RCD block sits higher). Mismatches go to the log and the workbook `Title block check` sheet; the filename drives placement unless `--rekey-titleblock` re-keys a misnamed **text-layer** file (see Run).
 - **OCR geometry / reliability quirks** (extraction.py): OCR values use a wide symmetric window and ranked candidates (exact F-number > OCR-corrected > bare digits) because Tesseract word boxes can be offset by a row. Parts-list OCR reads the bottom-up Fermilab layout (rows above the `ITEM/FERMI#` header; the title-block `FERMI NATIONAL ACCELERATOR LABORATORY` text is never the header), retries psm 6 when a row strip glues the item digit into the FERMI token, and skips RCD numbers. OCR strips are read with a few zoom/psm/oem passes and voted (a value read by two passes wins); a pipe read as the digit 1 (`FLO|44633`) is corrected (`_ocr_tok`). Scanned sheets are A0-A4 stored either at ISO page size or at the scanner's dpi (1 px = 1 pt, e.g. a 153 dpi A0 scan is a 7152x5051 pt page): OCR coordinates are normalized to ISO page points and the full-page render dpi is capped at ~300 MP (`OCR_MAX_RENDER_MP`; a fixed 300 dpi render of that page is 627 MP and PyMuPDF's OCR fails silently), and strip/zoom magnification is divided by the page scale.
 - **USED ON hygiene**: the drawing's own number is dropped from its USED ON values (the box neighbours the DRAWING NUMBER box) and from its BOM rows (an OCR parts-list read can pick up the title block's own FERMI number). OCR refs that are not clean `F`+8-digit reads (wrong length, or O/I/L/S/B/pipe confusions) are snapped to a unique known stem before edges/missing are computed; a clean read is trusted as-is (a genuine missing reference must stay visible for the Teamcenter download list even when some unrelated stem sits one digit away), and ambiguous reads are left as-is.
+- **Supersede archive safety** (`runmodes._swap_revision_files`): the old revision is archived with a full content compare (`filecmp.cmp(..., shallow=False)`, not byte size) and staged next to its target before `os.replace`; an archive-name collision with *different* content gets a numeric suffix (`stem.1.pdf`) — a tree copy is never overwritten unarchived. Pinned by `tests/test_swap_archive_collision.py`.
 - **Folder names**: `{base} {NAME}` (e.g. `F10126106 Assembly bracket`), sanitized for Windows. Auto-shortened to stay under `MAX_PATH=250` / `MAX_DIR=240`.
-- **Output tree**: organized folders + `_orphans/` (parked, adoptable by later incremental runs) + `_superseded/` (older revisions / unapproved CHK).
+- **Output tree**: organized folders + `_orphans/` (parked, adoptable by later incremental runs; the parked copy is retired once a later run places that stem) + `_superseded/` (older revisions / unapproved CHK / watermarked duplicate losers).
+- **Tree mutations are guarded, not fatal** (`fsops`): a place/copy/move/mkdir `OSError` logs a warning and the run continues; report + workbook writing is best-effort too. `tests/test_skip_guards.py` pins the per-extraction-task skip shapes (oversized page, page cap, `stat`/page-count failure → `skipped_shape` vs `skip_error`).
 - **Workbook consumes a structured run context** — `run_full`/`run_incremental` return the counters/lists/names (`counters, missing, chk, orphans, roots, used_on_mismatches, used_on_bugs, titleblock_mismatches, scanned, watermarks, names`) that `cli.py` feeds to the Excel workbook directly; the `.txt` log is user-facing only and is no longer parsed. `used_on_bugs` lists children whose USED ON names a parent the parent's BOM does not list; `titleblock_mismatches` lists `(stem, field, filename value, title-block value)` rows; `scanned` lists image-only PDFs (recorded even with `--no-ocr`); `watermarks` lists detected watermark evidence. Folder names are still read for the NAME fallback (`report_glue.names_from_tree`).
 - **Workbook state**: `<output>/organize_fermi_report.xlsx` plus a sidecar `<xlsx>.history.json`; Run History survives rebuilds only via the sidecar.
-- Notable behavior changes are recorded in `CHANGELOG.md` (`## <version> - <date>` sections with `###` groupings).
+- Notable behavior changes are recorded in `CHANGELOG.md` (`## <version> - <date>` sections with `###` groupings); the 2026-10-06 PR-review fixes (commits `27e9f3e`, `6d3d0ea`) landed without one, so check git log for undocumented behavior changes.
 
 ## Testing
 
-- Full suite: `.venv\Scripts\python.exe -m pytest -q` (~3 s). Single file: `... -m pytest tests/test_graph.py -q`; single test: `... -m pytest "tests/test_graph.py::test_name" -q`.
+- Full suite: `.venv\Scripts\python.exe -m pytest -q` (152 tests, ~5 s). Single file: `... -m pytest tests/test_graph.py -q`; single test: `... -m pytest "tests/test_graph.py::test_name" -q`.
 - Fixtures generate PDFs at test time via PyMuPDF (`make_pdf` in `tests/conftest.py`: one page, text lines from (72,72), fontsize 11, 16 pt line step — extraction tests depend on this layout). No binary fixtures are checked in; OCR is disabled for every test (autouse fixture), so Tesseract is not needed.
-- The only lint is `tests/test_no_dead_imports.py`: an unused import in `fermi_organizer/*.py`, `organize_fermi_pdfs.py`, or `fermi_report_xlsx.py` fails the suite. There is no CI and no ruff/mypy config.
+- Gates in the suite (there is no ruff/mypy/formatter):
+  - `tests/test_no_dead_imports.py` fails on an unused import in `fermi_organizer/*.py`, `organize_fermi_pdfs.py`, or `fermi_report_xlsx.py`, **and** on a new top-level public function in `fermi_organizer/` without a docstring (the 9 legacy exceptions are allowlisted there — add no more).
+  - `tests/test_golden_log.py` pins dry-run log output byte-for-byte: intentional user-facing message changes must update `EXPECTED` in that test.
+  - `tests/test_parallel_jobs.py` pins `jobs=2` == `jobs=1` run-context parity plus the worker OCR-event merge round-trip — any extraction change must keep the parallel path identical.
+  - `tests/test_t014_extra.py` looks orphaned by name but is the characterization suite for the 2026-09-30 decomposition (broken-cycle placement, supersede pairs, orphan retire, xlsx sheet builders). Extend it rather than starting a new file.
+- CI: `.github/workflows/pytest.yml` runs `python -m pytest -q` on ubuntu / Python 3.11 with plain pip (`pip install -r requirements.txt pytest`, no editable install — `conftest.py`'s `sys.path` shim makes that work). One Windows-semantic test skips off-Windows; openpyxl tests skip if it is missing.
 - Recreate the venv if missing: `uv venv --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.txt pytest -e .` (`-e .` restores the editable install; tests alone work without it because `conftest.py` shims the repo root onto `sys.path`).
 - For end-to-end checks, run `--dry-run` against a real drawing folder and inspect the log output + `.xlsx`.
 
@@ -72,4 +82,3 @@ Line-length is an informal norm only: code stays ~≤100 cols (`fermi_report_xls
 ## Stale docs
 
 - `codebase-health-report.md` is a superseded one-time review snapshot (banner at top). Its findings were largely fixed by the 2026-09-30 review response; verify against code before acting on it.
-- README's test count ("99 tests") is stale (the suite is larger); trust the run output.

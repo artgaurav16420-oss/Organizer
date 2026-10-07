@@ -101,6 +101,26 @@ fermi_organizer/
 tests/                     pytest suite (100+ tests (see `pytest` output); PDFs generated at test time)
 ```
 
+## AI agent usage
+
+An operator runbook for AI agents ships with the repo:
+`.opencode/skills/pdf-organizer/SKILL.md`. OpenCode discovers it automatically in any
+session started inside this repo, and other agent tools can be pointed at the same file.
+It encodes the safe workflow (dry-run -> review -> execute), flag decisions, how to
+summarize a run, guardrails (originals are never modified) and troubleshooting.
+
+To organize a folder outside the repo, clone this repo, install its dependencies
+(`pip install -r requirements.txt`, plus `pip install -e .` for the module form), then
+run from the repo root:
+
+```
+python -m fermi_organizer.cli "<input-folder>" --output "<input-folder>\Output" --dry-run
+```
+
+The input folder itself can be anywhere on disk; only the *invocation* must happen with
+the repo as the working directory (or with the repo's venv interpreter, which works from
+any directory once installed editable).
+
 ## Recovery & safe operation
 
 - Always run `--dry-run` first and review the printed plan before executing.
