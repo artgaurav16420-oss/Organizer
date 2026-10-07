@@ -46,11 +46,14 @@ def split_superseded(index):
     return active, old
 
 
+_USED_ON_BASE_RE = re.compile(r"(F\d+)")
+
+
 def used_on_bases(used_vals):
     """Base drawing numbers (F + digits) found in a USED ON value list."""
     bases = set()
     for v in used_vals or ():
-        m = re.match(r"(F\d+)", (v or "").upper())
+        m = _USED_ON_BASE_RE.match((v or "").upper())
         if m:
             bases.add(m.group(1))
     return bases
