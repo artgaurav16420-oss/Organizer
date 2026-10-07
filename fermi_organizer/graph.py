@@ -105,6 +105,10 @@ def find_used_on_bugs(bom_edges, used_on_of, stems):
     Returns [(parent, child)] sorted.
     """
     out = []
+    bom_edges_sets = {
+        p: cs if isinstance(cs, set) else set(cs)
+        for p, cs in bom_edges.items()
+    }
     for child in sorted(used_on_of):
         for val in sorted(set(used_on_of[child] or ())):
             if not is_processable_ref(val):
@@ -112,8 +116,7 @@ def find_used_on_bugs(bom_edges, used_on_of, stems):
             for m in match_pdfs(val, stems):
                 if m == child:
                     continue
-                children_of_m = set(bom_edges.get(m, ()))
-                if child not in children_of_m:
+                if child not in bom_edges_sets.get(m, ()):
                     out.append((m, child))
     return out
 
