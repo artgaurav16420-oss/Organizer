@@ -129,19 +129,24 @@ def _edit1(a, b):
     """True when a and b differ by exactly one insert/delete/substitute."""
     if a == b:
         return False
-    if abs(len(a) - len(b)) > 1:
+    len_a, len_b = len(a), len(b)
+    if abs(len_a - len_b) > 1:
         return False
-    if len(a) == len(b):
-        return sum(x != y for x, y in zip(a, b)) == 1
-    if len(a) > len(b):
+    if len_a == len_b:
+        i = 0
+        while a[i] == b[i]:
+            i += 1
+        return a[i + 1:] == b[i + 1:]
+    if len_a > len_b:
         a, b = b, a
+        len_a = len_b
     i = 0
-    while i < len(a) and a[i] == b[i]:
+    while i < len_a and a[i] == b[i]:
         i += 1
     return a[i:] == b[i + 1:]
 
 
-def snap_ref(ref, stems):
+def snap_ref(ref, stems, bases=None):
     """Snap a malformed OCR reference to a unique known stem, else None.
 
     Only reads that are not a clean F+8-digit number are snapped: a wrong
@@ -152,7 +157,8 @@ def snap_ref(ref, stems):
     """
     if not ref or ref in stems:
         return None
-    bases = {s.split("_")[0] for s in stems}
+    if bases is None:
+        bases = {s.split("_")[0] for s in stems}
     if ref in bases:
         return None  # already matches via match_pdfs
     cands = set()
@@ -160,8 +166,9 @@ def snap_ref(ref, stems):
     if fixed != ref and fixed in bases:
         cands.add(fixed)
     if not re.fullmatch(r"F\d{8}", ref):
+        ref_len = len(ref)
         for b in bases:
-            if _edit1(ref, b):
+            if abs(len(b) - ref_len) <= 1 and _edit1(ref, b):
                 cands.add(b)
     if len(cands) != 1:
         return None
