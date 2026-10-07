@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Pure graph/revision algorithms (no filesystem side effects)."""
 import re
-from collections import defaultdict
 
 from .config import TREE_MAX_DEPTH, is_processable_ref
 
@@ -227,9 +226,9 @@ def collect_reachable(children, roots):
 def break_cycles(children, parents, log):
     """Break cycles by removing back-edges (BOM graph is the only edge source)."""
     WHITE, GRAY, BLACK = 0, 1, 2
-    color = defaultdict(int)
+    color = {}
     removed = []
-    stack = []
+    sorted_children = {}
 
     def dfs(u, depth=0):
         if depth > TREE_MAX_DEPTH:
@@ -237,20 +236,23 @@ def break_cycles(children, parents, log):
                 f"(deeper than any healthy tree) - review manually")
             return
         color[u] = GRAY
-        stack.append(u)
-        for v in sorted(children.get(u, ())):
-            if color[v] == GRAY:
+        ch_list = sorted_children.get(u)
+        if ch_list is None:
+            ch_list = sorted(children.get(u, ()))
+            sorted_children[u] = ch_list
+        for v in ch_list:
+            v_color = color.get(v, WHITE)
+            if v_color == GRAY:
                 # Found a cycle: remove the closing back-edge u -> v.
                 children[u].discard(v)
                 parents[v].discard(u)
                 removed.append((u, v))
                 log(f"  CYCLE BREAK: removed edge {u} -> {v}")
-            elif color[v] == WHITE:
+            elif v_color == WHITE:
                 dfs(v, depth + 1)
-        stack.pop()
         color[u] = BLACK
 
     for node in sorted(set(children) | set(parents)):
-        if color[node] == WHITE:
+        if color.get(node, WHITE) == WHITE:
             dfs(node)
     return removed
