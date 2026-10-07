@@ -16,8 +16,8 @@ from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     collect_reachable, snap_ref)
 from .naming import build_folder_names
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
-                    find_organized_pdfs, find_latest_report, copy_superseded,
-                    copy_watermarked_duplicates, copy_orphans,
+                    scan_output_tree, find_organized_pdfs, find_latest_report,
+                    copy_superseded, copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans)
 
 
@@ -486,22 +486,27 @@ def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_
 # ---------------------------------------------------------------------------
 # Incremental state: candidate set, revision conflicts, supersede swaps
 # ---------------------------------------------------------------------------
-def _collect_incremental_candidates(scan_index, output):
+def _collect_incremental_candidates(scan_index, output, scan_res=None):
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
-    (organized, sup_dir, stored_orphans, new_index, chk_stems)."""
-    organized = find_organized_pdfs(output)
+    (organized, sup_dir, stored_orphans, new_index, chk_stems).
+    Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
+    to avoid redundant filesystem scans.
+    """
+    if scan_res is None:
+        scan_res = scan_output_tree(output)
+    organized = find_organized_pdfs(output, scan_res=scan_res)
     # Stems already archived in _superseded/ are never candidates again.
     sup_dir = output / "_superseded"
-    already_sup = {s for p in sup_dir.glob("*.pdf")
-                   if (s := canonical_stem(p.stem))} if sup_dir.is_dir() else set()
+    already_sup = {s for p in scan_res["sup"]
+                   if (s := canonical_stem(p.stem))}
     # Stored orphans from previous full runs: they are adoption candidates.
     # If a new/organized parent references one, it is placed into the tree and
     # its _orphans/ copy is retired; if not, it stays parked.
     orphans_dir = output / "_orphans"
-    stored_orphans = {s: p for p in orphans_dir.glob("*.pdf")
-                      if (s := canonical_stem(p.stem))} if orphans_dir.is_dir() else {}
+    stored_orphans = {s: p for p in scan_res["orph"]
+                      if (s := canonical_stem(p.stem))}
     new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
     for o, p in stored_orphans.items():
         if o in new_index:
@@ -1027,8 +1032,9 @@ def _incremental_prepare(folder, output, dry_run, log):
     if not scan_index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
+    scan_res = scan_output_tree(output)
     organized, sup_dir, stored_orphans, new_index, chk_stems = \
-        _collect_incremental_candidates(scan_index, output)
+        _collect_incremental_candidates(scan_index, output, scan_res=scan_res)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
     new_duplicates = {stem: paths for stem, paths in top_duplicates.items()
@@ -1043,7 +1049,7 @@ def _incremental_prepare(folder, output, dry_run, log):
     # Archive superseded copies even when there is nothing new to place.
     total_copies = copy_superseded(old_new, output, dry_run, log)
     return (organized, sup_dir, stored_orphans, new_index, chk_stems,
-            supersede_pairs, new_duplicates, total_copies, set(old_new))
+            supersede_pairs, new_duplicates, total_copies, set(old_new), scan_res)
 
 
 def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
@@ -1300,7 +1306,8 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           total_copies, total_moves, warning_count, unmatched,
                           chk_stems, new_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
-                          bom_names, superseded=(), planned=()) -> RunContext:
+                          bom_names, superseded=(), planned=(),
+                          scan_res=None) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
     # exists live in the tree (adopted into an earlier or this run's placement)
@@ -1309,7 +1316,8 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
     # planned=) also count as live for the retirement report.
     if stored_orphans:
         retire_adopted_orphans(stored_orphans, output, dry_run, log,
-                               superseded=superseded, planned=planned)
+                               superseded=superseded, planned=planned,
+                               scan_res=scan_res)
     log("")
     _log_summary([
         "--- Summary ---",
@@ -1371,7 +1379,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
 
     jobs = resolve_jobs(jobs)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
-        supersede_pairs, new_duplicates, total_copies, superseded_new = \
+        supersede_pairs, new_duplicates, total_copies, superseded_new, scan_res = \
         _incremental_prepare(folder, output, dry_run, log)
 
     if not new_index:
@@ -1427,6 +1435,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
                 continue
             planned.add(_s)
             _stack.extend(new_children.get(_s, ()))
+    reused_scan_res = scan_res if (dry_run or (total_copies == 0 and total_moves == 0)) else None
     return _incremental_finalize(stored_orphans, output, dry_run, log,
                                  scanned_new, organized, new_roots,
                                  new_children, removed, total_copies,
@@ -1435,4 +1444,5 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
                                  superseded=set(superseded_new) | set(swapped_old),
-                                 planned=planned)
+                                 planned=planned,
+                                 scan_res=reused_scan_res)
