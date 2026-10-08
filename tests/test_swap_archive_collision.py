@@ -1,4 +1,10 @@
 """Regression for C-001: supersede archive collision with different content."""
+import os
+from pathlib import Path
+
+import pytest
+
+from fermi_organizer import fsops
 from fermi_organizer.runmodes import _swap_revision_files
 
 
@@ -107,3 +113,40 @@ def test_swap_archive_collision_suffixes_on_same_size_different_content(tmp_path
     text = "\n".join(logged)
     assert "superseded:" in text
     assert "_superseded/F10126107.1.pdf" in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")
+def test_swap_revision_files_beyond_max_path(tmp_path):
+    # Deep output root: the _exists/archive check, staging, os.replace and the
+    # final unlink all sit past 260 chars - every step needs _native()/_exists,
+    # or the swap silently skips and leaves a duplicate in the tree.
+    seg = "o" * 40
+    out = tmp_path
+    while len(str(out / "_superseded" / "F10126106.pdf")) < 300:
+        out = out / seg
+    Path("\\\\?\\" + str(out)).mkdir(parents=True)
+    sup = out / "_superseded"
+    Path("\\\\?\\" + str(sup)).mkdir()
+    old_dir = out / "F10126106 Assembly"
+    Path("\\\\?\\" + str(old_dir)).mkdir()
+    old = old_dir / "F10126106.pdf"
+    Path("\\\\?\\" + str(old)).write_bytes(b"old-rev")
+    new_pdf = tmp_path / "F10126106_A.pdf"  # input side stays short
+    new_pdf.write_bytes(b"new-rev")
+    logged = []
+
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    def read(p):
+        return Path("\\\\?\\" + str(p)).read_bytes()
+
+    assert copies == 2
+    assert moved == [old_dir / "F10126106_A.pdf"]
+    assert read(old_dir / "F10126106_A.pdf") == b"new-rev"   # replace worked
+    assert not fsops._exists(old)                            # unlink worked
+    assert read(sup / "F10126106.pdf") == b"old-rev"         # archived
+    assert not any("supersede failed" in m or "left in tree" in m
+                   for m in logged)
+    import shutil
+    shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)

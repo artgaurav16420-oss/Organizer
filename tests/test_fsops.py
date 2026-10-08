@@ -524,5 +524,9 @@ def test_copy_ops_read_sources_beyond_max_path(tmp_path):
                        {"F10126106": src}, tree, False, logged.append) == 1
     assert (tree / "F10126106" / "F10126106.pdf").read_bytes() == b"deep payload"
     assert not any("copy failed" in m for m in logged)
+    # _exists sees beyond MAX_PATH; plain Path.exists() returns False there.
+    assert fsops._exists(src)
+    assert not fsops._exists(src_dir / "F10199999.pdf")
     # Remove the long chain ourselves - plain rmtree cannot reach it.
+    import shutil
     shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
