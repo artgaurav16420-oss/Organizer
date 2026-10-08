@@ -194,6 +194,28 @@ def test_run_incremental_archived_superseded_orphan_retires(tmp_path, make_pdf):
     assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
 
 
+def test_run_incremental_no_new_pdf_retires_archived_parked_orphan(tmp_path, make_pdf):
+    # The only candidate is a parked orphan that is older than the organized
+    # _B revision: it gets archived, then the no-new fast path must still
+    # retire the parked copy instead of leaving it reported forever.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_organized_newer_rev(make_pdf, out)
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+
+    logged = []
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert (out / "_superseded" / "F10126109.pdf").is_file()
+    assert not parked.exists()
+    assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
+    assert ctx["orphans"] == []
+
+
 def test_run_incremental_dry_run_reports_planned_orphan_retirement(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

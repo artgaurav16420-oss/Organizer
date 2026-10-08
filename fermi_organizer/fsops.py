@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Filesystem scans and side effects (indexing, placement, copies)."""
-import filecmp
 import os
 import shutil
 from collections import defaultdict
@@ -351,34 +350,51 @@ def folder_foreign_pdfs(folder, stem):
     return foreign
 
 
-def resolve_archive_target(sup_dir, src):
+def _same_bytes(a, b):
+    """Byte-for-byte file compare that ignores any metadata cache.
+
+    `filecmp.cmp` reuses cached deep-compare verdicts keyed by path plus
+    (type, size, mtime): bytes changed with unchanged stats would look equal.
+    OSError counts as different (safer)."""
+    try:
+        if os.path.getsize(_native(a)) != os.path.getsize(_native(b)):
+            return False
+        with open(_native(a), "rb") as fa, open(_native(b), "rb") as fb:
+            while True:
+                ba = fa.read(65536)
+                bb = fb.read(65536)
+                if ba != bb:
+                    return False
+                if not ba:
+                    return True
+    except OSError:
+        return False
+
+
+def resolve_archive_target(sup_dir, src, taken=()):
     """Archive destination for `src` under `sup_dir` that never clobbers bytes.
 
     Same-name archive with identical content is reused (`already_archived`
     True); differing content gets a numeric suffix (`<stem>.1.pdf`,
     incrementing until a free name; an identical suffixed copy is reused too,
-    so repeat runs do not grow suffixes). OSError on the compare counts as
-    different (safer); symlink candidates are always treated as occupied.
+    so repeat runs do not grow suffixes). Byte compares are cache-free
+    (`filecmp.cmp` can reuse a stale verdict when bytes change without size or
+    mtime changing); symlink candidates are always treated as occupied.
+    `taken` lists destinations already claimed in this call sequence (dry-run
+    planned copies), so same-name sources get distinct names there too.
     Callers must refuse symlinks at the base name first: `_exists` follows
     links, so a dangling link there would otherwise be written through.
     """
     target = sup_dir / src.name
-    if not _exists(target):
+    if not _exists(target) and target not in taken:
         return target, False
-    try:
-        if filecmp.cmp(_native(target), _native(src), shallow=False):
-            return target, True
-    except OSError:
-        pass
+    if _same_bytes(target, src):
+        return target, True
     n = 1
     candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
-    while _exists(candidate) or _islink(candidate):
-        if not _islink(candidate):
-            try:
-                if filecmp.cmp(_native(candidate), _native(src), shallow=False):
-                    return candidate, True
-            except OSError:
-                pass
+    while _exists(candidate) or _islink(candidate) or candidate in taken:
+        if not _islink(candidate) and _same_bytes(candidate, src):
+            return candidate, True
         n += 1
         candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
     return candidate, False
@@ -399,11 +415,15 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
     sf = folder / "_superseded"
     for stem, pdf in sorted(old.items()):
         target = sf / pdf.name
-        if not overwrite and _exists(target):
-            archived.add(stem)
-            continue
         if _islink(pdf) or _islink(target):
             log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
+            continue
+        if not overwrite and _exists(target):
+            # Existing archive wins in incremental mode; only an identical
+            # copy proves this stem's bytes are archived (a same-name file
+            # with different content must not retire a parked orphan).
+            if _same_bytes(target, pdf):
+                archived.add(stem)
             continue
         target, _already = resolve_archive_target(sf, pdf)
         if dry_run:
@@ -426,18 +446,21 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     These lost the same-revision contest to a non-watermarked copy (or are
     redundant watermarked extras), so they are archived instead of placed.
     A name already holding different bytes is archived under a numeric
-    suffix instead of clobbered. Returns count copied.
+    suffix instead of clobbered; dry-run tracks planned destinations so
+    same-name sources report distinct suffixes. Returns count copied.
     """
     n = 0
     sf = folder / "_superseded"
+    planned = set()
     for p in sorted(paths):
         target = sf / p.name
         if _islink(p) or _islink(target):
             log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
             continue
-        target, _already = resolve_archive_target(sf, p)
+        target, _already = resolve_archive_target(sf, p, planned)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
+            planned.add(target)
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)

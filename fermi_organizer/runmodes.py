@@ -1072,13 +1072,22 @@ def _incremental_prepare(folder, output, dry_run, log):
 
 
 def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
-                            warning_count, log) -> RunContext:
-    """Early-exit context when there is nothing new to place."""
+                            warning_count, log, stored_orphans=(),
+                            archived=(), dry_run=False) -> RunContext:
+    """Early-exit context when there is nothing new to place.
+
+    Stored orphans whose stem was just archived (the only "new" candidate was
+    an older parked revision) are retired here too - the full finalize path
+    never runs on this branch.
+    """
     log("No new PDFs at top level - nothing to do.")
     log("")
     # CHK arrivals are still reported even when there is nothing to place
     if chk_stems:
         _log_chk_block(chk_stems, log)
+    if stored_orphans:
+        retire_adopted_orphans(stored_orphans, output, dry_run, log,
+                               superseded=archived)
     _log_summary([
         "--- Summary ---",
         "  New PDFs scanned:     0",
@@ -1404,7 +1413,10 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
 
     if not new_index:
         return _incremental_no_new_ctx(organized, chk_stems, output,
-                                       total_copies, warning_count, log)
+                                       total_copies, warning_count, log,
+                                       stored_orphans=stored_orphans,
+                                       archived=archived_new,
+                                       dry_run=dry_run)
 
     new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
         new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
