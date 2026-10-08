@@ -3,8 +3,14 @@
 Rebuilt after every run from the run's counters + a live disk scan of the output
 folder, so the workbook always shows the current status of the tree.
 Sheets: Dashboard, Missing, CHK, Scanned, Watermark, Orphans, Superseded,
-Roots, USED ON check, Files (live tree), Run History. Run History survives
-rebuilds via a sidecar JSON.
+Roots, USED ON check, Title block check, Files (live tree), Run History.
+Run History survives rebuilds via a sidecar JSON.
+
+Layout contract (pinned by tests): every list sheet has its header in row 1 and
+data from row 2; Dashboard card 1 is label B5 / value B6.
+
+Values are written by the organizer at run time (a snapshot, not formulas);
+Files / Orphans / Superseded counts come from a live disk scan at that moment.
 
 openpyxl is optional; when it is missing the workbook is skipped gracefully.
 """
@@ -15,8 +21,13 @@ from pathlib import Path
 
 try:
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.series import DataPoint
+    from openpyxl.formatting.rule import DataBarRule, FormulaRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.properties import PageSetupProperties
     _OPENPYXL_OK = True
 except ImportError:
     _OPENPYXL_OK = False
@@ -24,42 +35,204 @@ except ImportError:
 from fermi_organizer.config import canonical_stem  # noqa: E402
 from fermi_organizer.fsops import scan_output_tree  # noqa: E402
 
-# Colors (RGB hex strings)
-DARK = "1F3864"        # header dark blue
-NAVY = "2E5AAC"        # accent blue for hyperlinks
-RED_F, RED_D = "FFC7CE", "9C0006"      # missing: light red fill, dark red text
-AMB_F, AMB_D = "FFEB9C", "9C6500"      # CHK: amber
-ORG_F, ORG_D = "FCE4D6", "974706"      # orphans: orange
-GREY_F, GREY_D = "E7E6E6", "3F3F3F"    # superseded
-GRN_F, GRN_D = "C6EFCE", "276221"      # active/ok: green
-STRIPE = "F2F7FB"
-THIN = Side(style="thin", color="B0B0B0")
-BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+# ---------------------------------------------------------------- design tokens
+FONT = "Arial"
+DARK = "1F3864"        # header navy
+NAVY = "2E5AAC"        # links / accents
+INK = "1F2937"         # body text
+MUTED = "6B7280"       # secondary text
+LINE = "E5E7EB"        # hairlines
+STRIPE = "F8FAFC"      # zebra rows
+PANEL = "F1F5F9"       # note panels / card-less areas
+WHITE = "FFFFFF"
+
+# Severity palettes: tint fill, strong text, accent (tab / card edge / chart).
+PAL = {
+    "red":    {"fill": "FDE2E1", "text": "9B1C1C", "accent": "DC2626"},   # action required
+    "amber":  {"fill": "FEF3C7", "text": "92400E", "accent": "D97706"},   # review
+    "orange": {"fill": "FFE8D5", "text": "9A3412", "accent": "EA580C"},   # parked
+    "grey":   {"fill": "E5E7EB", "text": "374151", "accent": "6B7280"},   # archived
+    "green":  {"fill": "DCFCE7", "text": "166534", "accent": "16A34A"},   # ok / active
+    "blue":   {"fill": "DBEAFE", "text": "1E40AF", "accent": "2563EB"},   # info
+}
+
+# Back-compat color aliases (fill, text) for any external reader of the module.
+RED_F, RED_D = PAL["red"]["fill"], PAL["red"]["text"]
+AMB_F, AMB_D = PAL["amber"]["fill"], PAL["amber"]["text"]
+ORG_F, ORG_D = PAL["orange"]["fill"], PAL["orange"]["text"]
+GREY_F, GREY_D = PAL["grey"]["fill"], PAL["grey"]["text"]
+GRN_F, GRN_D = PAL["green"]["fill"], PAL["green"]["text"]
+
+HAIR = Side(style="thin", color=LINE)
+ROW_BORDER = Border(bottom=HAIR)
+PILL_EDGE = Side(style="medium", color=WHITE)
 
 # Run-history cap: single source for both the sidecar save and the sheet render
 # (the two must agree or the saved file and the displayed table drift).
 HISTORY_MAX_RUNS = 200
+MAX_COL_WIDTH = 64
+ROW_H = 21
 
 
-def _hdr(ws, headers, widths):
-    """Header row 1 + freeze panes + widths + no gridlines."""
+# -------------------------------------------------------------------- helpers
+def _font(size=10, bold=False, color=INK, italic=False, underline=None):
+    return Font(name=FONT, size=size, bold=bold, italic=italic, color=color,
+                underline=underline)
+
+
+def _solid(hex_color):
+    return PatternFill("solid", fgColor=hex_color)
+
+
+def _page_setup(ws):
+    """Landscape, fit to one page wide, header row repeats when printed."""
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_options.horizontalCentered = True
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
+
+
+def _hdr(ws, headers, widths, tab=None, aligns=None):
+    """Header row 1 + freeze panes + widths + no gridlines + tab color."""
     ws.sheet_view.showGridLines = False
+    ws.sheet_view.zoomScale = 100
+    if tab:
+        ws.sheet_properties.tabColor = PAL[tab]["accent"] if tab in PAL else tab
     for i, (h, w) in enumerate(zip(headers, widths), start=1):
         c = ws.cell(row=1, column=i, value=h)
-        c.font = Font(bold=True, color="FFFFFF", size=11)
-        c.fill = PatternFill("solid", fgColor=DARK)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = BORDER
+        c.font = _font(10, True, WHITE)
+        c.fill = _solid(DARK)
+        horiz = (aligns[i - 1] if aligns else "left")
+        c.alignment = Alignment(horizontal=horiz, vertical="center",
+                                wrap_text=True, indent=1 if horiz == "left" else 0)
         ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
+    _page_setup(ws)
+    ws.print_title_rows = "1:1"
 
 
-def _fill_row(ws, row, ncols, fill, font_color):
-    for col in range(1, ncols + 1):
-        c = ws.cell(row=row, column=col)
-        c.fill = PatternFill("solid", fgColor=fill)
-        c.font = Font(color=font_color)
-        c.border = BORDER
+def _pill(cell, palette):
+    """Status pill: tinted fill, bold strong text, white inset edge."""
+    p = PAL[palette]
+    cell.fill = _solid(p["fill"])
+    cell.font = _font(9, True, p["text"])
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border = Border(left=PILL_EDGE, right=PILL_EDGE, top=PILL_EDGE, bottom=PILL_EDGE)
+
+
+def _link(cell, target, bold=False):
+    """Hyperlink styled as a link; failures leave the plain value."""
+    try:
+        cell.hyperlink = target
+        cell.font = _font(10, bold, NAVY, underline="single")
+    except Exception:  # pragma: no cover - openpyxl rejects only malformed targets
+        pass
+
+
+def _file_uri(path):
+    try:
+        return Path(path).absolute().as_uri()
+    except (ValueError, OSError):  # pragma: no cover - relative/odd paths
+        return None
+
+
+def _rel(path, output):
+    try:
+        return str(Path(path).relative_to(Path(output)))
+    except (ValueError, TypeError):
+        return Path(path).name
+
+
+def _autofit(ws, ncols, nrows, minimums, cap=MAX_COL_WIDTH):
+    """Widen columns to their content (rows 2..nrows+1), capped; never shrink."""
+    for ci in range(1, ncols + 1):
+        longest = 0
+        for r in range(2, nrows + 2):
+            v = ws.cell(row=r, column=ci).value
+            if v is not None:
+                longest = max(longest, len(str(v)))
+        want = min(cap, longest + 4)
+        cur = minimums[ci - 1] if ci - 1 < len(minimums) else 10
+        ws.column_dimensions[get_column_letter(ci)].width = max(cur, want)
+
+
+def _side_note(ws, ncols, title, text, palette="blue"):
+    """About-this-sheet panel right of the table, plus a way back."""
+    col = ncols + 2
+    L = get_column_letter(col)
+    ws.column_dimensions[get_column_letter(ncols + 1)].width = 3
+    ws.column_dimensions[L].width = 46
+    p = PAL[palette]
+    h = ws.cell(row=1, column=col, value=title)
+    h.font = _font(10, True, p["text"])
+    h.fill = _solid(p["fill"])
+    h.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.merge_cells(start_row=2, start_column=col, end_row=7, end_column=col)
+    body = ws.cell(row=2, column=col, value=text)
+    body.font = _font(9, False, INK)
+    body.fill = _solid(PANEL)
+    body.alignment = Alignment(wrap_text=True, vertical="top", indent=1)
+    back = ws.cell(row=8, column=col, value="\u2190 Back to Dashboard")
+    _link(back, "#'Dashboard'!A1", bold=True)
+    back.alignment = Alignment(vertical="center", indent=1)
+
+
+def _empty_state(ws, ncols, message):
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
+    c = ws.cell(row=2, column=1, value=message)
+    c.font = _font(10, True, PAL["green"]["text"])
+    for ci in range(1, ncols + 1):
+        ws.cell(row=2, column=ci).fill = _solid(PAL["green"]["fill"])
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 28
+
+
+def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
+           link_first=None, empty="Nothing to show", note=None, first_bold=True,
+           max_width=MAX_COL_WIDTH):
+    """Generic list sheet: header row 1, zebra rows from row 2, optional pills.
+
+    rows: list of value lists.  pills: {col_index: palette | callable(row)->palette}
+    link_first: optional callable(row_index, row)->target for column 1.
+    """
+    aligns = aligns or ["left"] * len(headers)
+    _hdr(ws, headers, widths, tab=tab, aligns=aligns)
+    ncols = len(headers)
+    if not rows:
+        _empty_state(ws, ncols, f"\u2713  {empty}")
+    for ri, vals in enumerate(rows, start=2):
+        ws.row_dimensions[ri].height = ROW_H
+        stripe = STRIPE if ri % 2 == 1 else WHITE
+        for ci, v in enumerate(vals, start=1):
+            c = ws.cell(row=ri, column=ci, value=v)
+            c.fill = _solid(stripe)
+            c.border = ROW_BORDER
+            c.font = _font(10, first_bold and ci == 1, INK)
+            horiz = aligns[ci - 1]
+            # No wrapping: rows stay one line tall; the last column may overflow
+            # into the empty space to its right.
+            c.alignment = Alignment(horizontal=horiz, vertical="center",
+                                    indent=1 if horiz == "left" else 0)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                c.number_format = "#,##0"
+        if pills:
+            for ci, pal in pills.items():
+                key = pal(vals) if callable(pal) else pal
+                _pill(ws.cell(row=ri, column=ci), key)
+        if link_first:
+            target = link_first(ri - 2, vals)
+            if target:
+                _link(ws.cell(row=ri, column=1), target, bold=True)
+    if rows:
+        ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}{len(rows) + 1}"
+        _autofit(ws, ncols, len(rows), widths, max_width)
+    if note:
+        _side_note(ws, ncols, note[0], note[1], note[2] if len(note) > 2 else "blue")
+    return ncols
 
 
 def _scan_tree(output):
@@ -114,6 +287,7 @@ def _resolve_names(names_raw, live):
     return resolved
 
 
+
 def build_workbook(path, ctx, log=None):
     """Build/refresh the live workbook at `path`; returns it (None without openpyxl).
 
@@ -131,6 +305,8 @@ def build_workbook(path, ctx, log=None):
         return None
     path = Path(path)
     wb = Workbook()
+    wb.properties.title = "Fermi PDF Organizer - live report"
+    wb.properties.creator = "Fermi PDF Organizer"
     dash = wb.active
     dash.title = "Dashboard"
     missing = wb.create_sheet("Missing")
@@ -150,285 +326,460 @@ def build_workbook(path, ctx, log=None):
     missing_pairs = sorted(set(ctx.get("missing", [])))
     names = _resolve_names(ctx.get("names", {}) or {}, live)
 
-    # ---------------- Dashboard ----------------
     _dash_sheet(dash, ctx, counters, live, missing_pairs)
-
-    # ---------------- Missing ----------------
     _missing_sheet(missing, missing_pairs, names)
-
-    # ---------------- CHK ----------------
     _chk_sheet(chk, ctx, names)
-
-    # ---------------- Scanned (image-only PDFs) ----------------
     _scanned_sheet(scanned_ws, ctx, names)
-
-    # ---------------- Watermark ----------------
     _watermark_sheet(watermark_ws, ctx, names)
-
-    # ---------------- Orphans ----------------
-    _orphans_sheet(orph, ctx, names)
-
-    # ---------------- Superseded ----------------
+    _orphans_sheet(orph, ctx, names, live)
     _superseded_sheet(superseded, live)
-
-    # ---------------- Roots (from the last run's log) ----------------
     _roots_sheet(roots_ws, ctx, names)
-
-    # ---------------- USED ON check (BOM vs USED ON consistency) ----------------
     _mismatch_sheet(mism_ws, ctx, names)
-
-    # ---------------- Title block check (filename vs drawing title block) ------
     _titleblock_sheet(tb_ws, ctx, names)
-
-    # ---------------- Files (live tree) ----------------
     _files_sheet(files, ctx, names, live)
-
-    # ---------------- Run History ----------------
     _history_sheet(hist, ctx, counters, missing_pairs, path, log)
 
+    wb.active = 0
     wb.save(path)
     return path
 
 
+# ------------------------------------------------------------------ Dashboard
+_CARD_SPANS = ((2, 4), (6, 8), (10, 12), (14, 16))     # B:D  F:H  J:L  N:P
+
+
+def _box(ws, row, c1, c2, value=None, font=None, fill=None, align=None,
+         border=None):
+    """Merge c1..c2 on one row; style every cell so the block renders solid."""
+    for cc in range(c1, c2 + 1):
+        cell = ws.cell(row=row, column=cc)
+        if fill:
+            cell.fill = fill
+        if border:
+            cell.border = border
+    ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+    a = ws.cell(row=row, column=c1)
+    a.value = value
+    if font:
+        a.font = font
+    if align:
+        a.alignment = align
+    return a
+
+
+def _card(ws, row, span, label, value, palette, caption, target):
+    c1, c2 = span
+    p = PAL[palette]
+    edge = Side(style="thick", color=p["accent"])
+    fill = _solid(p["fill"])
+    left = Border(left=edge)
+    _box(ws, row, c1, c2, label, _font(8, True, MUTED), fill,
+         Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1), left)
+    _box(ws, row + 1, c1, c2, value, _font(24, True, p["text"]), fill,
+         Alignment(horizontal="left", vertical="center", indent=1), left)
+    cap = _box(ws, row + 2, c1, c2, caption, _font(9, False, MUTED), fill,
+               Alignment(horizontal="left", vertical="center", indent=1), left)
+    if target:
+        _link(cap, target)
+    ws.row_dimensions[row].height = 30
+    ws.row_dimensions[row + 1].height = 40
+    ws.row_dimensions[row + 2].height = 20
+
+
 def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     dash.sheet_view.showGridLines = False
-    dash["B2"] = "Fermi PDF Organizer - LIVE STATUS"
-    dash["B2"].font = Font(bold=True, size=16, color=DARK)
-    dash["B3"] = f"Last run: {ctx.get('run_time', '')}   [{ctx.get('run_mode', '')}]"
-    dash["B3"].font = Font(color=GREY_D, size=11)
-
-    cards = [
-        ("PDF FILES IN TREE (LIVE)", len(live["tree"]), GRN_F, GRN_D),
-        ("ROOTS (LAST RUN)", counters.get("roots", "-"), GRN_F, GRN_D),
-        ("MISSING - DOWNLOAD FROM TEAMCENTER", len(missing_pairs), RED_F, RED_D),
-        ("CHK UNAPPROVED", len(set(ctx.get("chk", []))), AMB_F, AMB_D),
-        ("ORPHANS (PARKED ON FULL RUN)", len(live["orph"]), ORG_F, ORG_D),
-        ("SUPERSEDED REVISIONS (LIVE)", len(live["sup"]), GREY_F, GREY_D),
-        ("EXTRACTION WARNINGS (LAST RUN)", counters.get("warnings", "-"), AMB_F, AMB_D),
-        ("CYCLES BROKEN (LAST RUN)", counters.get("cycles", 0), GRN_F, GRN_D),
-    ]
-    for i, (label, val, f, fc) in enumerate(cards):
-        row = 5 + (i // 2) * 3
-        col = "B" if i % 2 == 0 else "F"
-        dash[f"{col}{row}"] = label
-        dash[f"{col}{row}"].font = Font(color=GREY_D, size=10)
-        v = dash[f"{col}{row + 1}"]
-        v.value = val
-        v.font = Font(bold=True, size=18, color=fc)
-        v.fill = PatternFill("solid", fgColor=f)
-        v.alignment = Alignment(horizontal="center", vertical="center")
-        dash.merge_cells(f"{col}{row + 1}:{'E' if i % 2 == 0 else 'H'}{row + 1}")
-        dash.row_dimensions[row + 1].height = 26
-    for col, w in (("A", 2), ("B", 15), ("C", 6), ("D", 6), ("E", 6),
-                   ("F", 15), ("G", 6), ("H", 6), ("I", 6), ("J", 6), ("K", 6)):
+    dash.sheet_properties.tabColor = DARK
+    dash.sheet_view.zoomScale = 100
+    _page_setup(dash)
+    widths = {"A": 2, "E": 2, "I": 2, "M": 2, "Q": 2}
+    for col in "BCDFGHJKLNOP":
+        widths[col] = 9.5
+    for col, w in widths.items():
         dash.column_dimensions[col].width = w
-    navrow = 5 + 4 * 3 + 1
-    dash[f"B{navrow}"] = "Open a sheet:"
-    dash[f"B{navrow}"].font = Font(bold=True, color=DARK)
-    for j, name in enumerate(("Missing", "CHK", "Scanned", "Watermark", "Orphans",
-                              "Superseded", "USED ON check", "Title block check",
-                              "Files", "Run History"),
-                             start=1):
-        c = dash.cell(row=navrow, column=2 + j, value=name)
-        c.hyperlink = f"#'{name}'!A1"
-        c.font = Font(color=NAVY, bold=True, underline="single")
-    dash[f"B{navrow + 2}"] = "Rebuilt after every run - always the live status."
-    dash[f"B{navrow + 2}"].font = Font(italic=True, color=GREY_D)
+
+    # ---- title block
+    dash.row_dimensions[1].height = 10
+    dash.row_dimensions[2].height = 34
+    t = _box(dash, 2, 2, 16, "Fermi PDF Organizer", _font(22, True, DARK),
+             None, Alignment(horizontal="left", vertical="center"))
+    t.value = "Fermi PDF Organizer"
+    mode = str(ctx.get("run_mode", ""))
+    sub = f"Live status  \u00b7  last run {ctx.get('run_time', '')}  \u00b7  {mode}"
+    _box(dash, 3, 2, 16, sub, _font(10, False, MUTED), None,
+         Alignment(horizontal="left", vertical="center"))
+    dash.row_dimensions[3].height = 20
+    dash.row_dimensions[4].height = 10
+
+    sup_n, orph_n = len(live["sup"]), len(live["orph"])
+    chk_n = len(set(ctx.get("chk", [])))
+    warn = counters.get("warnings", "-")
+    cyc = counters.get("cycles", 0)
+    cards = [
+        ("PDF FILES IN TREE (LIVE)", len(live["tree"]), "green", "Open Files \u2192", "Files"),
+        ("ROOTS (LAST RUN)", counters.get("roots", "-"), "green", "Open Roots \u2192", "Roots"),
+        ("MISSING - DOWNLOAD FROM TEAMCENTER", len(missing_pairs),
+         "red" if missing_pairs else "green", "Open Missing \u2192", "Missing"),
+        ("CHK UNAPPROVED", chk_n, "amber" if chk_n else "green", "Open CHK \u2192", "CHK"),
+        ("ORPHANS (PARKED ON FULL RUN)", orph_n, "orange" if orph_n else "green",
+         "Open Orphans \u2192", "Orphans"),
+        ("SUPERSEDED REVISIONS (LIVE)", sup_n, "grey", "Open Superseded \u2192", "Superseded"),
+        ("EXTRACTION WARNINGS (LAST RUN)", warn,
+         "amber" if isinstance(warn, int) and warn else "green", "Details in report .txt", None),
+        ("CYCLES BROKEN (LAST RUN)", cyc, "green" if not cyc else "amber",
+         "Cycles are cut automatically", None),
+    ]
+    for i, (label, val, pal, cap, sheet) in enumerate(cards):
+        row = 5 + (i // 4) * 4
+        _card(dash, row, _CARD_SPANS[i % 4], label, val, pal, cap,
+              f"#'{sheet}'!A1" if sheet else None)
+    dash.row_dimensions[8].height = 12
+    dash.row_dimensions[12].height = 14
+
+    # ---- needs attention
+    items = [
+        ("Missing parts", len(missing_pairs), "red", "Missing"),
+        ("CHK unapproved", chk_n, "amber", "CHK"),
+        ("Orphans (parent not seen)", orph_n, "orange", "Orphans"),
+        ("Watermarked PDFs", len(ctx.get("watermarks", [])), "amber", "Watermark"),
+        ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "orange", "Scanned"),
+        ("USED ON check", len(ctx.get("mismatches", [])) + len(ctx.get("used_on_bugs", [])),
+         "amber", "USED ON check"),
+        ("Title block check", len(ctx.get("titleblock_mismatches", [])), "amber",
+         "Title block check"),
+    ]
+    todo = sum(1 for _, n, _, _ in items if n)
+    r = 13
+    _box(dash, r, 2, 16, "NEEDS ATTENTION", _font(11, True, DARK), None,
+         Alignment(horizontal="left", vertical="center"),
+         Border(bottom=Side(style="medium", color=DARK)))
+    dash.row_dimensions[r].height = 26
+    ok = todo == 0
+    banner = ("\u2713  All clear - nothing needs review" if ok else
+              f"\u26a0  {todo} of {len(items)} categories need review")
+    _box(dash, r + 1, 2, 16, banner,
+         _font(11, True, PAL["green" if ok else "amber"]["text"]),
+         _solid(PAL["green" if ok else "amber"]["fill"]),
+         Alignment(horizontal="left", vertical="center", indent=1))
+    dash.row_dimensions[r + 1].height = 30
+    dash.row_dimensions[r + 2].height = 8
+
+    h = r + 3
+    for (c1, c2), text, horiz in (((2, 4), "Category", "left"), ((6, 8), "Count", "center"),
+                                  ((10, 12), "Status", "center"), ((14, 16), "Go to", "left")):
+        _box(dash, h, c1, c2, text, _font(9, True, WHITE), _solid(DARK),
+             Alignment(horizontal=horiz, vertical="center", indent=1 if horiz == "left" else 0))
+    dash.row_dimensions[h].height = 24
+    first = h + 1
+    for k, (label, n, pal, sheet) in enumerate(items):
+        rr = first + k
+        stripe = _solid(STRIPE if k % 2 else WHITE)
+        dash.row_dimensions[rr].height = 22
+        _box(dash, rr, 2, 4, label, _font(10, True, INK), stripe,
+             Alignment(horizontal="left", vertical="center", indent=1), ROW_BORDER)
+        cnt = _box(dash, rr, 6, 8, n, _font(11, True, INK), stripe,
+                   Alignment(horizontal="center", vertical="center"), ROW_BORDER)
+        cnt.number_format = "#,##0"
+        st = _box(dash, rr, 10, 12, "Review" if n else "OK", None, None, None, None)
+        for cc in range(10, 13):
+            dash.cell(row=rr, column=cc).fill = _solid(PAL[pal if n else "green"]["fill"])
+        _pill(st, pal if n else "green")
+        go = _box(dash, rr, 14, 16, f"Open {sheet} \u2192", None, stripe,
+                  Alignment(horizontal="left", vertical="center", indent=1), ROW_BORDER)
+        _link(go, f"#'{sheet}'!A1")
+    last = first + len(items) - 1
+
+    # ---- chart (native, editable in Excel)
+    ch = BarChart()
+    ch.type = "bar"
+    ch.style = 10
+    ch.title = "Items needing review"
+    ch.legend = None
+    ch.height, ch.width = 7.5, 24
+    ch.y_axis.majorGridlines = None
+    ch.x_axis.delete = False
+    ch.y_axis.delete = True            # data labels carry the values
+    ch.x_axis.scaling.orientation = "maxMin"
+    ch.add_data(Reference(dash, min_col=6, min_row=first, max_row=last), titles_from_data=False)
+    ch.set_categories(Reference(dash, min_col=2, min_row=first, max_row=last))
+    series = ch.series[0]
+    series.graphicalProperties.solidFill = PAL["blue"]["accent"]
+    for idx, (_, n, pal, _) in enumerate(items):
+        pt = DataPoint(idx=idx)
+        pt.graphicalProperties.solidFill = PAL[pal if n else "green"]["accent"]
+        series.dPt.append(pt)
+    ch.dataLabels = DataLabelList()
+    ch.dataLabels.showVal = True
+    ch.dataLabels.showSerName = ch.dataLabels.showCatName = ch.dataLabels.showLegendKey = False
+    dash.add_chart(ch, f"B{last + 3}")
+
+    # ---- footer: legend + provenance
+    f = last + 3 + 17
+    _box(dash, f, 2, 16, "COLOR GUIDE", _font(9, True, MUTED), None,
+         Alignment(horizontal="left", vertical="center"))
+    legend = (("red", "Action required"), ("amber", "Review"), ("orange", "Parked"),
+              ("grey", "Archived"), ("green", "OK / active"))
+    spans = ((2, 3), (4, 6), (7, 9), (10, 12), (13, 15))
+    for (c1, c2), (pal, text) in zip(spans, legend):
+        for cc in range(c1, c2 + 1):
+            dash.cell(row=f + 1, column=cc).fill = _solid(PAL[pal]["fill"])
+        _pill(_box(dash, f + 1, c1, c2, text, None, None, None, None), pal)
+    dash.row_dimensions[f + 1].height = 22
+    out = ctx.get("output", "")
+    rep = ctx.get("report_txt", "")
+    note = f"Output: {out}" + (f"   \u00b7   Report: {rep}" if rep else "")
+    _box(dash, f + 3, 2, 16, note, _font(9, False, MUTED, italic=True), None,
+         Alignment(horizontal="left", vertical="center", wrap_text=True))
+    _box(dash, f + 4, 2, 16,
+         "Rebuilt after every run. Counts for Files / Orphans / Superseded come from a "
+         "live disk scan at that moment; all other figures are from the last run.",
+         _font(9, False, MUTED, italic=True), None,
+         Alignment(horizontal="left", vertical="center", wrap_text=True))
+    dash.row_dimensions[f + 4].height = 28
 
 
+# ----------------------------------------------------------------- list sheets
 def _missing_sheet(missing, missing_pairs, names):
-    _hdr(missing, ["Missing FERMI#", "Name", "Referenced by drawing", "Action"],
-         (22, 38, 30, 42))
-    for r, (stem, val) in enumerate(missing_pairs, start=2):
-        missing.cell(row=r, column=1, value=val)
-        missing.cell(row=r, column=2, value=names.get(val, "") or "-")
-        missing.cell(row=r, column=3, value=stem)
-        missing.cell(row=r, column=4, value="Download approved DWG from Teamcenter")
-        _fill_row(missing, r, 4, RED_F, RED_D)
-    if missing_pairs:
-        missing.auto_filter.ref = f"A1:D{len(missing_pairs) + 1}"
+    rows = [[val, names.get(val, "") or "-", stem, "Download approved DWG from Teamcenter"]
+            for stem, val in missing_pairs]
+    _table(missing, ["Missing FERMI#", "Name", "Referenced by drawing", "Action"],
+           (22, 38, 30, 42), rows, tab="red", pills={4: "red"},
+           empty="No missing parts - every referenced drawing is in the folder",
+           note=("About this sheet",
+                 "Part numbers referenced by a parent's BOM that have no PDF in the input "
+                 "folder. Download the approved DWG from Teamcenter and rerun "
+                 "(incremental is enough).", "red"))
 
 
 def _chk_sheet(chk, ctx, names):
-    _hdr(chk, ["Stem (current file)", "Name", "Status"], (30, 38, 52))
-    for r, s in enumerate(sorted(set(ctx.get("chk", []))), start=2):
-        chk.cell(row=r, column=1, value=s)
-        chk.cell(row=r, column=2, value=names.get(s, "") or "-")
-        chk.cell(row=r, column=3, value="Unapproved - replace with approved DWG from Teamcenter")
-        _fill_row(chk, r, 3, AMB_F, AMB_D)
-    tip = len(set(ctx.get("chk", []))) + 3
-    chk.cell(row=tip, column=1,
-             value="When the approved DWG arrives in an input folder it supersedes the CHK automatically.").font = Font(italic=True, color=GREY_D)
+    rows = [[s, names.get(s, "") or "-", "Unapproved",
+             "Replace with approved DWG from Teamcenter"]
+            for s in sorted(set(ctx.get("chk", [])))]
+    _table(chk, ["Stem (current file)", "Name", "Status", "Action"],
+           (30, 38, 16, 48), rows, tab="amber", pills={3: "amber"},
+           aligns=["left", "left", "center", "left"],
+           empty="No unapproved CHK drawings",
+           note=("About this sheet",
+                 "CHK drawings are unapproved check prints. When the approved DWG arrives "
+                 "in an input folder it supersedes the CHK automatically.", "amber"))
 
 
 def _scanned_sheet(scanned_ws, ctx, names):
-    scanned_data = ctx.get("scanned", [])  # [(stem, [pages]), ...]
-    _hdr(scanned_ws, ["Stem (scanned PDF)", "Name", "OCR page(s)"], (30, 44, 18))
-    for r, (stem, pages) in enumerate(sorted(scanned_data), start=2):
-        if isinstance(pages, (list, tuple)):
-            pages_txt = ", ".join(str(p) for p in pages)
-        else:
-            pages_txt = str(pages)
-        scanned_ws.cell(row=r, column=1, value=stem)
-        scanned_ws.cell(row=r, column=2, value=names.get(stem, "") or "-")
-        scanned_ws.cell(row=r, column=3, value=pages_txt)
-        _fill_row(scanned_ws, r, 3, ORG_F, ORG_D)
-    if scanned_data:
-        scanned_ws.auto_filter.ref = f"A1:C{len(scanned_data) + 1}"
-    scanned_ws.cell(row=len(scanned_data) + 3, column=1,
-                    value="Image-only (scanned) PDFs whose text was read via OCR.").font = Font(italic=True, color=GREY_D)
+    data = ctx.get("scanned", [])  # [(stem, [pages]), ...]
+    rows = []
+    for stem, pages in sorted(data):
+        pages_txt = (", ".join(str(p) for p in pages)
+                     if isinstance(pages, (list, tuple)) else str(pages))
+        rows.append([stem, names.get(stem, "") or "-", pages_txt])
+    _table(scanned_ws, ["Stem (scanned PDF)", "Name", "OCR page(s)"], (30, 44, 18), rows,
+           tab="orange", aligns=["left", "left", "center"], pills={3: "orange"},
+           empty="No scanned (image-only) PDFs",
+           note=("About this sheet",
+                 "Image-only (scanned) PDFs whose text was read via OCR. OCR is "
+                 "best-effort: verify the BOM of these drawings by eye.", "orange"))
 
 
 def _watermark_sheet(watermark_ws, ctx, names):
-    wm_data = ctx.get("watermarks", [])  # [(stem, evidence), ...]
-    _hdr(watermark_ws, ["Stem (watermarked PDF)", "Name", "Evidence"], (30, 40, 52))
-    for r, (stem, evidence) in enumerate(sorted(wm_data), start=2):
-        watermark_ws.cell(row=r, column=1, value=stem)
-        watermark_ws.cell(row=r, column=2, value=names.get(stem, "") or "-")
-        watermark_ws.cell(row=r, column=3, value=evidence or "-")
-        _fill_row(watermark_ws, r, 3, AMB_F, AMB_D)
-    if wm_data:
-        watermark_ws.auto_filter.ref = f"A1:C{len(wm_data) + 1}"
-    watermark_ws.cell(row=len(wm_data) + 3, column=1,
-                      value="Best-effort detection: watermark layer, transparent/diagonal/light large text, or watermark keyword.").font = Font(italic=True, color=GREY_D)
+    data = ctx.get("watermarks", [])  # [(stem, evidence), ...]
+    rows = [[stem, names.get(stem, "") or "-", evidence or "-"]
+            for stem, evidence in sorted(data)]
+    _table(watermark_ws, ["Stem (watermarked PDF)", "Name", "Evidence"], (30, 40, 52), rows,
+           tab="amber", empty="No watermarked PDFs detected",
+           note=("About this sheet",
+                 "Best-effort detection: watermark layer, transparent/diagonal/light "
+                 "large text, or a watermark keyword.", "amber"))
 
 
-def _orphans_sheet(orph, ctx, names):
-    _hdr(orph, ["Stem (current file)", "Name", "Note"], (30, 38, 46))
-    for r, s in enumerate(sorted(ctx.get("orphans", [])), start=2):
-        orph.cell(row=r, column=1, value=s)
-        orph.cell(row=r, column=2, value=names.get(s, "") or "-")
-        orph.cell(row=r, column=3, value="Parent drawing not seen so far - adopted into tree once it arrives")
-        _fill_row(orph, r, 3, ORG_F, ORG_D)
-    tip = len(ctx.get("orphans", [])) + 3
-    orph.cell(row=tip, column=1,
-              value="Orphans are stored under _orphans/ so a future incremental run can adopt them when their parent appears.").font = Font(italic=True, color=GREY_D)
+def _orphans_sheet(orph, ctx, names, live=None):
+    paths = {}
+    for p in (live or {}).get("orph", []):
+        paths[canonical_stem(p.stem) or p.stem.upper()] = p
+    stems = sorted(ctx.get("orphans", []))
+    rows = [[s, names.get(s, "") or "-", "Parked",
+             "Parent drawing not seen so far - adopted into tree once it arrives"]
+            for s in stems]
+    _table(orph, ["Stem (current file)", "Name", "Status", "Note"], (30, 38, 14, 60), rows,
+           tab="orange", pills={3: "orange"}, aligns=["left", "left", "center", "left"],
+           link_first=lambda i, row: _file_uri(paths[row[0]]) if row[0] in paths else None,
+           empty="No orphans - every part has a parent",
+           note=("About this sheet",
+                 "Orphans are stored under _orphans/ so a future incremental run can "
+                 "adopt them when their parent appears. Click a stem to open its PDF.",
+                 "orange"))
 
 
 def _superseded_sheet(superseded, live):
-    _hdr(superseded, ["File in _superseded/", "Base", "Note"], (44, 18, 42))
-    for i, p in enumerate(sorted(live["sup"], key=lambda q: q.name.lower()), start=2):
-        superseded.cell(row=i, column=1, value=p.name)
+    ordered = sorted(live["sup"], key=lambda q: q.name.lower())
+    rows = []
+    for p in ordered:
         stem = canonical_stem(p.stem) or p.stem.upper()
-        superseded.cell(row=i, column=2, value=stem.split("_")[0])
-        superseded.cell(row=i, column=3, value="older revision / unapproved CHK / superseded in place")
-        _fill_row(superseded, i, 3, GREY_F, GREY_D)
+        rows.append([p.name, stem.split("_")[0], "Archived",
+                     "older revision / unapproved CHK / superseded in place"])
+    _table(superseded, ["File in _superseded/", "Base", "Status", "Note"], (44, 18, 14, 52),
+           rows, tab="grey", pills={3: "grey"}, aligns=["left", "left", "center", "left"],
+           link_first=lambda i, row: _file_uri(ordered[i]),
+           empty="Nothing superseded yet",
+           note=("About this sheet",
+                 "Older revisions, unapproved CHK prints and in-place superseded "
+                 "copies are archived here, never deleted. Click a name to open.", "grey"))
 
 
 def _roots_sheet(roots_ws, ctx, names):
-    roots_data = ctx.get("roots", [])          # [(stem, [used_on...]), ...]
-    _hdr(roots_ws, ["Root drawing", "Name", "USED ON (parent drawings if any)"], (26, 40, 60))
-    for r, (stem, used_list) in enumerate(roots_data, start=2):
-        n = names.get(stem, "")
-        roots_ws.cell(row=r, column=1, value=stem)
-        roots_ws.cell(row=r, column=2, value=n)
-        roots_ws.cell(row=r, column=3, value=", ".join(sorted(set(used_list))) or "-")
-        _fill_row(roots_ws, r, 3, GRN_F, GRN_D)
-    if roots_data:
-        roots_ws.auto_filter.ref = f"A1:C{len(roots_data) + 1}"
-    tip = len(roots_data) + 3
-    roots_ws.cell(row=tip, column=1,
-                  value="USED ON files belong to parent assemblies - download from Teamcenter if not already in the tree (check the Files sheet).").font = Font(italic=True, color=GREY_D)
+    data = ctx.get("roots", [])  # [(stem, [used_on...]), ...]
+    rows = [[stem, names.get(stem, ""), ", ".join(sorted(set(used))) or "-"]
+            for stem, used in data]
+    _table(roots_ws, ["Root drawing", "Name", "USED ON (parent drawings if any)"],
+           (26, 40, 60), rows, tab="green", empty="No root assemblies in this run",
+           note=("About this sheet",
+                 "Top-level assemblies of the tree. USED ON files belong to parent "
+                 "assemblies - download them from Teamcenter if not already in the tree "
+                 "(check the Files sheet).", "green"))
 
 
 def _mismatch_sheet(mism_ws, ctx, names):
     mism_data = ctx.get("mismatches", [])  # [(parent, child, actual_list|str), ...]
     bug_data = ctx.get("used_on_bugs", [])  # [(parent, child), ...]
-    _hdr(mism_ws, ["Parent drawing", "Parent name", "Child part", "Child name",
-                   "Child USED ON (actual)"], (26, 40, 26, 40, 44))
-    for r, (pstem, cstem, actual) in enumerate(mism_data, start=2):
+    rows = []
+    for pstem, cstem, actual in mism_data:
         if isinstance(actual, (list, tuple)):
             actual = ", ".join(actual) if actual else "none"
-        mism_ws.cell(row=r, column=1, value=pstem)
-        mism_ws.cell(row=r, column=2, value=names.get(pstem, ""))
-        mism_ws.cell(row=r, column=3, value=cstem)
-        mism_ws.cell(row=r, column=4, value=names.get(cstem, ""))
-        mism_ws.cell(row=r, column=5, value=actual or "-")
-        _fill_row(mism_ws, r, 5, AMB_F, AMB_D)
-    if mism_data:
-        mism_ws.auto_filter.ref = f"A1:E{len(mism_data) + 1}"
-    mism_ws.cell(row=len(mism_data) + 3, column=1,
-                  value="Parent BOM lists this part but the part USED ON omits the parent - verify the USED ON number.").font = Font(italic=True, color=GREY_D)
-
-    # USED ON bugs: children whose USED ON names a parent the parent's BOM
-    # does not list. BOM is the only source of truth, so these are data bugs,
-    # not placement edges.
+        rows.append([pstem, names.get(pstem, ""), cstem, names.get(cstem, ""), actual or "-"])
+    ncols = _table(mism_ws, ["Parent drawing", "Parent name", "Child part", "Child name",
+                             "Child USED ON (actual)"], (26, 40, 26, 40, 44), rows,
+                   tab="amber", empty="No BOM / USED ON mismatches",
+                   note=("About this sheet",
+                         "Top table: the parent's BOM lists a part but that part's USED ON "
+                         "omits the parent - verify the USED ON number.\n\nLower table "
+                         "(USED ON BUGS): a child's USED ON names a parent whose BOM does "
+                         "not list it. BOM is the only source of truth, so these are data "
+                         "bugs, not placement edges.", "amber"))
     base = len(mism_data) + 6
-    mism_ws.cell(row=base, column=1,
-                  value=f"USED ON BUGS ({len(bug_data)})").font = Font(bold=True, color=DARK)
+    sec = mism_ws.cell(row=base, column=1, value=f"USED ON BUGS ({len(bug_data)})")
+    sec.font = _font(12, True, DARK)
+    mism_ws.row_dimensions[base].height = 26
     mism_ws.cell(row=base + 1, column=1,
-                  value="Child USED ON lists a parent that the parent's BOM does not list - fix the USED ON number.").font = Font(italic=True, color=GREY_D)
+                 value="Child USED ON lists a parent that the parent's BOM does not list "
+                       "- fix the USED ON number.").font = _font(9, False, MUTED, italic=True)
+    sub = base + 2
+    for ci, text in enumerate(("Parent drawing", "Parent name", "Child part", "Child name"),
+                              start=1):
+        c = mism_ws.cell(row=sub, column=ci, value=text)
+        c.font = _font(10, True, WHITE)
+        c.fill = _solid(NAVY)
+        c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    mism_ws.row_dimensions[sub].height = 24
+    if not bug_data:
+        mism_ws.merge_cells(start_row=sub + 1, start_column=1, end_row=sub + 1, end_column=4)
+        c = mism_ws.cell(row=sub + 1, column=1, value="\u2713  No USED ON bugs")
+        c.font = _font(10, True, PAL["green"]["text"])
+        c.fill = _solid(PAL["green"]["fill"])
+        c.alignment = Alignment(horizontal="center", vertical="center")
     for i, (pstem, cstem) in enumerate(bug_data):
-        r = base + 2 + i
-        mism_ws.cell(row=r, column=1, value=pstem)
-        mism_ws.cell(row=r, column=2, value=names.get(pstem, ""))
-        mism_ws.cell(row=r, column=3, value=cstem)
-        mism_ws.cell(row=r, column=4, value=names.get(cstem, ""))
-        _fill_row(mism_ws, r, 5, ORG_F, ORG_D)
+        r = sub + 1 + i
+        vals = (pstem, names.get(pstem, ""), cstem, names.get(cstem, ""))
+        mism_ws.row_dimensions[r].height = ROW_H
+        for ci, v in enumerate(vals, start=1):
+            c = mism_ws.cell(row=r, column=ci, value=v)
+            c.fill = _solid(STRIPE if i % 2 else WHITE)
+            c.border = ROW_BORDER
+            c.font = _font(10, ci == 1, INK)
+            c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    return ncols
 
 
 def _titleblock_sheet(tb_ws, ctx, names):
     data = ctx.get("titleblock_mismatches", [])  # [(stem, field, filename, tb)]
-    _hdr(tb_ws, ["Stem (current file)", "Name", "Field", "In filename",
-                 "In title block"], (30, 34, 12, 26, 26))
-    for r, (stem, field, fval, tval) in enumerate(sorted(data), start=2):
-        tb_ws.cell(row=r, column=1, value=stem)
-        tb_ws.cell(row=r, column=2, value=names.get(stem, "") or "-")
-        tb_ws.cell(row=r, column=3, value=field)
-        tb_ws.cell(row=r, column=4, value=fval)
-        tb_ws.cell(row=r, column=5, value=tval)
-        _fill_row(tb_ws, r, 5, AMB_F, AMB_D)
-    if data:
-        tb_ws.auto_filter.ref = f"A1:E{len(data) + 1}"
-    tb_ws.cell(row=len(data) + 3, column=1,
-               value="Filename disagrees with the drawing's own title block - verify the filename or re-download from Teamcenter.").font = Font(italic=True, color=GREY_D)
+    rows = [[stem, names.get(stem, "") or "-", field, fval, tval]
+            for stem, field, fval, tval in sorted(data)]
+    _table(tb_ws, ["Stem (current file)", "Name", "Field", "In filename", "In title block"],
+           (30, 34, 12, 26, 26), rows, tab="amber", pills={3: "amber"},
+           aligns=["left", "left", "center", "left", "left"],
+           empty="Every filename agrees with its title block",
+           note=("About this sheet",
+                 "The filename disagrees with the drawing's own title block - verify the "
+                 "filename or re-download from Teamcenter.", "amber"))
 
 
 def _files_sheet(files, ctx, names, live):
     chk_set = set(ctx.get("chk", []))
-    _hdr(files, ["Drawing (stem)", "Name", "Revision", "Status"], (26, 40, 10, 18))
-    rows = []
+    out = ctx.get("output", "")
+    rows, paths = [], []
+
+    def add(p, status):
+        stem = canonical_stem(p.stem) or p.stem.upper()
+        parts = stem.split("_")
+        rev = parts[1] if len(parts) > 1 and parts[1] else "-"
+        rows.append([stem, names.get(stem, "") or "-", rev, status,
+                     str(Path(_rel(p, out)).parent)])
+        paths.append(p)
+
     for p in sorted(live["tree"], key=lambda q: str(q).lower()):
         stem = canonical_stem(p.stem) or p.stem.upper()
-        parts = stem.split("_")
-        rev = parts[1] if len(parts) > 1 and parts[1] else "-"
-        if stem in chk_set:
-            fill_r, fc = AMB_F, AMB_D
-            status = "CHK (unapproved)"
-        else:
-            fill_r, fc = GRN_F, GRN_D
-            status = "Active"
-        rows.append((stem, names.get(stem, "") or "-", rev, status, fill_r, fc))
+        add(p, "CHK (unapproved)" if stem in chk_set else "Active")
     for p in sorted(live["orph"], key=lambda q: str(q).lower()):
-        stem = canonical_stem(p.stem) or p.stem.upper()
-        parts = stem.split("_")
-        rev = parts[1] if len(parts) > 1 and parts[1] else "-"
-        rows.append((stem, names.get(stem, "") or "-", rev, "ORPHAN (parked)", ORG_F, ORG_D))
-    for r_i, (stem, nm, rev, status_val, fill_r, fc) in enumerate(rows, start=2):
-        files.cell(row=r_i, column=1, value=stem)
-        files.cell(row=r_i, column=2, value=nm)
-        files.cell(row=r_i, column=3, value=rev)
-        files.cell(row=r_i, column=4, value=status_val)
-        _fill_row(files, r_i, 4, fill_r, fc)
-    if rows:
-        files.auto_filter.ref = f"A1:D{len(rows) + 1}"
+        add(p, "ORPHAN (parked)")
+    pal = {"Active": "green", "CHK (unapproved)": "amber", "ORPHAN (parked)": "orange"}
+    _table(files, ["Drawing (stem)", "Name", "Revision", "Status", "Folder (relative to output)"],
+           (26, 40, 10, 20, 60), rows, tab="blue",
+           aligns=["left", "left", "center", "center", "left"],
+           pills={4: lambda row: pal[row[3]]},
+           link_first=lambda i, row: _file_uri(paths[i]),
+           empty="No PDFs in the output tree yet", max_width=110,
+           note=("About this sheet",
+                 "Live scan of the output folder. Click a drawing to open its PDF; use "
+                 "the filter arrows to slice by status or revision.", "blue"))
 
 
 def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
-    _hdr(hist, ["Run time", "Mode", "PDFs scanned", "Copies", "Missing", "CHK", "Orphans", "Report (txt)"],
-         (20, 26, 13, 10, 10, 8, 10, 46))
     entry = [str(ctx.get("run_time", "")), str(ctx.get("run_mode", "")),
              counters.get("scanned", 0), counters.get("copies", 0),
              len(missing_pairs), len(set(ctx.get("chk", []))),
              len(ctx.get("orphans", [])), ctx.get("report_txt", "")]
     hist_rows = _load_history(path, log) + [entry]
     _save_history(path, hist_rows, log)
-    for i, row in enumerate(sorted(hist_rows[-HISTORY_MAX_RUNS:], reverse=True), start=2):
-        for j, v in enumerate(row, start=1):
-            c = hist.cell(row=i, column=j, value=v)
-            c.border = BORDER
-            if i % 2 == 1:
-                c.fill = PatternFill("solid", fgColor=STRIPE)
+    rows = [list(r) for r in sorted(hist_rows[-HISTORY_MAX_RUNS:], reverse=True)]
+    n = len(rows)
+    _table(hist, ["Run time", "Mode", "PDFs scanned", "Copies", "Missing", "CHK",
+                  "Orphans", "Report (txt)"], (20, 16, 14, 11, 11, 9, 11, 46), rows,
+           tab="blue",
+           aligns=["left", "center", "center", "center", "center", "center", "center", "left"],
+           empty="No runs recorded yet",
+           note=("About this sheet",
+                 "One row per run, newest first (last 200 kept in a sidecar .history.json "
+                 "next to this workbook). The chart shows how the open items trend.", "blue"))
+    if n:
+        grey = PAL["grey"]
+        green = PAL["green"]
+        hist.conditional_formatting.add(
+            f"B2:B{n + 1}", FormulaRule(
+                formula=['ISNUMBER(SEARCH("DRY",B2))'],
+                fill=PatternFill(start_color=grey["fill"], end_color=grey["fill"], fill_type="solid"),
+                font=Font(name=FONT, bold=True, color=grey["text"])))
+        hist.conditional_formatting.add(
+            f"B2:B{n + 1}", FormulaRule(
+                formula=['ISNUMBER(SEARCH("EXEC",B2))'],
+                fill=PatternFill(start_color=green["fill"], end_color=green["fill"], fill_type="solid"),
+                font=Font(name=FONT, bold=True, color=green["text"])))
+        hist.conditional_formatting.add(
+            f"D2:D{n + 1}", DataBarRule(start_type="num", start_value=0, end_type="max",
+                                        color="93C5FD", showValue=True))
+    if n >= 2:
+        lc = LineChart()
+        lc.title = "Open items per run"
+        lc.height, lc.width = 7.5, 18
+        lc.y_axis.majorGridlines = None
+        lc.x_axis.delete = False
+        lc.y_axis.delete = False
+        lc.x_axis.scaling.orientation = "maxMin"   # rows are newest-first
+        lc.y_axis.crosses = "max"                  # keep the value axis on the left
+        for col, pal in ((5, "red"), (6, "amber"), (7, "orange")):
+            lc.add_data(Reference(hist, min_col=col, min_row=1, max_row=min(n, 30) + 1),
+                        titles_from_data=True)
+            s = lc.series[-1]
+            s.graphicalProperties.line.solidFill = PAL[pal]["accent"]
+            s.graphicalProperties.line.width = 22000
+            s.smooth = False
+        lc.set_categories(Reference(hist, min_col=1, min_row=2, max_row=min(n, 30) + 1))
+        hist.add_chart(lc, "J11")
 
 
 def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
