@@ -36,6 +36,17 @@ clone/locate the repo first and run the commands from it.
   also works outside the venv.
 - Tesseract absent → the run still succeeds; scanned PDFs stay `Orphans` and the log
   prints `OCR: unavailable (...)`. Use `--no-ocr` to skip OCR deliberately.
+- **Real timings** (16-core Windows, OCR on): a 7,065-file folder (~800 active part
+  PDFs, ~60 OCR'd) takes ~3.5 min per dry-run *and* per real run; a ~500-file batch
+  ~1.5 min dry but ~4 min real (copies + supersede handling). OCR dominates the
+  extraction phase (worker-seconds can exceed wall time - the log's
+  `OCR total: ... 502.0s` for a 206 s wall run is normal). Set command timeouts
+  >= 10 min for multi-thousand-file folders; a quiet minute under
+  `--- Scanning BOM tables ---` is not a hang.
+- Deep input trees: Windows `LongPathsEnabled=0` here, so PowerShell
+  `Get-ChildItem` can error `Could not find a part of the path` on deep dirs -
+  cosmetic; the tool reads those files itself (see Troubleshooting for the
+  pre-PR-#34 copy caveat).
 
 ## Golden path (follow this order every time)
 
@@ -54,6 +65,14 @@ clone/locate the repo first and run the commands from it.
    **without** `--dry-run`.
 4. **Later batches** feeding an existing tree: `--incremental --output "<existing Output>"`.
    The input folder may differ from the one holding the tree.
+5. **Several input folders → one tree**: dry-run *all* of them first (the incremental
+   dry-run against a not-yet-populated tree is fine - it shows what that batch would
+   do), report the plans together, wait for the go-ahead, then execute sequentially:
+   full run for the first folder, `--incremental` for each later one. Expect small
+   drift between an incremental dry-run and its real run (the earlier batch's tree now
+   exists - e.g. 472→485 scanned, 580→555 copies); quote the **real** run's summary.
+   Cross-batch adoption is normal: `Retired N orphan copy(ies) from _orphans/` means
+   earlier-parked parts found parents in this batch.
 
 ## Flag decisions
 
@@ -66,8 +85,9 @@ clone/locate the repo first and run the commands from it.
 | Very large folder / slow extraction | `--jobs N` (0 = auto = CPU count, default; 1 = serial) |
 | User trusts title blocks over filenames | `--rekey-titleblock` — opt-in only; re-keys misnamed **text-layer** PDFs, never scanned ones |
 
-Exit code `1` (`ERROR: not a directory`, or no PDFs found) means bad input: fix the path
-instead of retrying.
+Exit code `1` is fatal - read the log tail first: either bad input
+(`ERROR: not a directory`, no PDFs found → fix the path, don't retry) **or** an
+unhandled crash (a Python traceback in the captured output).
 
 ## Report to the user
 
@@ -76,10 +96,25 @@ broken, PDF copies written; then the CHK list, missing BOM references, orphans a
 bugs; then the two artifact paths in the output folder
 (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`). Flag anything
 surprising: USED ON bugs, `Cycles broken`, a large `Orphans` count,
-`WARNING: in-place run`, or OCR reading many PDFs.
+`WARNING: in-place run`, OCR reading many PDFs, or any `copy failed` /
+`path too long` WARNING.
 
 Do **not** parse the `.txt` report to compute results — the `.xlsx` workbook is the
-source of truth; the printed summary is what to summarize.
+source of truth; the printed summary is what to summarize. One cheap sanity check
+after a real run: the Dashboard's `PDF FILES IN TREE (LIVE)` must equal a recursive
+PDF count of the output minus `_orphans/` and `_superseded/`.
+
+## Expected noise - do not treat as failures
+
+- `WARNING: NNNN duplicate stem(s) across input subfolders` — normal for messy
+  corpora (the same drawing saved in many dated folders); the shallowest copy wins.
+- `Skipped NNN FC-prefixed common component(s)` — FC numbers are standard hardware,
+  never indexed or placed (hundreds per run is typical).
+- `WARNING: NNN PDF(s) without extractable NAME` — those folders fall back to the
+  bare drawing number; common on scanned/old sheets.
+- `Image too small to scale!!` / `Line cannot be recognized!!` — Tesseract stderr
+  leaking to the console during OCR; harmless. Judge a run by its exit code and
+  summary, not by these lines.
 
 ## Guardrails
 
@@ -106,6 +141,8 @@ source of truth; the printed summary is what to summarize.
 | `Report NOT saved (output folder missing)` on a dry run | normal: dry runs don't create the folder; the workbook is still written |
 | `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | add `--output <input>\Output` and re-run |
 | Everything landed in `_orphans/` | the parents are missing from the folder; they get placed once those PDFs arrive |
+| Run dies mid `--- Scanning BOM tables ---` with `AttributeError: 'NoneType' object has no attribute 'upper'`, or `copy failed ... [Errno 2]` on a >260-char path | the checkout predates PR #34 (UTF-8 OCR decode + `\\?\` long-path copies) — update first; if it still reproduces on current `main`, report it as a bug |
+| Capturing a log with PowerShell `> file` and grepping it programmatically | the file is UTF-16 and exception paths render repr-escaped (`'D:\\h files\\...'`) — decode as UTF-16 and unescape backslashes before matching paths |
 
 ## Repo references
 
