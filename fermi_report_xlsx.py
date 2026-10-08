@@ -191,6 +191,16 @@ def _empty_state(ws, ncols, message):
     ws.row_dimensions[2].height = 28
 
 
+def _inert_text(cell):
+    """Force a leading-'=' string to text.
+
+    PDF-derived names/notes could otherwise be saved as formulas that Excel
+    evaluates on open (formula injection via drawing content).
+    """
+    if isinstance(cell.value, str) and cell.value.startswith("="):
+        cell.data_type = "s"
+
+
 def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
            link_first=None, empty="Nothing to show", note=None, first_bold=True,
            max_width=MAX_COL_WIDTH):
@@ -209,6 +219,7 @@ def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
         stripe = STRIPE if ri % 2 == 1 else WHITE
         for ci, v in enumerate(vals, start=1):
             c = ws.cell(row=ri, column=ci, value=v)
+            _inert_text(c)
             c.fill = _solid(stripe)
             c.border = ROW_BORDER
             c.font = _font(10, first_bold and ci == 1, INK)
@@ -360,6 +371,7 @@ def _box(ws, row, c1, c2, value=None, font=None, fill=None, align=None,
     ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
     a = ws.cell(row=row, column=c1)
     a.value = value
+    _inert_text(a)
     if font:
         a.font = font
     if align:
@@ -391,6 +403,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     dash.sheet_properties.tabColor = DARK
     dash.sheet_view.zoomScale = 100
     _page_setup(dash)
+    dash.page_setup.fitToHeight = 1  # dashboard prints as a single page
     widths = {"A": 2, "E": 2, "I": 2, "M": 2, "Q": 2}
     for col in "BCDFGHJKLNOP":
         widths[col] = 9.5
@@ -436,29 +449,43 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     dash.row_dimensions[12].height = 14
 
     # ---- needs attention
+    # Two tiers: "action" categories have an explicit Download/Replace step;
+    # everything else with a non-zero count is worth a look.
+    action_labels = {"Missing parts", "CHK unapproved"}
     items = [
         ("Missing parts", len(missing_pairs), "red", "Missing"),
         ("CHK unapproved", chk_n, "amber", "CHK"),
         ("Orphans (parent not seen)", orph_n, "orange", "Orphans"),
         ("Watermarked PDFs", len(ctx.get("watermarks", [])), "amber", "Watermark"),
-        ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "orange", "Scanned"),
+        ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "blue", "Scanned"),
         ("USED ON check", len(ctx.get("mismatches", [])) + len(ctx.get("used_on_bugs", [])),
          "amber", "USED ON check"),
         ("Title block check", len(ctx.get("titleblock_mismatches", [])), "amber",
          "Title block check"),
     ]
     todo = sum(1 for _, n, _, _ in items if n)
+    act = sum(1 for label, n, _, _ in items if n and label in action_labels)
+    rev = todo - act
     r = 13
     _box(dash, r, 2, 16, "NEEDS ATTENTION", _font(11, True, DARK), None,
          Alignment(horizontal="left", vertical="center"),
          Border(bottom=Side(style="medium", color=DARK)))
     dash.row_dimensions[r].height = 26
     ok = todo == 0
-    banner = ("\u2713  All clear - nothing needs review" if ok else
-              f"\u26a0  {todo} of {len(items)} categories need review")
+    n_items = len(items)
+    if ok:
+        banner = "\u2713  All clear - nothing needs review"
+    elif act and rev:
+        banner = (f"\u26a0  Action needed: {act} \u00b7 Worth a look: {rev} "
+                  f"(of {n_items} categories)")
+    elif act:
+        banner = f"\u26a0  Action needed: {act} (of {n_items} categories)"
+    else:
+        banner = f"\u26a0  Worth a look: {rev} (of {n_items} categories)"
+    bpal = "green" if ok else ("red" if act else "amber")
     _box(dash, r + 1, 2, 16, banner,
-         _font(11, True, PAL["green" if ok else "amber"]["text"]),
-         _solid(PAL["green" if ok else "amber"]["fill"]),
+         _font(11, True, PAL[bpal]["text"]),
+         _solid(PAL[bpal]["fill"]),
          Alignment(horizontal="left", vertical="center", indent=1))
     dash.row_dimensions[r + 1].height = 30
     dash.row_dimensions[r + 2].height = 8
@@ -479,10 +506,14 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
         cnt = _box(dash, rr, 6, 8, n, _font(11, True, INK), stripe,
                    Alignment(horizontal="center", vertical="center"), ROW_BORDER)
         cnt.number_format = "#,##0"
-        st = _box(dash, rr, 10, 12, "Review" if n else "OK", None, None, None, None)
+        is_action = bool(n) and label in action_labels
+        st_pal = "red" if is_action else (pal if n else "green")
+        st = _box(dash, rr, 10, 12,
+                  "Action" if is_action else ("Review" if n else "OK"),
+                  None, None, None, None)
         for cc in range(10, 13):
-            dash.cell(row=rr, column=cc).fill = _solid(PAL[pal if n else "green"]["fill"])
-        _pill(st, pal if n else "green")
+            dash.cell(row=rr, column=cc).fill = _solid(PAL[st_pal]["fill"])
+        _pill(st, st_pal)
         go = _box(dash, rr, 14, 16, f"Open {sheet} \u2192", None, stripe,
                   Alignment(horizontal="left", vertical="center", indent=1), ROW_BORDER)
         _link(go, f"#'{sheet}'!A1")
@@ -517,8 +548,8 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     _box(dash, f, 2, 16, "COLOR GUIDE", _font(9, True, MUTED), None,
          Alignment(horizontal="left", vertical="center"))
     legend = (("red", "Action required"), ("amber", "Review"), ("orange", "Parked"),
-              ("grey", "Archived"), ("green", "OK / active"))
-    spans = ((2, 3), (4, 6), (7, 9), (10, 12), (13, 15))
+              ("grey", "Archived"), ("green", "OK / active"), ("blue", "Info"))
+    spans = ((2, 3), (4, 5), (6, 7), (8, 9), (10, 12), (13, 16))
     for (c1, c2), (pal, text) in zip(spans, legend):
         for cc in range(c1, c2 + 1):
             dash.cell(row=f + 1, column=cc).fill = _solid(PAL[pal]["fill"])
@@ -571,11 +602,11 @@ def _scanned_sheet(scanned_ws, ctx, names):
                      if isinstance(pages, (list, tuple)) else str(pages))
         rows.append([stem, names.get(stem, "") or "-", pages_txt])
     _table(scanned_ws, ["Stem (scanned PDF)", "Name", "OCR page(s)"], (30, 44, 18), rows,
-           tab="orange", aligns=["left", "left", "center"], pills={3: "orange"},
+           tab="blue", aligns=["left", "left", "center"], pills={3: "blue"},
            empty="No scanned (image-only) PDFs",
            note=("About this sheet",
                  "Image-only (scanned) PDFs whose text was read via OCR. OCR is "
-                 "best-effort: verify the BOM of these drawings by eye.", "orange"))
+                 "best-effort: verify the BOM of these drawings by eye.", "blue"))
 
 
 def _watermark_sheet(watermark_ws, ctx, names):
@@ -738,6 +769,7 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
     _save_history(path, hist_rows, log)
     rows = [list(r) for r in sorted(hist_rows[-HISTORY_MAX_RUNS:], reverse=True)]
     n = len(rows)
+    trend = (" The trend chart appears from your second run." if n < 2 else "")
     _table(hist, ["Run time", "Mode", "PDFs scanned", "Copies", "Missing", "CHK",
                   "Orphans", "Report (txt)"], (20, 16, 14, 11, 11, 9, 11, 46), rows,
            tab="blue",
@@ -745,7 +777,8 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
            empty="No runs recorded yet",
            note=("About this sheet",
                  "One row per run, newest first (last 200 kept in a sidecar .history.json "
-                 "next to this workbook). The chart shows how the open items trend.", "blue"))
+                 "next to this workbook). The chart shows how the open items trend."
+                 + trend, "blue"))
     if n:
         grey = PAL["grey"]
         green = PAL["green"]
