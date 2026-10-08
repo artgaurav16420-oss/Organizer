@@ -2,6 +2,23 @@
 
 All notable changes to the Fermi PDF organizer are recorded here.
 
+## Unreleased
+
+### Excel report redesign (`fermi_report_xlsx.py`)
+- Dashboard: 8 severity-tinted KPI cards with click-through links, a "Needs
+  attention" banner + table (count, status pill, link per sheet), and a native
+  bar chart; color guide and provenance footer.
+- List sheets: Arial throughout, zebra rows, status pills, tab colors by
+  severity, per-sheet "About this sheet" panel with a back-to-Dashboard link,
+  friendly empty states, auto-fit widths, filters, landscape/fit-to-width print
+  setup with repeating header row.
+- Files / Orphans / Superseded: drawing names are hyperlinks that open the PDF;
+  Files gains a folder column.
+- Run History: DRY-RUN / EXECUTE mode pills, copies data bars, open-items trend
+  line chart.
+- Layout contract unchanged (header row 1, data from row 2, Dashboard B5/B6,
+  sheet names/order), so existing readers and the full test suite are unaffected.
+
 ## 0.1.1 — 2026-10-06
 
 ### Duplicate resolution

@@ -288,3 +288,80 @@ def test_resolve_names_unresolved_and_empty_inputs():
 
     empty_resolved = fx._resolve_names({}, {"tree": [], "orph": []})
     assert empty_resolved == {}
+
+
+def test_formula_injection_neutralized(tmp_path):
+    # PDF-derived text starting with "=" must be stored as text, never as a
+    # formula Excel evaluates on open (table rows + dashboard boxes).
+    from openpyxl import Workbook, load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    path = tmp_path / "organize_fermi_report.xlsx"
+    evil = '=HYPERLINK("http://evil.example","click")'
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [("F10126106", "F10126109")],
+        "chk": [],
+        "orphans": [],
+        "roots": [],
+        "mismatches": [],
+        "report_txt": "",
+        "names": {"F10126109": evil},
+    }
+
+    fx.build_workbook(path, ctx)
+    cell = load_workbook(path)["Missing"]["B2"]
+    assert cell.value == evil
+    assert cell.data_type == "s"
+
+    box = tmp_path / "box.xlsx"
+    w2 = Workbook()
+    fx._box(w2.active, 1, 1, 3, "=1+1")
+    w2.save(box)
+    cell2 = load_workbook(box).active["A1"]
+    assert cell2.value == "=1+1"
+    assert cell2.data_type == "s"
+
+
+def test_dash_two_tier_banner_print_fit_and_scanned_info_color(tmp_path):
+    from openpyxl import load_workbook
+
+    def build(name, ctx):
+        path = tmp_path / name
+        fx.build_workbook(path, ctx)
+        return load_workbook(path)
+
+    base = {
+        "output": str(tmp_path / "out"),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 0, "roots": 0, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "", "names": {},
+    }
+
+    # Action tier only: Missing + CHK -> red "Action needed" banner.
+    wb = build("act.xlsx", {**base, "missing": [("F10126106", "F10126109")],
+                            "chk": ["F10126107__CHK"]})
+    dash = wb["Dashboard"]
+    assert dash.page_setup.fitToHeight == 1
+    vals = [str(c.value) for row in dash.iter_rows() for c in row
+            if c.value is not None]
+    banner = next(v for v in vals if "Action needed" in v)
+    assert "Worth a look" not in banner
+    assert "Action" in vals          # per-row status pills
+    assert "Info" in vals            # legend documents the blue swatch
+
+    # Review tier only: one scanned PDF -> amber "Worth a look" + blue tab.
+    wb2 = build("rev.xlsx", {**base, "scanned": [("F10126108", [1])]})
+    vals2 = [str(c.value) for row in wb2["Dashboard"].iter_rows() for c in row
+             if c.value is not None]
+    assert any("Worth a look" in v and "Action needed" not in v for v in vals2)
+    tab = wb2["Scanned"].sheet_properties.tabColor
+    assert tab is not None and tab.rgb[-6:].upper() == "2563EB"
