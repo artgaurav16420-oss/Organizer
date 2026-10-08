@@ -4,6 +4,41 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-08
+
+### Placement safety
+- Placement refusal is surfaced: the run writes report + workbook, shows a
+  "Placement refused" action row on the Dashboard, and exits with code 2.
+  Nothing in the input or tree is touched by a refused run.
+- The copy cap (`MAX_PLANNED_COPIES`) is enforced **per run** and checked
+  before naming or any tree write; parked roots are excluded from the count,
+  and a refused batch performs no supersede swaps or folder moves.
+- Supersede archive-name collisions with different content are logged
+  (`archive already exists with different content`) instead of staying silent.
+- Orphan retirement byte-verifies the live tree copy (cache-free compare)
+  before deleting the parked copy; a differing live copy keeps the orphan.
+
+### Structure & stats
+- Extraction results flow through a structured run context (counters, missing,
+  chk, orphans, roots, used-on/title-block mismatches, scanned, watermarks,
+  placement_refused); the workbook consumes it directly instead of parsing the
+  text log. Parallel extraction merges worker OCR events back into the run.
+
+### Reliability
+- Iterative depth-capped traversals replace the recursive DFS; the
+  process-wide `sys.setrecursionlimit` bump is gone (library callers no longer
+  depend on the CLI setting it).
+- The extraction process pool uses an explicit `spawn` start method.
+- The staging sweep only removes the exact
+  `<name>.pdf.supersede_tmp.<pid>` shape and prunes system dirs.
+
+### Security & CI
+- PyMuPDF CVE-2026-82035 (CLI-only `extract_objects()` traversal) documented
+  with direct verification, scope reasoning, and a re-check-and-bump policy; a
+  regression test pins that the PyMuPDF CLI is never invoked.
+- CI adds a ruff job and installs the hash-pinned lock on a Python 3.10/3.11
+  matrix (Windows + Linux).
+
 ### Excel report redesign (`fermi_report_xlsx.py`)
 - Dashboard: 8 severity-tinted KPI cards with click-through links, a "Needs
   attention" banner + table (count, status pill, link per sheet), and a native
