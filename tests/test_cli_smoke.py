@@ -27,7 +27,8 @@ def test_import_after_pymupdf_preimport_emits_no_deprecation():
 
 
 def test_build_parser_and_run_mode_label():
-    args = build_parser().parse_args(["in", "--dry-run", "--no-ocr", "--jobs", "2"])
+    parser = build_parser()
+    args = parser.parse_args(["in", "--dry-run", "--no-ocr", "--jobs", "2"])
     assert args.folder == "in"
     assert args.dry_run and args.no_ocr and not args.incremental
     assert args.jobs == 2
@@ -35,6 +36,11 @@ def test_build_parser_and_run_mode_label():
     assert run_mode_label(False, False) == "EXECUTE"
     assert run_mode_label(True, True) == "INCREMENTAL (DRY-RUN)"
     assert run_mode_label(False, True) == "INCREMENTAL"
+    # Help must not promise "no folders": the workbook creates the output
+    # folder, and the report/workbook are still written in dry-run.
+    dry_help = next(a for a in parser._actions if a.dest == "dry_run").help
+    assert "workbook" in dry_help
+    assert "without copying drawings" in dry_help
 
 
 def test_cli_dry_run_smoke(tmp_path, make_pdf):

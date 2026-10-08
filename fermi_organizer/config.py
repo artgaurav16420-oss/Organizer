@@ -84,6 +84,11 @@ MAX_DIR = 240
 TREE_MAX_DEPTH = 500
 # Bound for the folder-name shortening loop (naming.build_folder_names)
 NAME_SHORTEN_MAX_PASSES = 200
+# Placement fan-out guard (fsops.place_files): a diamond/DAG BOM graph copies
+# one file per root-to-leaf path. Warn above the first bound, refuse to place
+# anything above the second (input untouched; operator reviews the graph).
+PLANNED_COPIES_WARN = 1000
+MAX_PLANNED_COPIES = 10000
 
 # ---------------------------------------------------------------------------
 # OCR support for scanned (image-only) PDFs.  All geometry is derived from

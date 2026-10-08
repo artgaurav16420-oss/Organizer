@@ -2,6 +2,7 @@
 """CLI entry point for the Fermi PDF organizer (split-layout version)."""
 import argparse
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +18,9 @@ def build_parser():
     )
     parser.add_argument("folder", help="Folder containing Fermi PDF drawings")
     parser.add_argument("--output", help="Output folder for organized structure (default: same as input)")
-    parser.add_argument("--dry-run", action="store_true", help="Print actions without creating folders or copying files")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the plan without copying drawings; report + .xlsx are still "
+                             "written (a missing --output folder is created for the workbook only)")
     parser.add_argument("--incremental", action="store_true",
                         help="Process only stems not already in the output tree plus stored _orphans/ (input scan is recursive); existing subfolders stay put except supersede swaps and parent-adoption moves")
     parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
@@ -49,14 +52,13 @@ def run_mode_label(dry_run, incremental):
     return "DRY-RUN" if dry_run else "EXECUTE"
 
 
-def _refresh_workbook(ctx: RunContext, output, report_path, log_lines, dry_run, incremental, log):
+def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, incremental, log):
     try:
         import fermi_report_xlsx as fx
     except ImportError as e:
         log(f"  WARNING: Excel report skipped (module unavailable: {e})")
         return
     try:
-        run_time = log_lines[0].split(" - ")[-1] if log_lines else ""
         names = dict(ctx["names"])
         for base, name in names_from_tree(output).items():
             names.setdefault(base, name)
@@ -75,7 +77,9 @@ def _refresh_workbook(ctx: RunContext, output, report_path, log_lines, dry_run, 
         if xlsx:
             log(f"  Excel report saved to: {xlsx}")
     except Exception as e:
-        log(f"  WARNING: Excel report not updated: {e}")
+        log(f"  WARNING: Excel report not updated: {type(e).__name__}: {e}")
+        for line in traceback.format_exc().rstrip().splitlines():
+            log(f"    {line}")
 
 
 def main():
@@ -110,7 +114,8 @@ def main():
         print(msg)
         log_lines.append(msg)
 
-    log(f"Fermi PDF organizer - {datetime.now().isoformat(timespec='seconds')}")
+    run_time = datetime.now().isoformat(timespec="seconds")
+    log(f"Fermi PDF organizer - {run_time}")
     log(f"Source folder: {folder}")
     if output != folder:
         log(f"Output folder: {output}")
@@ -151,7 +156,7 @@ def main():
         log(f"  Report NOT saved (output folder missing): {output}")
 
     # Live Excel workbook (after every run, dry-run included)
-    _refresh_workbook(ctx, output, report_path, log_lines, args.dry_run,
+    _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
                       args.incremental, log)
 
 

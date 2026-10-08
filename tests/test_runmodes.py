@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from fermi_organizer import fsops
+from fermi_organizer import extraction, fsops
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
@@ -268,6 +268,36 @@ def test_run_full_returns_structured_ctx(tmp_path, make_pdf):
     assert ctx["names"]["F10126106"] == "Test Parent"
     assert ctx["names"]["F10126107"] == "Child part"
     assert ctx["names"]["F10126108"] == "Standalone part"
+
+
+def test_run_full_warnings_count_is_structured(tmp_path, make_pdf, monkeypatch):
+    # Extraction issues are counted from the scan results, not by matching
+    # log text: each page-capped PDF contributes exactly one warning.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    monkeypatch.setattr(extraction, "MAX_PDF_PAGES", 0)
+
+    ctx = run_full(in_dir, out, True, lambda msg: None, jobs=1)
+
+    assert ctx["counters"]["warnings"] == 2
+
+
+def test_run_incremental_warnings_count_is_structured(tmp_path, make_pdf,
+                                                      monkeypatch):
+    # Organized scan + new-PDF scan each contribute their own issues.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_organized_newer_rev(make_pdf, out)
+    _write_standalone(make_pdf, in_dir)
+    monkeypatch.setattr(extraction, "MAX_PDF_PAGES", 0)
+
+    ctx = run_incremental(in_dir, out, False, lambda msg: None, jobs=1)
+
+    assert ctx["counters"]["warnings"] == 2
 
 
 def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):

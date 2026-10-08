@@ -370,14 +370,15 @@ def _scan_boms(items, jobs, log, require_desc):
 
     Logs per-PDF errors/warnings and the unique-FERMI count line. Returns
     ({stem: [values]}, {ref_value: NAME}, {stem: watermark evidence},
-    {stem: (filename, title block number, revision, NAME, scanned)});
-    require_desc keeps the run_full policy of storing a NAME only when the
-    BOM row carries a description.
+    {stem: (filename, title block number, revision, NAME, scanned)},
+    extraction warning count); require_desc keeps the run_full policy of
+    storing a NAME only when the BOM row carries a description.
     """
     bom_of = {}
     bom_names = {}
     watermarks = {}
     titleblocks = {}
+    warnings = 0
     results = run_parallel(bom_task, [str(p) for _, p in items],
                            jobs, OCR.enabled)
     for (stem, pdf), res in zip(items, results, strict=True):
@@ -387,6 +388,7 @@ def _scan_boms(items, jobs, log, require_desc):
         _, entries, method, issues, watermark, number, rev, name, scanned = res
         for msg in issues:
             log(f"  {stem}: EXTRACTION WARNING: {msg}")
+        warnings += len(issues)
         if watermark:
             watermarks[stem] = watermark
         titleblocks[stem] = (pdf.stem, number, rev, name, scanned)
@@ -397,7 +399,7 @@ def _scan_boms(items, jobs, log, require_desc):
                 bom_names[e[0]] = e[3]
         log(f"  {stem}: {len(raw_values)} unique FERMI# ({method})")
     log("")
-    return bom_of, bom_names, watermarks, titleblocks
+    return bom_of, bom_names, watermarks, titleblocks, warnings
 
 
 def _scan_used_on(items, jobs, header, log):
@@ -547,12 +549,13 @@ def _detect_supersede_pairs(new_index, old_new, organized, log):
 
 def _scan_organized(organized, all_stems, jobs, bom_names, log):
     """BOM + USED ON scan over organized PDFs (placement context). Logs the
-    missing-reference block; returns
-    (org_boms, org_used_on, org_unmatched, org_watermarks, org_titleblocks)."""
+    missing-reference block; returns (org_boms, org_used_on, org_unmatched,
+    org_watermarks, org_titleblocks, extraction warning count)."""
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
     org_titleblocks = {}
+    warnings = 0
     log("--- Scanning BOM + USED ON (organized PDFs, for placement) ---")
     org_items = [(stem, pick_shallowest(organized[stem]))
                  for stem in sorted(organized)]
@@ -565,6 +568,7 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
         _, entries, method, used, issues, watermark, number, rev, name, scanned = res
         for msg in issues:
             log(f"  {stem}: EXTRACTION WARNING: {msg}")
+        warnings += len(issues)
         if watermark:
             org_watermarks[stem] = watermark
         org_titleblocks[stem] = (pdf.stem, number, rev, name, scanned)
@@ -588,7 +592,8 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
                           org_unmatched, bom_names, log)
         log("")
     log("")
-    return org_boms, org_used_on, org_unmatched, org_watermarks, org_titleblocks
+    return (org_boms, org_used_on, org_unmatched, org_watermarks,
+            org_titleblocks, warnings)
 
 
 def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
@@ -857,9 +862,10 @@ def _full_prepare_index(folder, jobs, log):
 
 
 def _full_scan_boms(index, jobs, log, rekey, chk_stems):
-    """BOM scan + opt-in re-key + watermark/title-block logs + OCR snap."""
+    """BOM scan + opt-in re-key + watermark/title-block logs + OCR snap.
+    Returns the scan results plus the extraction warning count."""
     log("--- Scanning BOM tables ---")
-    bom_of, bom_names, watermarks, titleblocks = _scan_boms(
+    bom_of, bom_names, watermarks, titleblocks, warnings = _scan_boms(
         sorted(index.items()), jobs, log, require_desc=True)
     rekeyed = {}
     if rekey:
@@ -872,7 +878,8 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     tb_mismatches = _titleblock_mismatches(titleblocks, log)
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(bom_of, index, log)
-    return index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems
+    return (index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed,
+            chk_stems, warnings)
 
 
 def _full_build_edges(bom_of, index, bom_names, log):
@@ -1003,24 +1010,13 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
     used_on_bugs [(parent, child)],
     titleblock_mismatches [(stem, field, filename value, title-block value)],
     scanned [(stem, [pages])], watermarks [(stem, evidence)],
-    names {stem/ref: NAME}. Raises NoPDFsFoundError on an empty input.
+    names {stem/ref: NAME}.     Raises NoPDFsFoundError on an empty input.
     """
-    # Count 'EXTRACTION WARNING' lines for the workbook context (the same
-    # number the workbook previously recovered by parsing the log text).
-    warning_count = 0
-    base_log = log
-
-    def log(msg):
-        nonlocal warning_count
-        if "EXTRACTION WARNING" in msg:
-            warning_count += 1
-        base_log(msg)
-
     jobs = resolve_jobs(jobs)
     sweep_supersede_staging(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
-    index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems = \
-        _full_scan_boms(index, jobs, log, rekey, chk_stems)
+    index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems, \
+        warning_count = _full_scan_boms(index, jobs, log, rekey, chk_stems)
 
     children, parents, unmatched = _full_build_edges(bom_of, index, bom_names, log)
 
@@ -1131,7 +1127,7 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
     new_index, watermarked_dupes = _resolve_duplicates(
         new_index, new_duplicates, jobs, log)
     log("--- Scanning BOM tables (new PDFs) ---")
-    new_boms, bom_names, new_watermarks, new_titleblocks = _scan_boms(
+    new_boms, bom_names, new_watermarks, new_titleblocks, warnings = _scan_boms(
         sorted(new_index.items()), jobs, log, require_desc=False)
     all_stems = new_stems | org_stems
     rekeyed = {}
@@ -1149,7 +1145,7 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
     _snap_boms(new_boms, all_stems, log)
     return (new_index, watermarked_dupes, new_boms, bom_names,
             new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
-            scanned_new, all_stems, chk_stems)
+            scanned_new, all_stems, chk_stems, warnings)
 
 
 def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
@@ -1177,13 +1173,16 @@ def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
 
 def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
                                 new_watermarks, new_titleblocks, unmatched, log):
-    """Organized scan + snaps + watermark/title-block merge."""
+    """Organized scan + snaps + watermark/title-block merge.
+    Returns (org_boms, org_used_on, watermarks, tb_mismatches, warnings)."""
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
     org_titleblocks = {}
+    warnings = 0
     if organized:
-        org_boms, org_used_on, org_unmatched, org_watermarks, org_titleblocks = \
+        org_boms, org_used_on, org_unmatched, org_watermarks, \
+            org_titleblocks, warnings = \
             _scan_organized(organized, all_stems, jobs, bom_names, log)
         _snap_boms(org_boms, all_stems, log)
         _snap_used_on(org_used_on, all_stems, log)
@@ -1197,7 +1196,7 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
     all_titleblocks = dict(org_titleblocks)
     all_titleblocks.update(new_titleblocks)
     tb_mismatches = _titleblock_mismatches(all_titleblocks, log)
-    return org_boms, org_used_on, watermarks, tb_mismatches
+    return org_boms, org_used_on, watermarks, tb_mismatches, warnings
 
 
 def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
@@ -1394,17 +1393,6 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     names {stem/ref: NAME}.
     Raises NoPDFsFoundError when the input has no indexable PDFs.
     """
-    # Count 'EXTRACTION WARNING' lines for the workbook context (the same
-    # number the workbook previously recovered by parsing the log text).
-    warning_count = 0
-    base_log = log
-
-    def log(msg):
-        nonlocal warning_count
-        if "EXTRACTION WARNING" in msg:
-            warning_count += 1
-        base_log(msg)
-
     jobs = resolve_jobs(jobs)
     sweep_supersede_staging(output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
@@ -1412,15 +1400,16 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
         _incremental_prepare(folder, output, dry_run, log)
 
     if not new_index:
+        # No scan ran on this path, so there are no extraction warnings.
         return _incremental_no_new_ctx(organized, chk_stems, output,
-                                       total_copies, warning_count, log,
+                                       total_copies, 0, log,
                                        stored_orphans=stored_orphans,
                                        archived=archived_new,
                                        dry_run=dry_run)
 
     new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
         new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
-        all_stems, chk_stems = _incremental_scan_new_boms(
+        all_stems, chk_stems, warning_count = _incremental_scan_new_boms(
             new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
     # Archive the watermarked duplicates that lost the pre-scan resolution.
     if watermarked_dupes:
@@ -1429,10 +1418,11 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     unmatched = _incremental_new_missing(new_boms, all_stems, bom_names,
                                          chk_stems, log)
 
-    org_boms, org_used_on, watermarks, tb_mismatches = \
+    org_boms, org_used_on, watermarks, tb_mismatches, org_warnings = \
         _incremental_scan_organized(organized, all_stems, jobs, bom_names,
                                     new_watermarks, new_titleblocks,
                                     unmatched, log)
+    warning_count += org_warnings
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
                                                            all_stems, log)
 
