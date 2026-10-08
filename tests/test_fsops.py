@@ -1,5 +1,7 @@
 """Unit tests: system-dir convention, output tree scan, superseded copies."""
 import os
+
+import pytest
 from pathlib import Path
 
 from fermi_organizer import fsops
@@ -494,3 +496,33 @@ def test_sweep_supersede_staging_missing_output_is_noop(tmp_path):
     logged = []
     sweep_supersede_staging(tmp_path / "nope", False, logged.append)
     assert logged == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")
+def test_copy_ops_read_sources_beyond_max_path(tmp_path):
+    # LongPathsEnabled=0: open() on an absolute path >= 260 chars fails with
+    # ENOENT even though the file exists (real HBCM run: 6 CHK archive copies
+    # failed). _native() adds the \\?\ prefix so input-derived copies work.
+    import shutil
+
+    seg = "s" * 40
+    src_dir = tmp_path
+    while len(str(src_dir / "F10126106.pdf")) < 300:
+        src_dir = src_dir / seg
+    Path("\\\\?\\" + str(src_dir)).mkdir(parents=True)
+    src = src_dir / "F10126106.pdf"
+    Path("\\\\?\\" + str(src)).write_bytes(b"deep payload")
+    assert len(str(src)) >= 260
+
+    out = tmp_path / "out"
+    logged = []
+    assert copy_superseded({"F10126106": src}, out, False, logged.append) == 1
+    assert (out / "_superseded" / "F10126106.pdf").read_bytes() == b"deep payload"
+
+    tree = tmp_path / "tree"
+    assert place_files({"F10126106": []}, ["F10126106"],
+                       {"F10126106": src}, tree, False, logged.append) == 1
+    assert (tree / "F10126106" / "F10126106.pdf").read_bytes() == b"deep payload"
+    assert not any("copy failed" in m for m in logged)
+    # Remove the long chain ourselves - plain rmtree cannot reach it.
+    shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)

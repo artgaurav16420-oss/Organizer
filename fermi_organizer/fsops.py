@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Filesystem scans and side effects (indexing, placement, copies)."""
+import os
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -7,6 +8,20 @@ from pathlib import Path
 from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH)
 from .graph import is_chk_stem
 from .naming import folder_name_for
+
+
+def _native(path):
+    r"""Filesystem-op view of `path`: add the Windows `\\?\` prefix when long.
+
+    With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
+    fails with ENOENT even though the file exists (input trees nest deep;
+    the output tree is bounded by MAX_PATH, so only input-derived paths hit
+    this - real run: 6 CHK archive copies failed without the prefix).
+    """
+    s = os.fspath(path)
+    if os.name == "nt" and len(s) >= 260 and not s.startswith("\\\\?\\"):
+        return "\\\\?\\" + s
+    return path
 
 
 def _classify_input_pdf(p, folder, index):
@@ -196,7 +211,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 failed_count += count_copies(stem)
                 return
             try:
-                shutil.copy2(pdf, target)
+                shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 failed_count += 1
@@ -317,7 +332,7 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         else:
             try:
                 sf.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(pdf, target)
+                shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
@@ -344,7 +359,7 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         else:
             try:
                 sf.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, target)
+                shutil.copy2(_native(p), _native(target))
             except OSError as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
                 continue
@@ -372,7 +387,7 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
         else:
             try:
                 orphans_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(pdf, target)
+                shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue

@@ -18,7 +18,7 @@ from .naming import build_folder_names
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
-                    retire_adopted_orphans, sweep_supersede_staging)
+                    retire_adopted_orphans, sweep_supersede_staging, _native)
 
 
 class RunCounters(TypedDict):
@@ -634,9 +634,9 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
             # then archive the old revision, then replace, then drop the old file.
             try:
                 sup_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(new_pdf, staging)
+                shutil.copy2(_native(new_pdf), _native(staging))
                 if archived:
-                    shutil.copy2(p, archive_target)
+                    shutil.copy2(_native(p), _native(archive_target))
                 os.replace(staging, target_new)
             except OSError as e:
                 if staging.exists():

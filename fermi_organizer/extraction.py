@@ -566,11 +566,15 @@ def _ocr_strip_tokens(page, rect, psm="7"):
             r = subprocess.run(
                 [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
                  "--dpi", str(int(72 * zoom))],
-                capture_output=True, text=True, timeout=120,
+                # UTF-8, not the locale codepage: Tesseract output contains
+                # multi-byte characters (e.g. curly quotes) that cp1252 cannot
+                # decode - the reader thread then dies and r.stdout is None.
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=120,
             )
             # Glue pipe-separated fragments back together ('FLO |44633'): the
             # pipe is Tesseract's border/1 confusion and OCR_CORR maps it to 1.
-            text = re.sub(r"\s*\|\s*", "|", r.stdout.upper())
+            text = re.sub(r"\s*\|\s*", "|", (r.stdout or "").upper())
             toks = re.sub(r"[^A-Z0-9|]+", " ", text).split()
             vals = []
             for tok_src in _join_split_f_strings(toks):
