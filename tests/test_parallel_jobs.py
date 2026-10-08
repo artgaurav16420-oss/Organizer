@@ -41,6 +41,30 @@ def test_run_full_jobs2_matches_jobs1(tmp_path, make_pdf):
     assert ctx1 == ctx2
 
 
+def test_run_parallel_uses_spawn_context(monkeypatch):
+    import concurrent.futures as cf
+
+    captured = {}
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def map(self, task, paths):
+            return [task(p) for p in paths]
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", FakeExecutor)
+    out = extraction.run_parallel(lambda p: (p.upper(), None), ["a", "b"], jobs=2)
+    assert out == [("A",), ("B",)]  # trailing OCR delta stripped
+    assert captured["mp_context"].get_start_method() == "spawn"
+
+
 def test_ocr_event_delta_merge_roundtrip():
     ocr = extraction._OcrContext()
     ocr.events["a.pdf"] = {"pages": {0}, "used_on": ["F10126106"],

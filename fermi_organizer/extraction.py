@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Content extraction: BOM tables/text, USED ON, NAME, OCR fallback."""
+import multiprocessing
 import os
 import re
 import shutil
@@ -1596,7 +1597,13 @@ def run_parallel(task, paths, jobs=0, ocr_enabled=True):
     if jobs <= 1:
         return [r[:-1] for r in (task(p) for p in paths)]
     from concurrent.futures import ProcessPoolExecutor
+    # Explicit spawn context: fork is unsafe in a multi-threaded parent
+    # (DeprecationWarning since 3.10, default changed on newer Python) and the
+    # start method would otherwise differ across the 3.10/3.11 CI matrix.
+    # Spawn matches the long-standing Windows behavior; worker startup cost is
+    # negligible next to OCR.
     with ProcessPoolExecutor(max_workers=jobs,
+                             mp_context=multiprocessing.get_context("spawn"),
                              initializer=_ocr_worker_init,
                              initargs=(ocr_enabled,)) as ex:
         raw = list(ex.map(task, paths))
