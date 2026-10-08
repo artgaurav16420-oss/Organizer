@@ -693,7 +693,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                 if child_folder == s_folder or child_folder.is_relative_to(s_folder):
                     continue
                 target_path = s_folder / child_folder.name
-                if target_path.exists():
+                if _exists(target_path):
                     log(f"  WARNING: {c}: destination exists, skipping move (manual review): "
                         f"{target_path.relative_to(output)}")
                     continue
@@ -775,7 +775,7 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
             continue
         # Guard against destination collisions before moving the child's folder.
         target_path = target_folder / child_folder.name
-        if target_path.exists():
+        if _exists(target_path):
             same = False
             try:
                 same = target_path.resolve() == child_folder.resolve()
