@@ -395,3 +395,39 @@ def test_no_formula_cells_anywhere_including_used_on_bugs(tmp_path):
                 for ws in wb.worksheets for row in ws.iter_rows()
                 for c in row if c.data_type == "f"]
     assert formulas == []
+
+
+def test_formula_fuzz_every_input_field_produces_zero_formulas(tmp_path):
+    # Full-field fuzz: a "=" payload in every ctx input (including the
+    # Dashboard provenance via _box, KPI card counter values, and the Run
+    # History row) must produce zero formula cells anywhere in the workbook.
+    # Pins every dynamic write path so a future edit cannot drop a guard.
+    from openpyxl import load_workbook
+
+    evil = "=HYPERLINK(\"http://evil.example\",\"x\")"
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": evil,              # Dashboard provenance (via _box)
+        "run_mode": evil,            # Dashboard subtitle + Run History row
+        "run_time": evil,
+        "counters": {"scanned": evil, "roots": evil, "copies": evil,
+                     "cycles": evil, "warnings": evil},   # KPI card values (via _box)
+        "missing": [(evil, evil), ("F10126106", "F10126109")],
+        "chk": [evil],
+        "orphans": [evil],
+        "roots": [(evil, [evil])],
+        "mismatches": [(evil, evil, [evil])],
+        "used_on_bugs": [(evil, evil)],
+        "titleblock_mismatches": [(evil, "revision", evil, evil)],
+        "scanned": [(evil, [1])],
+        "watermarks": [(evil, evil)],
+        "report_txt": evil,          # Run History report column
+        "names": {evil: evil, "F10126109": evil},
+    }
+
+    fx.build_workbook(path, ctx)
+    wb = load_workbook(path)
+    formulas = [(ws.title, c.coordinate)
+                for ws in wb.worksheets for row in ws.iter_rows()
+                for c in row if c.data_type == "f"]
+    assert formulas == []
