@@ -101,7 +101,7 @@ def _hdr(ws, headers, widths, tab=None, aligns=None):
     ws.sheet_view.zoomScale = 100
     if tab:
         ws.sheet_properties.tabColor = PAL[tab]["accent"] if tab in PAL else tab
-    for i, (h, w) in enumerate(zip(headers, widths), start=1):
+    for i, (h, w) in enumerate(zip(headers, widths, strict=False), start=1):
         c = ws.cell(row=1, column=i, value=h)
         c.font = _font(10, True, WHITE)
         c.fill = _solid(DARK)
@@ -550,7 +550,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     legend = (("red", "Action required"), ("amber", "Review"), ("orange", "Parked"),
               ("grey", "Archived"), ("green", "OK / active"), ("blue", "Info"))
     spans = ((2, 3), (4, 5), (6, 7), (8, 9), (10, 12), (13, 16))
-    for (c1, c2), (pal, text) in zip(spans, legend):
+    for (c1, c2), (pal, text) in zip(spans, legend, strict=False):
         for cc in range(c1, c2 + 1):
             dash.cell(row=f + 1, column=cc).fill = _solid(PAL[pal]["fill"])
         _pill(_box(dash, f + 1, c1, c2, text, None, None, None, None), pal)

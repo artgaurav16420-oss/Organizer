@@ -7,6 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from fermi_organizer import fsops
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
@@ -132,6 +133,87 @@ def test_run_incremental_adopts_stored_orphan(tmp_path, make_pdf):
     assert re.search(r"New PDFs scanned:\s+2", text)
     assert re.search(r"PDF copies written:\s+2", text)
     assert "Retired 1 orphan copy(ies) from _orphans/ (adopted into tree)" in text
+
+
+def _write_organized_newer_rev(make_pdf, out):
+    folder = out / "F10126109 B Assy"
+    folder.mkdir(parents=True)
+    return make_pdf(folder / "F10126109_B.pdf", ["NAME", "Rev B assembly"])
+
+
+def test_run_incremental_failed_archive_keeps_parked_orphan(tmp_path, make_pdf,
+                                                            monkeypatch):
+    # The parked _orphans/ PDF is the only copy of the older revision; the
+    # top-level arrival supersedes the organized _B copy. A failed archive
+    # copy must not retire the parked copy (regression: intent-based retire
+    # deleted the last copy).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_organized_newer_rev(make_pdf, out)
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126150.pdf", ["NAME", "Unrelated new part"])
+
+    real_copy2 = fsops.shutil.copy2
+
+    def fake_copy2(s, d):
+        if Path(d).name == "F10126109.pdf":
+            raise OSError("locked")
+        return real_copy2(s, d)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert parked.is_file()
+    assert not (out / "_superseded" / "F10126109.pdf").exists()
+    assert "WARNING: F10126109: copy failed" in "\n".join(logged)
+
+
+def test_run_incremental_archived_superseded_orphan_retires(tmp_path, make_pdf):
+    # Control for the failed-archive case: once the archive copy lands, the
+    # parked copy is still retired (the normal flow is preserved).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_organized_newer_rev(make_pdf, out)
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126150.pdf", ["NAME", "Unrelated new part"])
+
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert (out / "_superseded" / "F10126109.pdf").is_file()
+    assert not parked.exists()
+    assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
+
+
+def test_run_incremental_no_new_pdf_retires_archived_parked_orphan(tmp_path, make_pdf):
+    # The only candidate is a parked orphan that is older than the organized
+    # _B revision: it gets archived, then the no-new fast path must still
+    # retire the parked copy instead of leaving it reported forever.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_organized_newer_rev(make_pdf, out)
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+
+    logged = []
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert (out / "_superseded" / "F10126109.pdf").is_file()
+    assert not parked.exists()
+    assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
+    assert ctx["orphans"] == []
 
 
 def test_run_incremental_dry_run_reports_planned_orphan_retirement(tmp_path, make_pdf):
@@ -411,7 +493,7 @@ def test_run_full_prefers_text_copy_over_scanned_duplicate(tmp_path, make_pdf):
     in_dir.mkdir()
     (in_dir / "a_scan").mkdir()
     (in_dir / "z_text").mkdir()
-    scanned = make_pdf(in_dir / "a_scan" / "F10126106.pdf", [])
+    make_pdf(in_dir / "a_scan" / "F10126106.pdf", [])
     text = make_pdf(in_dir / "z_text" / "F10126106.pdf",
                     ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Test Parent"])
     make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part", "USED ON", "F10126106"])
@@ -472,7 +554,7 @@ def test_run_full_all_watermarked_prefers_text_over_scanned(tmp_path, make_pdf):
     in_dir.mkdir()
     (in_dir / "a_scan_wm").mkdir()
     (in_dir / "z_text_wm").mkdir()
-    scanned_wm = make_pdf(in_dir / "a_scan_wm" / "F10126106.pdf", ["PRELIMINARY"])
+    make_pdf(in_dir / "a_scan_wm" / "F10126106.pdf", ["PRELIMINARY"])
     text_wm = make_pdf(in_dir / "z_text_wm" / "F10126106.pdf",
                        ["FERMI PART LIST", "F10126107 CHILD PART", "NAME",
                         "Test Parent", "PRELIMINARY"])
@@ -555,7 +637,7 @@ def test_run_incremental_prefers_text_copy_over_scanned_duplicate(tmp_path, make
 
     (in_dir / "a_scan").mkdir()
     (in_dir / "z_text").mkdir()
-    scanned = make_pdf(in_dir / "a_scan" / "F10126110.pdf", [])
+    make_pdf(in_dir / "a_scan" / "F10126110.pdf", [])
     text = make_pdf(in_dir / "z_text" / "F10126110.pdf",
                     ["FERMI PART LIST", "F10126111 NEW CHILD PART", "NAME",
                      "New assembly section"])

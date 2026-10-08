@@ -115,6 +115,24 @@ def test_swap_archive_collision_suffixes_on_same_size_different_content(tmp_path
     assert "_superseded/F10126107.1.pdf" in text
 
 
+def test_swap_archive_collision_reuses_identical_suffixed_copy(tmp_path):
+    # A suffixed archive already holding the same bytes is reused: no growth
+    # to .2, and the count reflects that no new archive copy was written.
+    out, sup, old, new_pdf = _setup_collision(
+        tmp_path, "out_reuse", b"old", b"different base")
+    (sup / "F10126107.1.pdf").write_bytes(b"old")
+    logged = []
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    assert copies == 1
+    assert (sup / "F10126107.pdf").read_bytes() == b"different base"
+    assert (sup / "F10126107.1.pdf").read_bytes() == b"old"
+    assert not (sup / "F10126107.2.pdf").exists()
+    assert (old.parent / "F10126107_A.pdf").read_bytes() == b"new"
+    assert not old.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")
 def test_swap_revision_files_beyond_max_path(tmp_path):
     # Deep output root: the _exists/archive check, staging, os.replace and the

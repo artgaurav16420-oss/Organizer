@@ -117,16 +117,87 @@ def test_copy_superseded_skip_vs_overwrite(tmp_path):
     target = out / "_superseded" / "F10126106.pdf"
     logged = []
 
-    assert copy_superseded({"F10126106": old_pdf}, out, False, logged.append) == 1
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append)
+    assert (n, archived) == (1, {"F10126106"})
     assert target.read_text() == "v1"
 
+    # overwrite=False: existing archive with different bytes is skipped and
+    # does NOT count as archived (it must not retire a parked orphan).
     target.write_text("v2")
-    assert copy_superseded({"F10126106": old_pdf}, out, False, logged.append) == 0
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append)
+    assert (n, archived) == (0, set())
     assert target.read_text() == "v2"
 
-    assert copy_superseded({"F10126106": old_pdf}, out, False, logged.append,
-                           overwrite=True) == 1
-    assert target.read_text() == "v1"
+    # overwrite=True: differing bytes archive under a suffix, never clobber.
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append,
+                                  overwrite=True)
+    assert (n, archived) == (1, {"F10126106"})
+    assert target.read_text() == "v2"
+    assert (out / "_superseded" / "F10126106.1.pdf").read_text() == "v1"
+
+    # overwrite=True with identical content: the suffixed copy is reused,
+    # so repeat runs do not grow suffixes.
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append,
+                                  overwrite=True)
+    assert (n, archived) == (1, {"F10126106"})
+    assert (out / "_superseded" / "F10126106.1.pdf").read_text() == "v1"
+    assert not (out / "_superseded" / "F10126106.2.pdf").exists()
+
+    # overwrite=False with an identical existing archive counts as archived.
+    target.write_text("v1")
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append)
+    assert (n, archived) == (0, {"F10126106"})
+
+
+def test_copy_superseded_symlink_target_not_archived(tmp_path):
+    # A live symlink at the archive destination marks nothing as archived:
+    # retiring a parked orphan on it could delete the only copy.
+    src = tmp_path / "in"
+    src.mkdir()
+    pdf = src / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF incoming")
+    out = tmp_path / "out"
+    target = out / "_superseded" / "F10126106.pdf"
+    target.parent.mkdir(parents=True)
+    referent = tmp_path / "elsewhere.pdf"
+    referent.write_bytes(b"%PDF elsewhere")
+    try:
+        target.symlink_to(referent)
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+
+    logged = []
+    n, archived = copy_superseded({"F10126106": pdf}, out, False, logged.append)
+
+    assert (n, archived) == (0, set())
+    assert "F10126106: copy skipped (symlink refused)" in "\n".join(logged)
+    assert referent.read_bytes() == b"%PDF elsewhere"
+
+
+def test_resolve_archive_target_ignores_stale_filecmp_cache(tmp_path):
+    # filecmp.cmp answers from a path+stat cache: a re-written archive with
+    # unchanged size/mtime still reads as equal, which would discard the
+    # changed revision. resolve_archive_target must not consult that cache.
+    import filecmp
+
+    sup = tmp_path / "_superseded"
+    sup.mkdir(parents=True)
+    src = tmp_path / "F10126106.pdf"
+    src.write_bytes(b"AAAA")
+    target = sup / "F10126106.pdf"
+    target.write_bytes(b"AAAA")
+    os.utime(src, (1_000_000_000, 1_000_000_000))
+    os.utime(target, (1_000_000_000, 1_000_000_000))
+    assert filecmp.cmp(fsops._native(target), fsops._native(src), shallow=False)
+
+    target.write_bytes(b"BBBB")
+    os.utime(target, (1_000_000_000, 1_000_000_000))
+    # Stale cache hit: same paths, same size, same mtime, different bytes.
+    assert filecmp.cmp(fsops._native(target), fsops._native(src), shallow=False)
+
+    resolved, already = fsops.resolve_archive_target(sup, src)
+    assert not already
+    assert resolved == sup / "F10126106.1.pdf"
 
 
 def test_place_files_copy_failure_skips_file_continues_children(tmp_path, monkeypatch):
@@ -200,10 +271,13 @@ def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
     logged = []
 
-    n = copy_superseded({"F10126106": bad_pdf, "F10126107": good_pdf},
-                        out, False, logged.append)
+    n, archived = copy_superseded({"F10126106": bad_pdf, "F10126107": good_pdf},
+                                  out, False, logged.append)
 
     assert n == 1
+    # The failed stem is not in the archived set: callers must not retire an
+    # _orphans/ copy that the archive never reached.
+    assert archived == {"F10126107"}
     assert (out / "_superseded" / "F10126107.pdf").is_file()
     assert not (out / "_superseded" / "F10126106.pdf").exists()
     assert "WARNING: F10126106: copy failed" in "\n".join(logged)
@@ -230,6 +304,55 @@ def test_copy_watermarked_duplicates_success_and_dry_run(tmp_path):
     assert n_real == 2
     assert (out / "_superseded" / "F10126106.pdf").read_text() == "v1"
     assert (out / "_superseded" / "F10126107.pdf").read_text() == "v2"
+
+
+def test_copy_watermarked_duplicates_dry_run_plans_distinct_suffixes(tmp_path):
+    # Same-name sources with different bytes resolve against unchanged disk in
+    # dry-run; planned destinations must still show the suffixes a real run
+    # would write.
+    a_dir = tmp_path / "a"
+    b_dir = tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    a = a_dir / "F10126106.pdf"
+    b = b_dir / "F10126106.pdf"
+    a.write_text("v1")
+    b.write_text("v2")
+    out = tmp_path / "out"
+    logged = []
+
+    n = copy_watermarked_duplicates([a, b], out, dry_run=True, log=logged.append)
+
+    assert n == 2
+    text = "\n".join(logged).replace("\\", "/")
+    assert "_superseded/F10126106.pdf" in text
+    assert "_superseded/F10126106.1.pdf" in text
+    assert not (out / "_superseded").exists()
+
+
+def test_copy_watermarked_duplicates_never_clobbers_different_content(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    pdf = src / "F10126106.pdf"
+    pdf.write_text("v1")
+    out = tmp_path / "out"
+    target = out / "_superseded" / "F10126106.pdf"
+    target.parent.mkdir(parents=True)
+    target.write_text("already archived, other copy")
+    logged = []
+
+    n = copy_watermarked_duplicates([pdf], out, dry_run=False, log=logged.append)
+
+    assert n == 1
+    # Pre-existing archive untouched; the loser archived under a suffix.
+    assert target.read_text() == "already archived, other copy"
+    assert (out / "_superseded" / "F10126106.1.pdf").read_text() == "v1"
+
+    # Identical bytes reuse the suffixed copy: repeat runs do not grow names.
+    logged.clear()
+    n = copy_watermarked_duplicates([pdf], out, dry_run=False, log=logged.append)
+    assert n == 1
+    assert not (out / "_superseded" / "F10126106.2.pdf").exists()
 
 
 def test_copy_watermarked_duplicates_failure_warns_and_continues(tmp_path, monkeypatch):
@@ -503,8 +626,6 @@ def test_copy_ops_read_sources_beyond_max_path(tmp_path):
     # LongPathsEnabled=0: open() on an absolute path >= 260 chars fails with
     # ENOENT even though the file exists (real HBCM run: 6 CHK archive copies
     # failed). _native() adds the \\?\ prefix so input-derived copies work.
-    import shutil
-
     seg = "s" * 40
     src_dir = tmp_path
     while len(str(src_dir / "F10126106.pdf")) < 300:
@@ -516,7 +637,8 @@ def test_copy_ops_read_sources_beyond_max_path(tmp_path):
 
     out = tmp_path / "out"
     logged = []
-    assert copy_superseded({"F10126106": src}, out, False, logged.append) == 1
+    n, archived = copy_superseded({"F10126106": src}, out, False, logged.append)
+    assert (n, archived) == (1, {"F10126106"})
     assert (out / "_superseded" / "F10126106.pdf").read_bytes() == b"deep payload"
 
     tree = tmp_path / "tree"

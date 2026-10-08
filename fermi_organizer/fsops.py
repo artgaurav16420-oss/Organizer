@@ -329,21 +329,103 @@ def find_latest_report(folder):
     return reports[-1] if reports else None
 
 
-def copy_superseded(old, folder, dry_run, log, overwrite=False):
-    """Copy superseded PDFs to _superseded/. Returns count copied.
+def folder_foreign_pdfs(folder, stem):
+    """PDFs directly in `folder` that do not canonicalize to `stem`.
 
+    A folder holding another drawing's PDF is shared (NAME/revision collision
+    in placement, hand-made input trees); moving it would relocate unrelated
+    files. Nested entries are always this stem's descendants by construction.
+    Returns None when the folder cannot be listed (caller must fail safe).
+    """
+    try:
+        entries = sorted(folder.iterdir())
+    except OSError:
+        return None
+    foreign = []
+    for p in entries:
+        if not p.is_file() or p.suffix.lower() != ".pdf":
+            continue
+        if canonical_stem(p.stem) != stem:
+            foreign.append(p)
+    return foreign
+
+
+def _same_bytes(a, b):
+    """Byte-for-byte file compare that ignores any metadata cache.
+
+    `filecmp.cmp` reuses cached deep-compare verdicts keyed by path plus
+    (type, size, mtime): bytes changed with unchanged stats would look equal.
+    OSError counts as different (safer)."""
+    try:
+        if os.path.getsize(_native(a)) != os.path.getsize(_native(b)):
+            return False
+        with open(_native(a), "rb") as fa, open(_native(b), "rb") as fb:
+            while True:
+                ba = fa.read(65536)
+                bb = fb.read(65536)
+                if ba != bb:
+                    return False
+                if not ba:
+                    return True
+    except OSError:
+        return False
+
+
+def resolve_archive_target(sup_dir, src, taken=()):
+    """Archive destination for `src` under `sup_dir` that never clobbers bytes.
+
+    Same-name archive with identical content is reused (`already_archived`
+    True); differing content gets a numeric suffix (`<stem>.1.pdf`,
+    incrementing until a free name; an identical suffixed copy is reused too,
+    so repeat runs do not grow suffixes). Byte compares are cache-free
+    (`filecmp.cmp` can reuse a stale verdict when bytes change without size or
+    mtime changing); symlink candidates are always treated as occupied.
+    `taken` lists destinations already claimed in this call sequence (dry-run
+    planned copies), so same-name sources get distinct names there too.
+    Callers must refuse symlinks at the base name first: `_exists` follows
+    links, so a dangling link there would otherwise be written through.
+    """
+    target = sup_dir / src.name
+    if not _exists(target) and target not in taken:
+        return target, False
+    if _same_bytes(target, src):
+        return target, True
+    n = 1
+    candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
+    while _exists(candidate) or _islink(candidate) or candidate in taken:
+        if not _islink(candidate) and _same_bytes(candidate, src):
+            return candidate, True
+        n += 1
+        candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
+    return candidate, False
+
+
+def copy_superseded(old, folder, dry_run, log, overwrite=False):
+    """Copy superseded PDFs to _superseded/. Returns (count, archived stems).
+
+    `archived` holds every stem whose archive copy exists after this call:
+    copied now, already present, or (in dry-run) planned. Callers gate orphan
+    retirement on it so a failed archive never deletes the last copy.
     overwrite=False (incremental): silently skip existing targets.
-    overwrite=True (full): copy every superseded PDF, replacing existing targets.
+    overwrite=True (full): copy every superseded PDF; a name already holding
+    different bytes is archived under a numeric suffix instead of clobbered.
     """
     n = 0
+    archived = set()
     sf = folder / "_superseded"
     for stem, pdf in sorted(old.items()):
         target = sf / pdf.name
-        if not overwrite and _exists(target):
-            continue
         if _islink(pdf) or _islink(target):
             log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
             continue
+        if not overwrite and _exists(target):
+            # Existing archive wins in incremental mode; only an identical
+            # copy proves this stem's bytes are archived (a same-name file
+            # with different content must not retire a parked orphan).
+            if _same_bytes(target, pdf):
+                archived.add(stem)
+            continue
+        target, _already = resolve_archive_target(sf, pdf)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
         else:
@@ -354,7 +436,8 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
         n += 1
-    return n
+        archived.add(stem)
+    return n, archived
 
 
 def copy_watermarked_duplicates(paths, folder, dry_run, log):
@@ -362,17 +445,22 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
 
     These lost the same-revision contest to a non-watermarked copy (or are
     redundant watermarked extras), so they are archived instead of placed.
-    Returns count copied.
+    A name already holding different bytes is archived under a numeric
+    suffix instead of clobbered; dry-run tracks planned destinations so
+    same-name sources report distinct suffixes. Returns count copied.
     """
     n = 0
     sf = folder / "_superseded"
+    planned = set()
     for p in sorted(paths):
         target = sf / p.name
         if _islink(p) or _islink(target):
             log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
             continue
+        target, _already = resolve_archive_target(sf, p, planned)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
+            planned.add(target)
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
@@ -421,8 +509,10 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                            planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    In dry-run only, stems in planned (placed by this run but not yet on
-    disk) also count as live. Returns the number retired.
+    `superseded` must list only stems whose archive copy was verified written
+    (e.g. copy_superseded's archived set) - a failed archive must never
+    delete the parked copy. In dry-run only, stems in planned (placed by this
+    run but not yet on disk) also count as live. Returns the number retired.
     Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
     to avoid redundant filesystem scans when the tree on disk has not changed.
     """
