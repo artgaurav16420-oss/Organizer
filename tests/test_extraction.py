@@ -457,3 +457,31 @@ def test_ensure_tesseract_path_prepend_idempotent(monkeypatch):
             os.environ["TESSDATA_PREFIX"] = saved_tessdata
         else:
             os.environ.pop("TESSDATA_PREFIX", None)
+
+
+def test_ocr_strip_tokens_utf8_decode_and_none_stdout(monkeypatch, tmp_path, make_pdf):
+    # Tesseract emits UTF-8: a curly quote's 0x9d byte is undecodable in the
+    # locale codepage (cp1252), the subprocess reader thread dies, and
+    # r.stdout comes back None - .upper() then crashed the extraction worker
+    # and aborted the whole run (real-data HBCM dry-run).
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(kw)
+        return sp.CompletedProcess(cmd, 0, stdout=None, stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert out == []
+    assert calls, "tesseract subprocess must be invoked"
+    assert all(k.get("encoding") == "utf-8" and k.get("errors") == "replace"
+               for k in calls)
+    doc.close()
