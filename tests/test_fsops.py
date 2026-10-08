@@ -560,6 +560,8 @@ def test_copy_watermarked_refuses_long_destination_symlink(tmp_path):
     try:
         os.symlink(str(referent), "\\\\?\\" + str(link))
     except OSError:
+        # Clean up here: pytest's tmp cleanup cannot reach >= 260-char paths.
+        shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
         pytest.skip("symlink creation not permitted at long paths")
     src = tmp_path / "F10126106.pdf"
     src.write_bytes(b"new content")

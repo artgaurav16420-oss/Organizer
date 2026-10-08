@@ -19,7 +19,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans, sweep_supersede_staging, _native,
-                    _exists)
+                    _exists, _islink)
 
 
 class RunCounters(TypedDict):
@@ -602,6 +602,14 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
         target_new = p.parent / new_pdf.name
         staging = target_new.with_name(f"{target_new.name}.supersede_tmp.{os.getpid()}")
         rel_old = p.relative_to(output)
+        # Refuse symlinks like every copy helper does: _exists() follows
+        # links, so a dangling link at target_old would read as "no archive
+        # yet" and the archive copy would write through it (outside
+        # _superseded) before the old tree copy is unlinked.
+        if _islink(p) or _islink(target_old):
+            log(f"  WARNING: {rel_old}: supersede skipped (symlink refused): "
+                f"{p} -> {target_old}")
+            continue
         # Archive collision: the target may already exist with different
         # content (never delete the tree copy without archiving it). Equal
         # bytes = assume duplicate, keep the old skip behavior; OSError on
