@@ -675,6 +675,29 @@ def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
     assert sum("removed leftover supersede staging" in m for m in logged) == 1
 
 
+def test_place_files_iterative_below_default_recursion_limit(tmp_path, monkeypatch):
+    # Regression for the iterative rewrite: 600-deep chain, recursion limit
+    # far below the traversal depth (the recursive version raised here).
+    # Path limits are lifted so the traversal actually reaches the depth cap.
+    import sys
+
+    from fermi_organizer.config import TREE_MAX_DEPTH
+
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    chain = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(600)}
+    chain["F10126599"] = []
+    index = {stem: tmp_path / (stem + ".pdf") for stem in chain}
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(300)
+    try:
+        total = place_files(chain, ["F10126000"], index, tmp_path / "out",
+                            True, lambda msg: None)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert total == TREE_MAX_DEPTH + 1
+
+
 def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"

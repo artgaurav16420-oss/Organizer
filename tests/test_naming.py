@@ -44,6 +44,23 @@ def test_collect_placements_terminates_on_cyclic_children():
     assert all(len(comps) <= TREE_MAX_DEPTH + 1 for comps in placements)
 
 
+def test_collect_placements_iterative_below_default_recursion_limit():
+    # Regression for the iterative rewrite: a 600-deep chain must traverse
+    # with a recursion limit far below the traversal depth (the recursive
+    # version raised RecursionError here).
+    import sys
+
+    children = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(600)}
+    children["F10126599"] = []
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(300)
+    try:
+        placements = _collect_placements(children, ["F10126000"])
+    finally:
+        sys.setrecursionlimit(limit)
+    assert len(placements) == TREE_MAX_DEPTH + 1
+
+
 def test_build_folder_names_shortens_long_paths_and_logs_notes():
     base = Path("C:\\" + "x" * 200)
     children = {"F10126106": ["F10126107"]}

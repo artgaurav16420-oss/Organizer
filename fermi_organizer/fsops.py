@@ -177,21 +177,44 @@ def _copy_counter(children):
 
     Keyed by (stem, remaining depth): the count depends on the TREE_MAX_DEPTH
     truncation, so a stem-only key would undercount a subtree first visited
-    near the limit when reused on a shallower path (fan-out cap bypass)."""
+    near the limit when reused on a shallower path (fan-out cap bypass).
+    Iterative post-order (explicit stack): depth up to TREE_MAX_DEPTH must
+    not depend on the process-wide recursion limit. Cyclic input terminates
+    on the depth cap, exactly like the former recursion (memo entries only
+    exist for completed expansions)."""
     memo = {}
 
-    def count(stem, depth=0):
-        remaining = TREE_MAX_DEPTH - depth
+    def count(root_stem, root_depth=0):
+        remaining = TREE_MAX_DEPTH - root_depth
         if remaining < 0:
             return 0
-        key = (stem, remaining)
+        key = (root_stem, remaining)
         if key in memo:
             return memo[key]
-        total = 1
-        for child in children.get(stem, ()):
-            total += count(child, depth + 1)
-        memo[key] = total
-        return total
+        result = None
+        stack = [[root_stem, root_depth, 1,
+                  iter(children.get(root_stem, ()))]]
+        while stack:
+            stem, depth, total, it = stack[-1]
+            child = next(it, None)
+            if child is None:
+                memo[(stem, TREE_MAX_DEPTH - depth)] = total
+                stack.pop()
+                if stack:
+                    stack[-1][2] += total
+                else:
+                    result = total
+                continue
+            c_remaining = TREE_MAX_DEPTH - (depth + 1)
+            if c_remaining < 0:
+                continue
+            c_key = (child, c_remaining)
+            if c_key in memo:
+                stack[-1][2] += memo[c_key]
+                continue
+            stack.append([child, depth + 1, 1,
+                          iter(children.get(child, ()))])
+        return result
 
     return count
 
