@@ -365,3 +365,33 @@ def test_dash_two_tier_banner_print_fit_and_scanned_info_color(tmp_path):
     assert any("Worth a look" in v and "Action needed" not in v for v in vals2)
     tab = wb2["Scanned"].sheet_properties.tabColor
     assert tab is not None and tab.rgb[-6:].upper() == "2563EB"
+
+
+def test_no_formula_cells_anywhere_including_used_on_bugs(tmp_path):
+    # Fuzz-style: a "=" payload in the USED ON BUGS section (written outside
+    # _table) must never be persisted as an Excel formula, and no other sheet
+    # may produce one either.
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    path = tmp_path / "organize_fermi_report.xlsx"
+    evil = "=HYPERLINK(\"http://evil.example\",\"hi\")"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "used_on_bugs": [(evil, evil)],
+        "report_txt": "",
+        "names": {evil: evil},
+    }
+
+    fx.build_workbook(path, ctx)
+    wb = load_workbook(path)
+    formulas = [(ws.title, c.coordinate)
+                for ws in wb.worksheets for row in ws.iter_rows()
+                for c in row if c.data_type == "f"]
+    assert formulas == []

@@ -710,6 +710,7 @@ def _mismatch_sheet(mism_ws, ctx, names):
         mism_ws.row_dimensions[r].height = ROW_H
         for ci, v in enumerate(vals, start=1):
             c = mism_ws.cell(row=r, column=ci, value=v)
+            _inert_text(c)
             c.fill = _solid(STRIPE if i % 2 else WHITE)
             c.border = ROW_BORDER
             c.font = _font(10, ci == 1, INK)
