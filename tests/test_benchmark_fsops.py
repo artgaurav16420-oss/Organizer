@@ -102,7 +102,7 @@ def benchmark_incremental_flow(tmp_path):
         total_time = time.perf_counter() - start_time
 
     avg_time_ms = (total_time / iterations) * 1000
-    print(f"\n--- Benchmark Results ---")
+    print("\n--- Benchmark Results ---")
     print(f"Iterations: {iterations}")
     print(f"Total calls to scan_output_tree per incremental run: {last_scan_count}")
     print(f"Avg execution time per run: {avg_time_ms:.3f} ms")
