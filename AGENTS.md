@@ -67,7 +67,7 @@ tests/                   — pytest suite (PDFs generated at test time)
 
 ## Testing
 
-- Full suite: `.venv\Scripts\python.exe -m pytest -q` (225 tests, ~8 s). Single file: `... -m pytest tests/test_graph.py -q`; single test: `... -m pytest "tests/test_graph.py::test_name" -q`.
+- Full suite: `.venv\Scripts\python.exe -m pytest -q` (228 tests collected, ~8 s). Single file: `... -m pytest tests/test_graph.py -q`; single test: `... -m pytest "tests/test_graph.py::test_name" -q`.
 - Fixtures generate PDFs at test time via PyMuPDF (`make_pdf` in `tests/conftest.py`: one page, text lines from (72,72), fontsize 11, 16 pt line step — extraction tests depend on this layout). No binary fixtures are checked in; OCR is disabled for every test (autouse fixture), so Tesseract is not needed.
 - Gates in the suite:
   - `tests/test_no_dead_imports.py` fails on an unused import in `fermi_organizer/*.py`, `organize_fermi_pdfs.py`, or `fermi_report_xlsx.py`, **and** on a new top-level public function in `fermi_organizer/` without a docstring (the 9 legacy exceptions are allowlisted there — add no more).
