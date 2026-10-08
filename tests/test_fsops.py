@@ -530,3 +530,75 @@ def test_copy_ops_read_sources_beyond_max_path(tmp_path):
     # Remove the long chain ourselves - plain rmtree cannot reach it.
     import shutil
     shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
+
+def test_native_long_unc_paths_get_unc_prefix():
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    long_unc = "\\\\server\\share\\folder\\" + "s" * 300 + "\\F10126106.pdf"
+    out = fsops._native(long_unc)
+    assert out == "\\\\?\\UNC\\" + long_unc[2:]
+
+
+def test_copy_watermarked_refuses_long_destination_symlink(tmp_path):
+    # A destination symlink past MAX_PATH makes Path.is_symlink() go blind
+    # (lstat ENOENT -> False); the prefixed copy2 would then follow the link
+    # and overwrite its referent.
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    import shutil
+
+    seg = "w" * 40
+    out = tmp_path
+    while len(str(out / "_superseded" / "F10126106.pdf")) < 300:
+        out = out / seg
+    Path("\\\\?\\" + str(out)).mkdir(parents=True)
+    sf = out / "_superseded"
+    Path("\\\\?\\" + str(sf)).mkdir()
+    referent = tmp_path / "referent.txt"
+    referent.write_bytes(b"REFERENT")
+    link = sf / "F10126106.pdf"
+    try:
+        os.symlink(str(referent), "\\\\?\\" + str(link))
+    except OSError:
+        pytest.skip("symlink creation not permitted at long paths")
+    src = tmp_path / "F10126106.pdf"
+    src.write_bytes(b"new content")
+    logged = []
+
+    n = copy_watermarked_duplicates([src], out, False, logged.append)
+
+    assert n == 0
+    assert referent.read_bytes() == b"REFERENT"
+    assert any("symlink refused" in m for m in logged)
+    shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
+
+
+def test_symlink_guard_checks_through_native_prefix(tmp_path, monkeypatch):
+    # Path.is_symlink() goes blind past MAX_PATH (lstat ENOENT -> False), so
+    # the copy guards must consult os.path.islink(_native(...)) - otherwise a
+    # long destination symlink is followed by the prefixed copy2 and its
+    # referent overwritten. The spy also pins the wiring on platforms where
+    # creating real symlinks needs privilege we may not hold.
+    recorded = []
+    real_islink = os.path.islink
+
+    def spy(p):
+        recorded.append(p)
+        return real_islink(p)
+
+    monkeypatch.setattr(os.path, "islink", spy)
+    src = tmp_path / "F10126106.pdf"
+    src.write_bytes(b"x")
+    (tmp_path / "_superseded").mkdir()
+    logged = []
+
+    n = copy_watermarked_duplicates([src], tmp_path, False, logged.append)
+
+    assert n == 1  # no real link here; the copy proceeds
+    # The guard's two calls come first; shutil.copy2/copystat may add its own
+    # islink(dst) look on top (dst is already prefixed, so that one is blind-
+    # proof too - but it never refuses the write, hence the guard).
+    assert recorded[:2] == [
+        fsops._native(src),
+        fsops._native(tmp_path / "_superseded" / "F10126106.pdf"),
+    ]
