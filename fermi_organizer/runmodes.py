@@ -18,7 +18,7 @@ from .naming import build_folder_names
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
-                    retire_adopted_orphans)
+                    retire_adopted_orphans, sweep_supersede_staging)
 
 
 class RunCounters(TypedDict):
@@ -1003,6 +1003,7 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
         base_log(msg)
 
     jobs = resolve_jobs(jobs)
+    sweep_supersede_staging(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
     index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems = \
         _full_scan_boms(index, jobs, log, rekey, chk_stems)
@@ -1378,6 +1379,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
         base_log(msg)
 
     jobs = resolve_jobs(jobs)
+    sweep_supersede_staging(output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
         supersede_pairs, new_duplicates, total_copies, superseded_new, scan_res = \
         _incremental_prepare(folder, output, dry_run, log)

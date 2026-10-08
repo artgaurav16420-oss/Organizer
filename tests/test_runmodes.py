@@ -1014,3 +1014,28 @@ def test_titleblock_mismatches_pure_rules():
     assert res == expected
     text = "\n".join(logged)
     assert "Title block check (3 mismatch(es))" in text
+
+
+def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+
+    stale = out / "F10126106 Test Parent" / "F10126106.pdf.supersede_tmp.4242"
+    stale.write_bytes(b"partial")
+
+    # Dry-run reports the leftover but must not touch the tree.
+    logged = []
+    run_full(in_dir, out, True, logged.append, jobs=1)
+    assert stale.is_file()
+    assert any("[DRY-RUN] remove leftover supersede staging" in m for m in logged)
+
+    # A real run clears it (incremental path wired the same way).
+    logged.clear()
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+    assert not stale.exists()
+    assert any("removed leftover supersede staging" in m for m in logged)
