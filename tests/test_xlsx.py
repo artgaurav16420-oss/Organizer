@@ -18,7 +18,11 @@ def test_load_history_corrupt_json_preserves_corrupt_copy(tmp_path, capsys):
     assert fx._load_history(xlsx) == []
     assert Path(str(sidecar) + ".corrupt").exists()
     assert sidecar.exists()
-    assert "run history not loaded" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "run history not loaded" in out
+    # Warning names the exception type and includes the full traceback.
+    assert "JSONDecodeError" in out
+    assert "Traceback (most recent call last)" in out
 
 
 def test_load_history_copy_oserror_handled_gracefully(tmp_path, monkeypatch, capsys):

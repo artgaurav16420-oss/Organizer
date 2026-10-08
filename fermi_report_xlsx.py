@@ -17,6 +17,7 @@ openpyxl is optional; when it is missing the workbook is skipped gracefully.
 import json
 import os
 import shutil
+import traceback
 from pathlib import Path
 
 try:
@@ -129,7 +130,7 @@ def _link(cell, target, bold=False):
     try:
         cell.hyperlink = target
         cell.font = _font(10, bold, NAVY, underline="single")
-    except Exception:  # pragma: no cover - openpyxl rejects only malformed targets
+    except (ValueError, OSError, TypeError):  # pragma: no cover - openpyxl rejects only malformed targets
         pass
 
 
@@ -266,7 +267,13 @@ def _load_history(xlsx_path, log=None):
             raise ValueError("run history is not a list")
         return data
     except Exception as e:
-        (log or print)(f"WARNING: run history not loaded ({hist}): {e}")
+        # Deliberately broad: the sidecar is untrusted input (hand-edited or
+        # truncated JSON can raise beyond ValueError, e.g. RecursionError on
+        # deep nesting) and run history is optional - never kill the run.
+        (log or print)(f"WARNING: run history not loaded ({hist}): "
+                       f"{type(e).__name__}: {e}")
+        for line in traceback.format_exc().rstrip().splitlines():
+            (log or print)(f"    {line}")
         if hist.exists():
             try:
                 shutil.copy2(hist, str(hist) + ".corrupt")
