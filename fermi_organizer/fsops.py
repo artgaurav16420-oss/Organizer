@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Filesystem scans and side effects (indexing, placement, copies)."""
 import os
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -328,31 +329,42 @@ def scan_output_tree(output):
 
 
 def sweep_supersede_staging(output, dry_run, log):
-    """Remove leftover `<name>.supersede_tmp.<pid>` staging files.
+    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` staging files.
 
     _swap_revision_files stages the new revision next to its target before
     os.replace; a run killed mid-swap leaves the staging file behind. It
     never ends in .pdf, so scans ignore it - only this sweep cleans it up.
-    Staging only ever happens in the organized tree, so "_"-prefixed system
-    dirs are skipped (a random matching name there is not ours to delete).
+    Only the exact staging shape is swept (a PDF target name plus
+    `.supersede_tmp.<digits>`), and "_"-prefixed system dirs are pruned from
+    the walk: staging only ever happens next to targets in the organized
+    tree, so matching lookalikes elsewhere are not ours to delete.
     Dry-run reports without touching the tree.
     """
     output = Path(output)
     if not output.is_dir():
         return
-    for p in sorted(output.rglob("*.supersede_tmp.*")):
-        rel = p.relative_to(output)
-        if is_system_dir(rel.parts[0]):
-            continue
-        if dry_run:
-            log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
-            continue
-        try:
-            p.unlink()
-        except OSError as e:
-            log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
-            continue
-        log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
+    staging_re = re.compile(r"\.pdf\.supersede_tmp\.\d+$", re.IGNORECASE)
+    for dirpath, dirnames, filenames in os.walk(output):
+        if Path(dirpath) == output:
+            # Only top-level "_" dirs are system dirs; nested ones are not
+            # pruned (is_system_dir's convention covers the top level only).
+            dirnames[:] = [d for d in dirnames if not is_system_dir(d)]
+        for name in sorted(filenames):
+            if not staging_re.search(name):
+                continue
+            p = Path(dirpath) / name
+            rel = p.relative_to(output)
+            if is_system_dir(rel.parts[0]):
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
+                continue
+            try:
+                p.unlink()
+            except OSError as e:
+                log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
+                continue
+            log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
 
 
 def find_organized_pdfs(folder, scan_res=None):
@@ -568,12 +580,16 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                            planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    `superseded` must list only stems whose archive copy was verified written
-    (e.g. copy_superseded's archived set) - a failed archive must never
-    delete the parked copy. In dry-run only, stems in planned (placed by this
-    run but not yet on disk) also count as live. Returns the number retired.
-    Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
-    to avoid redundant filesystem scans when the tree on disk has not changed.
+    A live same-stem copy only counts when its bytes match the parked copy:
+    a differing copy may be the only copy of those bytes (e.g. the input was
+    updated after the parked copy was made), so the parked copy is kept with
+    a warning instead. `superseded` must list only stems whose archive copy
+    was verified written (e.g. copy_superseded's archived set) - a failed
+    archive must never delete the parked copy. In dry-run only, stems in
+    planned (placed by this run but not yet on disk) also count as live.
+    Returns the number retired. Accepts an optional `scan_res` (precomputed
+    `scan_output_tree` result) to avoid redundant filesystem scans when the
+    tree on disk has not changed.
     """
     live_pdfs = defaultdict(list)
     tree_pdfs = (scan_res["tree"] if scan_res is not None
@@ -590,8 +606,16 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     planned_set = set(planned) if dry_run else set()
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
-        if not live and o not in sup and o not in planned_set:
-            continue
+        if o not in sup and o not in planned_set:
+            # Symlinks keep the dedicated refusal log below (never compare
+            # through a link); otherwise the live copy must be byte-equal.
+            retireable = (any(_same_bytes(p, opath) for p in live)
+                          or (bool(live) and opath.is_symlink()))
+            if not retireable:
+                if live:
+                    log(f"  WARNING: orphan copy {o} differs from its live "
+                        f"tree copy; kept: {opath}")
+                continue
         if opath.is_symlink():
             log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
             continue
