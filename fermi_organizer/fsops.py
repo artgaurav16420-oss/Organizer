@@ -243,6 +243,30 @@ def scan_output_tree(output):
     return {"tree": tree, "sup": sup, "orph": orph}
 
 
+def sweep_supersede_staging(output, dry_run, log):
+    """Remove leftover `<name>.supersede_tmp.<pid>` staging files.
+
+    _swap_revision_files stages the new revision next to its target before
+    os.replace; a run killed mid-swap leaves the staging file behind. It
+    never ends in .pdf, so scans ignore it - only this sweep cleans it up.
+    Dry-run reports without touching the tree.
+    """
+    output = Path(output)
+    if not output.is_dir():
+        return
+    for p in sorted(output.rglob("*.supersede_tmp.*")):
+        rel = p.relative_to(output)
+        if dry_run:
+            log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
+            continue
+        try:
+            p.unlink()
+        except OSError as e:
+            log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
+            continue
+        log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
+
+
 def find_organized_pdfs(folder, scan_res=None):
     """Map stem -> organized PDF paths nested under an output tree.
 

@@ -3,7 +3,7 @@
 import os
 import re
 
-from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES
+from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES, TREE_MAX_DEPTH
 
 
 def sanitize_folder_name(name):
@@ -27,22 +27,24 @@ def folder_name_for(stem, names_of):
 
 
 def _collect_placements(children, roots):
-    """Root-to-leaf component tuples, pre-order; roots and children sorted."""
+    """Root-to-leaf component tuples, pre-order; roots and children sorted.
+
+    Every root-to-leaf path is collected: a stem shared by two parents must
+    be shortened for both chains (place_files copies it under both), so the
+    walk must not stop at a stem's first visit. Cycles are broken before
+    placement; the depth cap bounds any cyclic input that slips through.
+    """
     placements = []
     seen = set()
-    visited = set()
 
-    def walk(stem, comps):
+    def walk(stem, comps, depth=0):
         key = tuple(comps)
-        if key in seen:
+        if key in seen or depth > TREE_MAX_DEPTH:
             return
         seen.add(key)
         placements.append(key)
-        if stem in visited:
-            return
-        visited.add(stem)
         for child in sorted(children.get(stem, ())):
-            walk(child, comps + (child,))
+            walk(child, comps + (child,), depth + 1)
 
     for root in sorted(roots):
         walk(root, (root,))

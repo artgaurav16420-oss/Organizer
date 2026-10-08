@@ -8,7 +8,7 @@ from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_supersede
                                    copy_watermarked_duplicates,
                                    find_organized_pdfs, is_system_dir,
                                    place_files, retire_adopted_orphans,
-                                   scan_output_tree)
+                                   scan_output_tree, sweep_supersede_staging)
 
 
 def test_is_system_dir_convention():
@@ -464,3 +464,33 @@ def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_pa
     log_text = "\n".join(logged)
     assert "WARNING: could not retire orphan copy F10126107: Permission denied" in log_text
     assert "Retired 1 orphan copy(ies) from _orphans/ (adopted into tree)" in log_text
+
+
+def test_sweep_supersede_staging_dry_run_reports_real_run_removes(tmp_path):
+    (tmp_path / "F10126106 Assembly").mkdir()
+    stale = tmp_path / "F10126106 Assembly" / "F10126107.pdf.supersede_tmp.12345"
+    stale.write_bytes(b"partial")
+    (tmp_path / "_superseded").mkdir()
+    nested = tmp_path / "_superseded" / "F10126106.pdf.supersede_tmp.99999"
+    nested.write_bytes(b"partial")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, True, logged.append)
+    assert stale.is_file() and nested.is_file()
+    assert sum("[DRY-RUN]" in m for m in logged) == 2
+
+    logged.clear()
+    sweep_supersede_staging(tmp_path, False, logged.append)
+    assert not stale.exists() and not nested.exists()
+    assert sum("removed leftover supersede staging" in m for m in logged) == 2
+    # PDFs are never touched.
+    pdf = tmp_path / "F10126106 Assembly" / "F10126106.pdf"
+    pdf.write_bytes(b"drawing")
+    sweep_supersede_staging(tmp_path, False, logged.append)
+    assert pdf.is_file()
+
+
+def test_sweep_supersede_staging_missing_output_is_noop(tmp_path):
+    logged = []
+    sweep_supersede_staging(tmp_path / "nope", False, logged.append)
+    assert logged == []
