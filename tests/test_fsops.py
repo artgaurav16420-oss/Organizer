@@ -266,10 +266,11 @@ def test_place_files_refuses_when_over_copy_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 2)
     logged = []
 
-    total = place_files(children, ["F10126106"], index, folder, False,
-                        logged.append)
+    with pytest.raises(fsops.PlacementRefusedError) as exc:
+        place_files(children, ["F10126106"], index, folder, False,
+                    logged.append)
 
-    assert total == 0
+    assert exc.value.planned == 3
     assert not folder.exists()
     assert "placement refused" in "\n".join(logged)
 
@@ -313,10 +314,11 @@ def test_place_files_cap_counts_shared_subtree_at_true_depth(tmp_path,
 
     # R1 (the deep chain) first: the undercount only happens when the shared
     # subtree is memoized from the truncated deep visit.
-    total = place_files(children, ["F10126106", "F10126105"], index, folder,
-                        False, logged.append)
+    with pytest.raises(fsops.PlacementRefusedError) as exc:
+        place_files(children, ["F10126106", "F10126105"], index, folder,
+                    False, logged.append)
 
-    assert total == 0
+    assert exc.value.planned == 8
     assert not folder.exists()
     assert "placement refused" in "\n".join(logged)
 

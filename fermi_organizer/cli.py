@@ -86,11 +86,13 @@ def main():
     """Parse args, run the full/incremental organizer, write report + workbook."""
     parser = build_parser()
     args = parser.parse_args()
-    # Recursion guard (deep/degenerate DAGs): allow deep recursive traversals
-    # in break_cycles/place_files rather than a hard RecursionError.
-    # 10000 == TREE_MAX_DEPTH * 20 (headroom over the DFS depth cap).
-    # Safe: max() never lowers the existing limit; both DFSs depth-cap at
-    # TREE_MAX_DEPTH=500, so the bump only adds headroom.
+    # Recursion limit: REQUIRED, not a convenience. Three recursive traversals
+    # are depth-capped at TREE_MAX_DEPTH=500 (graph.break_cycles.dfs,
+    # fsops.place_files.dfs, naming._collect_placements.walk); each nesting
+    # level costs more than one Python frame, so the default limit of 1000 is
+    # not enough headroom for a degenerate 500-deep input. 10000 ==
+    # TREE_MAX_DEPTH * 20. Safe: max() never lowers the existing limit, and
+    # every traversal stops at the depth cap regardless.
     sys.setrecursionlimit(max(sys.getrecursionlimit(), TREE_MAX_DEPTH * 20))
 
     folder = Path(args.folder).resolve()
@@ -140,6 +142,10 @@ def main():
     except NoPDFsFoundError:
         sys.exit(1)
 
+    if ctx.get("placement_refused"):
+        log("  WARNING: placement refused - nothing was placed; review the "
+            "BOM graph (report + workbook still written)")
+
     if OCR.enabled and OCR.events:
         log("")
         log("--- OCR (scanned pages) ---")
@@ -158,6 +164,11 @@ def main():
     # Live Excel workbook (after every run, dry-run included)
     _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
                       args.incremental, log)
+
+    # Refusal is a non-success outcome: distinct exit code so scripts notice
+    # without reading the log. Report + workbook are already written above.
+    if ctx.get("placement_refused"):
+        sys.exit(2)
 
 
 if __name__ == "__main__":

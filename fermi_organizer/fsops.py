@@ -162,13 +162,71 @@ def build_pdf_index(folder, log=None):
     return index, duplicates
 
 
+class PlacementRefusedError(RuntimeError):
+    """Planned copies exceeded MAX_PLANNED_COPIES; placement was refused."""
+
+    def __init__(self, planned):
+        super().__init__(
+            f"{planned} planned copies exceed the {MAX_PLANNED_COPIES}-copy cap")
+        self.planned = planned
+
+
+def _copy_counter(children):
+    """Memoized count of copies for a subtree (one per root-to-leaf path).
+
+    Keyed by (stem, remaining depth): the count depends on the TREE_MAX_DEPTH
+    truncation, so a stem-only key would undercount a subtree first visited
+    near the limit when reused on a shallower path (fan-out cap bypass)."""
+    memo = {}
+
+    def count(stem, depth=0):
+        remaining = TREE_MAX_DEPTH - depth
+        if remaining < 0:
+            return 0
+        key = (stem, remaining)
+        if key in memo:
+            return memo[key]
+        total = 1
+        for child in children.get(stem, ()):
+            total += count(child, depth + 1)
+        memo[key] = total
+        return total
+
+    return count
+
+
+def planned_copy_count(children, roots):
+    """Copies place_files would write for these roots (fan-out cap input)."""
+    count = _copy_counter(children)
+    return sum(count(root) for root in roots)
+
+
+def ensure_placement_allowed(children, roots, log):
+    """Log + raise PlacementRefusedError when the planned fan-out exceeds
+    MAX_PLANNED_COPIES (or warn above the soft bound).
+
+    Call this before building naming paths or touching the tree, so a refusal
+    can never exhaust memory/time or leave partial work behind.
+    """
+    planned = planned_copy_count(children, roots)
+    if planned > MAX_PLANNED_COPIES:
+        log(f"  WARNING: {planned} copies planned exceeds the "
+            f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
+            "graph; nothing was created)")
+        raise PlacementRefusedError(planned)
+    if planned > PLANNED_COPIES_WARN:
+        log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
+
+
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
-    disk; oversized paths/subtrees are skipped with a warning.
+    disk; oversized paths/subtrees are skipped with a warning. Raises
+    PlacementRefusedError when the planned fan-out exceeds
+    MAX_PLANNED_COPIES (nothing is created).
     """
     total_copies = 0
     skipped_count = 0
@@ -176,32 +234,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     names_of = names_of or {}
     folder_names = folder_names or {}
     renames = renames or {}
-    # Memoize copy counts per (stem, remaining depth): a diamond DAG would
-    # otherwise blow up exponentially, and the count depends on depth through
-    # the TREE_MAX_DEPTH truncation - a stem-only key would undercount a
-    # subtree first visited near the limit when reused on a shallower path,
-    # letting placement slip past MAX_PLANNED_COPIES.
-    copy_count_memo = {}
-    def count_copies(stem, depth=0):
-        remaining = TREE_MAX_DEPTH - depth
-        if remaining < 0:
-            return 0
-        key = (stem, remaining)
-        if key in copy_count_memo:
-            return copy_count_memo[key]
-        total = 1
-        for child in children.get(stem, ()):
-            total += count_copies(child, depth + 1)
-        copy_count_memo[key] = total
-        return total
-    total_planned = sum(count_copies(root) for root in roots)
-    if total_planned > MAX_PLANNED_COPIES:
-        log(f"  WARNING: {total_planned} copies planned exceeds the "
-            f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
-            "graph; nothing was created)")
-        return 0
-    if total_planned > PLANNED_COPIES_WARN:
-        log(f"  WARNING: {total_planned} copies planned (diamond DAG may cause exponential growth)")
+    count_copies = _copy_counter(children)
+    ensure_placement_allowed(children, roots, log)
 
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)
@@ -444,7 +478,7 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
                 log(f"  {stem}: archive already exists with different content "
                     f"({target.name}) - source kept, not archived")
             continue
-        target, _already = resolve_archive_target(sf, pdf)
+        target, _ = resolve_archive_target(sf, pdf)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
         else:
@@ -476,7 +510,7 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         if _islink(p) or _islink(target):
             log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
             continue
-        target, _already = resolve_archive_target(sf, p, planned)
+        target, _ = resolve_archive_target(sf, p, planned)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
             planned.add(target)

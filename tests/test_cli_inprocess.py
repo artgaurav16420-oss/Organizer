@@ -94,3 +94,30 @@ def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,
     text = "\n".join(logged)
     assert "ValueError: boom" in text
     assert "Traceback (most recent call last)" in text
+
+
+def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(in_dir / "F10126107.pdf", [
+        "NAME", "Child part", "USED ON", "F10126106"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr", "--jobs", "1"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+
+    assert exc.value.code == 2
+    # Report + workbook are still written before the nonzero exit.
+    assert list(out.glob("organize_fermi_pdfs_report_*.txt"))
+    assert (out / "organize_fermi_report.xlsx").is_file()
+    assert not any(out.rglob("*.pdf"))

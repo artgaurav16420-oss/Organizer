@@ -451,8 +451,9 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     # ---- needs attention
     # Two tiers: "action" categories have an explicit Download/Replace step;
     # everything else with a non-zero count is worth a look.
-    action_labels = {"Missing parts", "CHK unapproved"}
+    action_labels = {"Placement refused", "Missing parts", "CHK unapproved"}
     items = [
+        ("Placement refused", 1 if ctx.get("placement_refused") else 0, "red", None),
         ("Missing parts", len(missing_pairs), "red", "Missing"),
         ("CHK unapproved", chk_n, "amber", "CHK"),
         ("Orphans (parent not seen)", orph_n, "orange", "Orphans"),
@@ -514,9 +515,11 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
         for cc in range(10, 13):
             dash.cell(row=rr, column=cc).fill = _solid(PAL[st_pal]["fill"])
         _pill(st, st_pal)
-        go = _box(dash, rr, 14, 16, f"Open {sheet} \u2192", None, stripe,
+        go = _box(dash, rr, 14, 16, f"Open {sheet} \u2192" if sheet else "",
+                  None, stripe,
                   Alignment(horizontal="left", vertical="center", indent=1), ROW_BORDER)
-        _link(go, f"#'{sheet}'!A1")
+        if sheet:
+            _link(go, f"#'{sheet}'!A1")
     last = first + len(items) - 1
 
     # ---- chart (native, editable in Excel)
