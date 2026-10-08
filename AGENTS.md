@@ -35,7 +35,7 @@ python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental
 ```
 organize_fermi_pdfs.py   — thin launcher (sys.path shim -> fermi_organizer.cli:main)
 fermi_organizer/
-  cli.py                 — argparse, orchestration, Excel glue, required recursion-limit bump (three depth-capped DFS at TREE_MAX_DEPTH=500; see the comment in `main`)
+  cli.py                 — argparse, orchestration, Excel glue (all graph/tree traversals are iterative and depth-capped at TREE_MAX_DEPTH=500, so no recursion-limit bump is needed)
   config.py              — shared regexes, constants, path/depth limits, OCR geometry
   extraction.py          — BOM/table/text/OCR extraction, USED ON, NAME, title block (number/REV/NAME), watermark detection; OCR context
   graph.py               — pure algorithms: revision ranking, matching, cycles

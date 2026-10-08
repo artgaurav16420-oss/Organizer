@@ -227,6 +227,11 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     disk; oversized paths/subtrees are skipped with a warning. Raises
     PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (nothing is created).
+
+    Iterative pre-order traversal (explicit stack, children pushed in reverse
+    so they pop in sorted order): the log and copy order must stay identical
+    to the former recursion, and depth up to TREE_MAX_DEPTH must not depend
+    on the process-wide recursion limit.
     """
     total_copies = 0
     skipped_count = 0
@@ -240,51 +245,52 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)
 
-    def dfs(stem, current_folder, depth=0):
-        nonlocal total_copies, skipped_count, failed_count
-        if depth > TREE_MAX_DEPTH:
-            log(f"  WARNING: placement truncated at depth {depth} in "
-                f"{current_folder.name} (deeper than any healthy tree) - manual review")
-            skipped_count += count_copies(stem)
-            return
-        pdf = index[stem]
-        target_name = renames.get(stem, pdf.name)
-        target = current_folder / target_name
-        if _islink(pdf) or _islink(target):
-            log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
-            failed_count += 1
-            for child in sorted(children.get(stem, ())):
-                dfs(child, current_folder / fname(child), depth + 1)
-            return
-        # Dir path checked against MAX_DIR, full target against MAX_PATH.
-        if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
-            log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
-            skipped_count += count_copies(stem)
-            return
-        if dry_run:
-            log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
-            total_copies += 1
-        else:
-            # mkdir failure: the subtree's paths cannot exist - skip it;
-            # copy2 failure: only this file is lost, children are still tried.
-            try:
-                current_folder.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                log(f"  WARNING: {stem}: copy failed ({target}): {e}")
-                failed_count += count_copies(stem)
-                return
-            try:
-                shutil.copy2(_native(pdf), _native(target))
-            except OSError as e:
-                log(f"  WARNING: {stem}: copy failed ({target}): {e}")
-                failed_count += 1
-            else:
-                total_copies += 1
-        for child in sorted(children.get(stem, ())):
-            dfs(child, current_folder / fname(child), depth + 1)
-
     for root in sorted(roots):
-        dfs(root, folder / fname(root))
+        stack = [(root, folder / fname(root), 0)]
+        while stack:
+            stem, current_folder, depth = stack.pop()
+            if depth > TREE_MAX_DEPTH:
+                log(f"  WARNING: placement truncated at depth {depth} in "
+                    f"{current_folder.name} (deeper than any healthy tree) - manual review")
+                skipped_count += count_copies(stem)
+                continue
+            kids = sorted(children.get(stem, ()))
+            pdf = index[stem]
+            target_name = renames.get(stem, pdf.name)
+            target = current_folder / target_name
+            if _islink(pdf) or _islink(target):
+                log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
+                failed_count += 1
+                stack.extend((child, current_folder / fname(child), depth + 1)
+                             for child in reversed(kids))
+                continue
+            # Dir path checked against MAX_DIR, full target against MAX_PATH.
+            if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
+                log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
+                skipped_count += count_copies(stem)
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
+                total_copies += 1
+            else:
+                # mkdir failure: the subtree's paths cannot exist - skip it;
+                # copy2 failure: only this file is lost, children are still tried.
+                try:
+                    current_folder.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    log(f"  WARNING: {stem}: copy failed ({target}): {e}")
+                    failed_count += count_copies(stem)
+                    continue
+                try:
+                    shutil.copy2(_native(pdf), _native(target))
+                except OSError as e:
+                    log(f"  WARNING: {stem}: copy failed ({target}): {e}")
+                    failed_count += 1
+                else:
+                    total_copies += 1
+            stack.extend((child, current_folder / fname(child), depth + 1)
+                         for child in reversed(kids))
+
     if skipped_count:
         log(f"  Skipped {skipped_count} path(s) due to length limits")
     if failed_count:

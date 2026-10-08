@@ -37,17 +37,21 @@ def _collect_placements(children, roots):
     placements = []
     seen = set()
 
-    def walk(stem, comps, depth=0):
-        key = tuple(comps)
-        if key in seen or depth > TREE_MAX_DEPTH:
-            return
-        seen.add(key)
-        placements.append(key)
-        for child in sorted(children.get(stem, ())):
-            walk(child, comps + (child,), depth + 1)
-
+    # Iterative pre-order walk (explicit stack, children pushed in reverse so
+    # they pop in sorted order): placements must keep the exact recursion
+    # order (_shorten_names shortens in that order), and depth up to
+    # TREE_MAX_DEPTH must not depend on the recursion limit.
     for root in sorted(roots):
-        walk(root, (root,))
+        stack = [(root, (root,), 0)]
+        while stack:
+            stem, comps, depth = stack.pop()
+            key = tuple(comps)
+            if key in seen or depth > TREE_MAX_DEPTH:
+                continue
+            seen.add(key)
+            placements.append(key)
+            for child in reversed(sorted(children.get(stem, ()))):
+                stack.append((child, comps + (child,), depth + 1))
     return placements
 
 
