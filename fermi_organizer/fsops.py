@@ -176,17 +176,23 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     names_of = names_of or {}
     folder_names = folder_names or {}
     renames = renames or {}
-    # Memoize copy counts: a diamond DAG would otherwise blow up exponentially.
+    # Memoize copy counts per (stem, remaining depth): a diamond DAG would
+    # otherwise blow up exponentially, and the count depends on depth through
+    # the TREE_MAX_DEPTH truncation - a stem-only key would undercount a
+    # subtree first visited near the limit when reused on a shallower path,
+    # letting placement slip past MAX_PLANNED_COPIES.
     copy_count_memo = {}
     def count_copies(stem, depth=0):
-        if depth > TREE_MAX_DEPTH:
+        remaining = TREE_MAX_DEPTH - depth
+        if remaining < 0:
             return 0
-        if stem in copy_count_memo:
-            return copy_count_memo[stem]
+        key = (stem, remaining)
+        if key in copy_count_memo:
+            return copy_count_memo[key]
         total = 1
         for child in children.get(stem, ()):
             total += count_copies(child, depth + 1)
-        copy_count_memo[stem] = total
+        copy_count_memo[key] = total
         return total
     total_planned = sum(count_copies(root) for root in roots)
     if total_planned > MAX_PLANNED_COPIES:

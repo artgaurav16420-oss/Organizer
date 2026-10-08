@@ -283,6 +283,44 @@ def test_place_files_refuses_when_over_copy_cap(tmp_path, monkeypatch):
             "F10126108.pdf").is_file()
 
 
+def test_place_files_cap_counts_shared_subtree_at_true_depth(tmp_path,
+                                                             monkeypatch):
+    # Copy counts depend on depth (TREE_MAX_DEPTH truncation): a shared subtree
+    # first counted near the depth limit must not be reused at a shallower
+    # path, or the planned count slips under MAX_PLANNED_COPIES while the
+    # actual placement copies more.
+    folder = tmp_path / "out"
+    index = {}
+    for stem in ("F10126105", "F10126106", "F10126107", "F10126108",
+                 "F10126109", "F10126110", "F10126111"):
+        pdf = tmp_path / f"{stem}.pdf"
+        pdf.write_bytes(b"%PDF")
+        index[stem] = pdf
+    # R1's chain reaches F10126109 at the depth limit (its tail is truncated);
+    # R2 shares it at depth 1, where the whole tail is copied.
+    children = {
+        "F10126106": ["F10126107"],
+        "F10126107": ["F10126108"],
+        "F10126108": ["F10126109"],
+        "F10126109": ["F10126110"],
+        "F10126110": ["F10126111"],
+        "F10126105": ["F10126109"],
+    }
+    monkeypatch.setattr(fsops, "TREE_MAX_DEPTH", 3)
+    # True planned count is 8 (4 + 4); the stem-only memo answered 6.
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 6)
+    logged = []
+
+    # R1 (the deep chain) first: the undercount only happens when the shared
+    # subtree is memoized from the truncated deep visit.
+    total = place_files(children, ["F10126106", "F10126105"], index, folder,
+                        False, logged.append)
+
+    assert total == 0
+    assert not folder.exists()
+    assert "placement refused" in "\n".join(logged)
+
+
 def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     src = tmp_path / "in"
     src.mkdir()
