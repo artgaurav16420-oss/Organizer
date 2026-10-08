@@ -43,3 +43,54 @@ def test_cli_main_dry_run_writes_report_and_xlsx(monkeypatch, tmp_path, make_pdf
     assert "Mode: DRY-RUN" in reports[0].read_text(encoding="utf-8")
     assert (out / "organize_fermi_report.xlsx").is_file()
     assert not list(out.rglob("*.pdf"))
+
+
+def _minimal_ctx():
+    return {
+        "counters": {"scanned": 0, "roots": 0, "copies": 0, "cycles": 0,
+                     "warnings": 0},
+        "missing": [],
+        "chk": [],
+        "orphans": [],
+        "roots": [],
+        "used_on_mismatches": [],
+        "used_on_bugs": [],
+        "titleblock_mismatches": [],
+        "scanned": [],
+        "watermarks": [],
+        "names": {},
+    }
+
+
+def test_refresh_workbook_uses_explicit_run_time(tmp_path, monkeypatch):
+    import fermi_report_xlsx as fx
+
+    captured = {}
+    monkeypatch.setattr(fx, "refresh_from_run",
+                        lambda **kw: captured.update(kw))
+    logged = []
+
+    cli_module._refresh_workbook(_minimal_ctx(), tmp_path, None,
+                                 "2026-10-08T01:02:03", True, False,
+                                 logged.append)
+
+    assert captured["run_time"] == "2026-10-08T01:02:03"
+
+
+def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,
+                                                            monkeypatch):
+    import fermi_report_xlsx as fx
+
+    def boom(**kw):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(fx, "refresh_from_run", boom)
+    logged = []
+
+    cli_module._refresh_workbook(_minimal_ctx(), tmp_path, None,
+                                 "2026-10-08T01:02:03", True, False,
+                                 logged.append)
+
+    text = "\n".join(logged)
+    assert "ValueError: boom" in text
+    assert "Traceback (most recent call last)" in text

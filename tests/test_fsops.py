@@ -127,6 +127,7 @@ def test_copy_superseded_skip_vs_overwrite(tmp_path):
     n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append)
     assert (n, archived) == (0, set())
     assert target.read_text() == "v2"
+    assert "archive already exists with different content" in "\n".join(logged)
 
     # overwrite=True: differing bytes archive under a suffix, never clobber.
     n, archived = copy_superseded({"F10126106": old_pdf}, out, False, logged.append,
@@ -250,6 +251,36 @@ def test_place_files_mkdir_failure_skips_whole_subtree(tmp_path, monkeypatch):
     text = "\n".join(logged)
     assert "WARNING: F10126106: copy failed" in text
     assert "FAILED 3 copy(ies) - see warnings above" in text
+
+
+def test_place_files_refuses_when_over_copy_cap(tmp_path, monkeypatch):
+    # A fan-out beyond MAX_PLANNED_COPIES must refuse placement entirely
+    # (input untouched) instead of flooding the disk.
+    folder = tmp_path / "out"
+    index = {}
+    for stem in ("F10126106", "F10126107", "F10126108"):
+        pdf = tmp_path / f"{stem}.pdf"
+        pdf.write_bytes(b"%PDF")
+        index[stem] = pdf
+    children = {"F10126106": ["F10126107"], "F10126107": ["F10126108"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 2)
+    logged = []
+
+    total = place_files(children, ["F10126106"], index, folder, False,
+                        logged.append)
+
+    assert total == 0
+    assert not folder.exists()
+    assert "placement refused" in "\n".join(logged)
+
+    # At exactly the cap the placement still runs (the check is '>').
+    logged.clear()
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 3)
+    total = place_files(children, ["F10126106"], index, folder, False,
+                        logged.append)
+    assert total == 3
+    assert (folder / "F10126106" / "F10126107" / "F10126108" /
+            "F10126108.pdf").is_file()
 
 
 def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
@@ -602,12 +633,15 @@ def test_sweep_supersede_staging_dry_run_reports_real_run_removes(tmp_path):
 
     sweep_supersede_staging(tmp_path, True, logged.append)
     assert stale.is_file() and nested.is_file()
-    assert sum("[DRY-RUN]" in m for m in logged) == 2
+    assert sum("[DRY-RUN]" in m for m in logged) == 1
 
     logged.clear()
     sweep_supersede_staging(tmp_path, False, logged.append)
-    assert not stale.exists() and not nested.exists()
-    assert sum("removed leftover supersede staging" in m for m in logged) == 2
+    assert not stale.exists()
+    # System dirs are never swept: staging only happens in the tree, so a
+    # matching name under _superseded/ is not ours to delete.
+    assert nested.is_file()
+    assert sum("removed leftover supersede staging" in m for m in logged) == 1
     # PDFs are never touched.
     pdf = tmp_path / "F10126106 Assembly" / "F10126106.pdf"
     pdf.write_bytes(b"drawing")

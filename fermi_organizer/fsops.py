@@ -5,7 +5,8 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH)
+from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH,
+                     PLANNED_COPIES_WARN, MAX_PLANNED_COPIES)
 from .graph import is_chk_stem
 from .naming import folder_name_for
 
@@ -188,7 +189,12 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
         copy_count_memo[stem] = total
         return total
     total_planned = sum(count_copies(root) for root in roots)
-    if total_planned > 1000:
+    if total_planned > MAX_PLANNED_COPIES:
+        log(f"  WARNING: {total_planned} copies planned exceeds the "
+            f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
+            "graph; nothing was created)")
+        return 0
+    if total_planned > PLANNED_COPIES_WARN:
         log(f"  WARNING: {total_planned} copies planned (diamond DAG may cause exponential growth)")
 
     def fname(stem):
@@ -281,6 +287,8 @@ def sweep_supersede_staging(output, dry_run, log):
     _swap_revision_files stages the new revision next to its target before
     os.replace; a run killed mid-swap leaves the staging file behind. It
     never ends in .pdf, so scans ignore it - only this sweep cleans it up.
+    Staging only ever happens in the organized tree, so "_"-prefixed system
+    dirs are skipped (a random matching name there is not ours to delete).
     Dry-run reports without touching the tree.
     """
     output = Path(output)
@@ -288,6 +296,8 @@ def sweep_supersede_staging(output, dry_run, log):
         return
     for p in sorted(output.rglob("*.supersede_tmp.*")):
         rel = p.relative_to(output)
+        if is_system_dir(rel.parts[0]):
+            continue
         if dry_run:
             log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
             continue
@@ -424,6 +434,9 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
             # with different content must not retire a parked orphan).
             if _same_bytes(target, pdf):
                 archived.add(stem)
+            else:
+                log(f"  {stem}: archive already exists with different content "
+                    f"({target.name}) - source kept, not archived")
             continue
         target, _already = resolve_archive_target(sf, pdf)
         if dry_run:
