@@ -18,7 +18,8 @@ from .naming import build_folder_names
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
-                    retire_adopted_orphans, sweep_supersede_staging, _native)
+                    retire_adopted_orphans, sweep_supersede_staging, _native,
+                    _exists, _islink)
 
 
 class RunCounters(TypedDict):
@@ -601,16 +602,25 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
         target_new = p.parent / new_pdf.name
         staging = target_new.with_name(f"{target_new.name}.supersede_tmp.{os.getpid()}")
         rel_old = p.relative_to(output)
+        # Refuse symlinks like every copy helper does: _exists() follows
+        # links, so a dangling link at target_old would read as "no archive
+        # yet" and the archive copy would write through it (outside
+        # _superseded) before the old tree copy is unlinked.
+        if _islink(p) or _islink(target_old):
+            log(f"  WARNING: {rel_old}: supersede skipped (symlink refused): "
+                f"{p} -> {target_old}")
+            continue
         # Archive collision: the target may already exist with different
         # content (never delete the tree copy without archiving it). Equal
         # bytes = assume duplicate, keep the old skip behavior; OSError on
         # compare means differ (safer). Differing content archives under a
         # numeric suffix (<stem>.1.pdf, incrementing until free).
         archive_target = target_old
-        archived = not target_old.exists()
+        archived = not _exists(target_old)
         if not archived:
             try:
-                same = filecmp.cmp(target_old, p, shallow=False)
+                same = filecmp.cmp(_native(target_old), _native(p),
+                                   shallow=False)
             except OSError:
                 same = False
             if same:
@@ -620,7 +630,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
                 ext = target_old.suffix
                 n = 1
                 candidate = sup_dir / f"{base}.{n}{ext}"
-                while candidate.exists():
+                while _exists(candidate):
                     n += 1
                     candidate = sup_dir / f"{base}.{n}{ext}"
                 archive_target = candidate
@@ -633,15 +643,15 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
             # Atomic-ish swap: stage the new revision next to its target first,
             # then archive the old revision, then replace, then drop the old file.
             try:
-                sup_dir.mkdir(parents=True, exist_ok=True)
+                os.makedirs(_native(sup_dir), exist_ok=True)
                 shutil.copy2(_native(new_pdf), _native(staging))
                 if archived:
                     shutil.copy2(_native(p), _native(archive_target))
-                os.replace(staging, target_new)
+                os.replace(_native(staging), _native(target_new))
             except OSError as e:
-                if staging.exists():
+                if _exists(staging):
                     try:
-                        staging.unlink()
+                        os.unlink(_native(staging))
                     except OSError:
                         # Best-effort staging cleanup: the supersede failure
                         # below is logged and is the actionable error.
@@ -650,7 +660,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
                 continue
             # New revision is in place; old removal is best-effort.
             try:
-                p.unlink()
+                os.unlink(_native(p))
             except OSError as e:
                 log(f"  WARNING: {rel_old}: old revision left in tree "
                     f"(could not remove): {e}")

@@ -11,17 +11,34 @@ from .naming import folder_name_for
 
 
 def _native(path):
-    r"""Filesystem-op view of `path`: add the Windows `\\?\` prefix when long.
+    r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
 
     With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
     fails with ENOENT even though the file exists (input trees nest deep;
     the output tree is bounded by MAX_PATH, so only input-derived paths hit
     this - real run: 6 CHK archive copies failed without the prefix).
+    Drive paths get `\\?\`; UNC paths need the `\\?\UNC\server\share` form.
+    Forward-slash paths are left alone (`\\?\` rejects them; pathlib on
+    Windows always yields backslashes).
     """
     s = os.fspath(path)
-    if os.name == "nt" and len(s) >= 260 and not s.startswith("\\\\?\\"):
+    if os.name != "nt" or len(s) < 260 or s.startswith("\\\\?\\"):
+        return path
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    if os.path.isabs(s) and "/" not in s:
         return "\\\\?\\" + s
     return path
+
+
+def _exists(path):
+    """os.path.exists that sees beyond MAX_PATH (blind spot of Path.exists)."""
+    return os.path.exists(_native(path))
+
+
+def _islink(path):
+    """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
+    return os.path.islink(_native(path))
 
 
 def _classify_input_pdf(p, folder, index):
@@ -111,7 +128,7 @@ def build_pdf_index(folder, log=None):
     skips = {"skip_output": 0, "skip_sys": 0}
     skipped_symlinks = 0
     for p in sorted(folder.rglob("*.pdf")):
-        if p.is_symlink():
+        if _islink(p):
             skipped_symlinks += 1
             continue
         kind, stem, payload = _classify_input_pdf(p, folder, index)
@@ -187,7 +204,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
         pdf = index[stem]
         target_name = renames.get(stem, pdf.name)
         target = current_folder / target_name
-        if pdf.is_symlink() or target.is_symlink():
+        if _islink(pdf) or _islink(target):
             log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
             failed_count += 1
             for child in sorted(children.get(stem, ())):
@@ -322,16 +339,16 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
     sf = folder / "_superseded"
     for stem, pdf in sorted(old.items()):
         target = sf / pdf.name
-        if not overwrite and target.exists():
+        if not overwrite and _exists(target):
             continue
-        if pdf.is_symlink() or target.is_symlink():
+        if _islink(pdf) or _islink(target):
             log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
             continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
         else:
             try:
-                sf.mkdir(parents=True, exist_ok=True)
+                os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
@@ -351,14 +368,14 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     sf = folder / "_superseded"
     for p in sorted(paths):
         target = sf / p.name
-        if p.is_symlink() or target.is_symlink():
+        if _islink(p) or _islink(target):
             log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
             continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
         else:
             try:
-                sf.mkdir(parents=True, exist_ok=True)
+                os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(p), _native(target))
             except OSError as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
@@ -379,14 +396,14 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
             continue
         target_name = renames.get(o, pdf.name)
         target = orphans_dir / target_name
-        if pdf.is_symlink() or target.is_symlink():
+        if _islink(pdf) or _islink(target):
             log(f"  WARNING: {o}: copy skipped (symlink refused): {pdf} -> {target}")
             continue
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
         else:
             try:
-                orphans_dir.mkdir(parents=True, exist_ok=True)
+                os.makedirs(_native(orphans_dir), exist_ok=True)
                 shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")

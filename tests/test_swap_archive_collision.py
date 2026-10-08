@@ -1,4 +1,10 @@
 """Regression for C-001: supersede archive collision with different content."""
+import os
+from pathlib import Path
+
+import pytest
+
+from fermi_organizer import fsops
 from fermi_organizer.runmodes import _swap_revision_files
 
 
@@ -107,3 +113,113 @@ def test_swap_archive_collision_suffixes_on_same_size_different_content(tmp_path
     text = "\n".join(logged)
     assert "superseded:" in text
     assert "_superseded/F10126107.1.pdf" in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")
+def test_swap_revision_files_beyond_max_path(tmp_path):
+    # Deep output root: the _exists/archive check, staging, os.replace and the
+    # final unlink all sit past 260 chars - every step needs _native()/_exists,
+    # or the swap silently skips and leaves a duplicate in the tree.
+    seg = "o" * 40
+    out = tmp_path
+    while len(str(out / "_superseded" / "F10126106.pdf")) < 300:
+        out = out / seg
+    Path("\\\\?\\" + str(out)).mkdir(parents=True)
+    sup = out / "_superseded"
+    Path("\\\\?\\" + str(sup)).mkdir()
+    old_dir = out / "F10126106 Assembly"
+    Path("\\\\?\\" + str(old_dir)).mkdir()
+    old = old_dir / "F10126106.pdf"
+    Path("\\\\?\\" + str(old)).write_bytes(b"old-rev")
+    new_pdf = tmp_path / "F10126106_A.pdf"  # input side stays short
+    new_pdf.write_bytes(b"new-rev")
+    logged = []
+
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    def read(p):
+        return Path("\\\\?\\" + str(p)).read_bytes()
+
+    assert copies == 2
+    assert moved == [old_dir / "F10126106_A.pdf"]
+    assert read(old_dir / "F10126106_A.pdf") == b"new-rev"   # replace worked
+    assert not fsops._exists(old)                            # unlink worked
+    assert read(sup / "F10126106.pdf") == b"old-rev"         # archived
+    assert not any("supersede failed" in m or "left in tree" in m
+                   for m in logged)
+    import shutil
+    shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
+
+
+def test_swap_consults_islink_for_source_and_archive_destination(tmp_path,
+                                                                 monkeypatch):
+    # The archive copy must refuse symlinks (dangling or not): a dangling
+    # link at target_old makes _exists() False, so copy2 would follow it and
+    # write the old revision outside _superseded before the tree copy is
+    # unlinked. Pin that the swap consults os.path.islink for p and target_old.
+    recorded = []
+    real_islink = os.path.islink
+
+    def spy(p):
+        recorded.append(p)
+        return real_islink(p)
+
+    monkeypatch.setattr(os.path, "islink", spy)
+    out = tmp_path / "out"
+    sup = out / "_superseded"
+    sup.mkdir(parents=True)
+    old = out / "F10126106 Assembly" / "F10126106.pdf"
+    old.parent.mkdir()
+    old.write_bytes(b"old-rev")
+    new_pdf = tmp_path / "F10126106_A.pdf"
+    new_pdf.write_bytes(b"new-rev")
+    logged = []
+
+    _swap_revision_files([old], new_pdf, sup, out, False, logged.append)
+
+    # The guard's two calls come first; shutil may add its own islink looks.
+    assert recorded[:2] == [fsops._native(old),
+                            fsops._native(sup / "F10126106.pdf")]
+
+
+def test_swap_refuses_dangling_archive_symlink(tmp_path):
+    # End-to-end: a long dangling symlink at the archive destination must
+    # refuse the swap - no write-through outside _superseded, no unlink of
+    # the old tree copy.
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    import shutil
+
+    seg = "s" * 40
+    out = tmp_path
+    while len(str(out / "_superseded" / "F10126106.pdf")) < 300:
+        out = out / seg
+    Path("\\\\?\\" + str(out)).mkdir(parents=True)
+    sup = out / "_superseded"
+    Path("\\\\?\\" + str(sup)).mkdir()
+    old_dir = out / "F10126106 Assembly"
+    Path("\\\\?\\" + str(old_dir)).mkdir()
+    old = old_dir / "F10126106.pdf"
+    Path("\\\\?\\" + str(old)).write_bytes(b"old-rev")
+    target_old = sup / "F10126106.pdf"
+    outside = tmp_path / "would-be-outside.txt"  # never created
+    try:
+        os.symlink(str(outside), "\\\\?\\" + str(target_old))
+    except OSError:
+        # Clean up here: pytest's tmp cleanup cannot reach >= 260-char paths.
+        shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
+        pytest.skip("symlink creation not permitted at long paths")
+    new_pdf = tmp_path / "F10126106_A.pdf"
+    new_pdf.write_bytes(b"new-rev")
+    logged = []
+
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    assert moved == [] and copies == 0
+    assert any("symlink refused" in m for m in logged)
+    assert not (old_dir / "F10126106_A.pdf").exists()  # swap not performed
+    assert Path("\\\\?\\" + str(old)).exists()          # old copy untouched
+    assert not outside.exists()                        # nothing written outside
+    shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
