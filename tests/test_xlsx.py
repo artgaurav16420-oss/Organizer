@@ -367,6 +367,30 @@ def test_dash_two_tier_banner_print_fit_and_scanned_info_color(tmp_path):
     assert tab is not None and tab.rgb[-6:].upper() == "2563EB"
 
 
+def test_dashboard_placement_refused_row(tmp_path):
+    from openpyxl import load_workbook
+
+    ctx = {
+        "output": str(tmp_path / "out"),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-10-08T12:00:00",
+        "counters": {"scanned": 4, "roots": 2, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "", "names": {}, "placement_refused": True,
+    }
+    path = tmp_path / "refused.xlsx"
+    fx.build_workbook(path, ctx)
+
+    dash = load_workbook(path)["Dashboard"]
+    vals = [str(c.value) for row in dash.iter_rows() for c in row
+            if c.value is not None]
+    assert "Placement refused" in vals
+    # Refusal is action-tier: the banner must not read "All clear".
+    assert any("Action needed" in v for v in vals)
+    assert not any("All clear" in v for v in vals)
+
+
 def test_no_formula_cells_anywhere_including_used_on_bugs(tmp_path):
     # Fuzz-style: a "=" payload in the USED ON BUGS section (written outside
     # _table) must never be persisted as an Excel formula, and no other sheet

@@ -25,5 +25,6 @@ Thumbs.db
 
 # Tool state
 .code-review-cache/
+graphify-out/
 *.corrupt
 *.history.json.tmp

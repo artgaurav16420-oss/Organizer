@@ -83,3 +83,13 @@ def test_no_undocumented_public_functions():
                 new_undoc.append(item)
     assert not new_undoc, \
         "undocumented public functions found: " + "; ".join(new_undoc)
+
+
+def test_no_pymupdf_cli_extract_objects_usage():
+    """CVE-2026-82035 (GHSA-434w-92hw-f2m3) is a path traversal in the PyMuPDF
+    CLI font path (extract_objects() in src/__main__.py); this project uses the
+    library only and must never reference that path."""
+    for path in PRODUCTION_MODULES:
+        text = path.read_text(encoding="utf-8")
+        assert "extract_objects" not in text, path.name
+        assert "pymupdf.__main__" not in text, path.name

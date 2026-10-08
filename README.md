@@ -55,6 +55,10 @@ For a reproducible install with SHA-256 hashes:
 uv pip install -r requirements.lock
 ```
 
+`requirements.txt` is the human-edited dependency source; `requirements.lock` is
+generated from it with `uv pip compile requirements.txt --generate-hashes` and is
+what CI installs (`pip install --require-hashes -r requirements.lock`).
+
 Add `pip install -e .` when you want the `python -m fermi_organizer.cli` entry point.
 
 ## Quick start
@@ -221,6 +225,8 @@ is not required.
 - Third-party licenses and the project's own pending license decision:
   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 - Security policy: [`SECURITY.md`](SECURITY.md).
-- PyMuPDF: watch for `>=1.28.3` (CVE-2026-82035 affects `<=1.28.2` only in the
-  PyMuPDF CLI font path, which this project does not use).
+- PyMuPDF: watch for `>=1.28.3` (GHSA-434w-92hw-f2m3 / CVE-2026-82035 is a path
+  traversal in the PyMuPDF **CLI** font path — `extract_objects()` in
+  `src/__main__.py` — which this project does not use; upstream fix is commit
+  `b2c8f3a` and no fixed release exists yet).
 - Tesseract OCR: 5.5.3 or newer recommended.

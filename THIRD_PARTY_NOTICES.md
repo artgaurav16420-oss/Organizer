@@ -10,10 +10,13 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
   Distribution of a combined work, or offering it as a network service, requires
   either releasing the combined work's source under AGPL-3.0 or holding a
   commercial license from Artifex.
-- **Security:** advisory CVE-2026-82035 affects PyMuPDF <= 1.28.2, but only the
-  PyMuPDF CLI font path (`extract_objects()` in `src/__main__.py`). This project
-  imports PyMuPDF as a library and never invokes that CLI path. Monitor the
-  advisory and bump to >= 1.28.3 when released.
+- **Security:** advisory GHSA-434w-92hw-f2m3 / CVE-2026-82035 (path traversal)
+  affects PyMuPDF through 1.28.2, but only the PyMuPDF CLI font path
+  (`extract_objects()` in `src/__main__.py`). This project imports PyMuPDF as a
+  library and never invokes that CLI path (pinned by
+  `tests/test_no_dead_imports.py::test_no_pymupdf_cli_extract_objects_usage`).
+  The upstream fix is commit `b2c8f3a`; **no fixed release exists yet** (latest
+  is 1.28.2) — bump to >= 1.28.3 when released.
 
 ## openpyxl 3.1.5
 

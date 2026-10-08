@@ -256,7 +256,8 @@ def test_run_full_returns_structured_ctx(tmp_path, make_pdf):
 
     assert set(ctx) == {"counters", "missing", "chk", "orphans", "roots",
                         "used_on_mismatches", "used_on_bugs",
-                        "titleblock_mismatches", "scanned", "watermarks", "names"}
+                        "titleblock_mismatches", "scanned", "watermarks",
+                        "names", "placement_refused"}
     assert ctx["counters"] == {"scanned": 3, "roots": 1, "copies": 3,
                                "cycles": 0, "warnings": 0}
     assert ctx["missing"] == []
@@ -320,7 +321,8 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
 
     assert set(ctx) == {"counters", "missing", "chk", "orphans", "roots",
                         "used_on_mismatches", "used_on_bugs",
-                        "titleblock_mismatches", "scanned", "watermarks", "names"}
+                        "titleblock_mismatches", "scanned", "watermarks",
+                        "names", "placement_refused"}
     assert ctx["counters"] == {"scanned": 2, "roots": 1, "copies": 2,
                                "cycles": 0, "warnings": 0}
     assert ctx["missing"] == []
@@ -331,6 +333,31 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
     assert ctx["used_on_bugs"] == []
     assert ctx["names"]["F10126108"] == "Standalone part"
     assert ctx["names"]["F10126109"] == "New assembly"
+
+
+def test_run_incremental_per_run_cap_refuses_many_roots(tmp_path, make_pdf,
+                                                        monkeypatch):
+    # The cap is per run, not per place_files call: two roots with two copies
+    # each exceed a cap of 3 even though neither single call would (old
+    # per-call behavior placed all 4).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    monkeypatch.setattr("fermi_organizer.runmodes.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert not out.exists() or not any(out.rglob("*.pdf"))
+    text = "\n".join(logged)
+    assert "placement refused" in text
 
 
 def test_run_incremental_no_new_pdfs_returns_ctx(tmp_path, make_pdf):
