@@ -201,6 +201,23 @@ def planned_copy_count(children, roots):
     return sum(count(root) for root in roots)
 
 
+def ensure_placement_allowed(children, roots, log):
+    """Log + raise PlacementRefusedError when the planned fan-out exceeds
+    MAX_PLANNED_COPIES (or warn above the soft bound).
+
+    Call this before building naming paths or touching the tree, so a refusal
+    can never exhaust memory/time or leave partial work behind.
+    """
+    planned = planned_copy_count(children, roots)
+    if planned > MAX_PLANNED_COPIES:
+        log(f"  WARNING: {planned} copies planned exceeds the "
+            f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
+            "graph; nothing was created)")
+        raise PlacementRefusedError(planned)
+    if planned > PLANNED_COPIES_WARN:
+        log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
+
+
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
@@ -218,14 +235,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     folder_names = folder_names or {}
     renames = renames or {}
     count_copies = _copy_counter(children)
-    total_planned = sum(count_copies(root) for root in roots)
-    if total_planned > MAX_PLANNED_COPIES:
-        log(f"  WARNING: {total_planned} copies planned exceeds the "
-            f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
-            "graph; nothing was created)")
-        raise PlacementRefusedError(total_planned)
-    if total_planned > PLANNED_COPIES_WARN:
-        log(f"  WARNING: {total_planned} copies planned (diamond DAG may cause exponential growth)")
+    ensure_placement_allowed(children, roots, log)
 
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)

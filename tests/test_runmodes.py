@@ -349,7 +349,6 @@ def test_run_incremental_per_run_cap_refuses_many_roots(tmp_path, make_pdf,
         "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
     make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
     monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
-    monkeypatch.setattr("fermi_organizer.runmodes.MAX_PLANNED_COPIES", 3)
     logged = []
 
     ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
@@ -358,6 +357,64 @@ def test_run_incremental_per_run_cap_refuses_many_roots(tmp_path, make_pdf,
     assert not out.exists() or not any(out.rglob("*.pdf"))
     text = "\n".join(logged)
     assert "placement refused" in text
+
+
+def test_run_incremental_refused_before_supersede_swaps(tmp_path, make_pdf,
+                                                        monkeypatch):
+    # The cap is checked before _incremental_supersede: a refused batch must
+    # not have swapped revisions or moved folders already.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    organized_dir = out / "F10126106 Old parent"
+    organized_dir.mkdir(parents=True)
+    make_pdf(organized_dir / "F10126106.pdf", ["NAME", "Old parent"])
+    # Input: the superseding revision A plus two roots (2 copies each).
+    make_pdf(in_dir / "F10126106_A.pdf", ["NAME", "Old parent"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 CHILD PART", "NAME", "Parent one"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Child one"])
+    make_pdf(in_dir / "F10126111.pdf", [
+        "FERMI PART LIST", "F10126112 CHILD PART", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126112.pdf", ["NAME", "Child two"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    # No swap, no archive, no new folders: the tree is exactly as before.
+    assert (organized_dir / "F10126106.pdf").is_file()
+    assert not list(out.rglob("F10126106_A.pdf"))
+    assert not (out / "_superseded").exists()
+    assert not (out / "F10126109 Parent one").exists()
+    assert "supersede skipped" in "\n".join(logged)
+
+
+def test_run_incremental_refused_dry_run_skips_orphan_retirement(tmp_path,
+                                                                 make_pdf,
+                                                                 monkeypatch):
+    # A refused placement must not log orphan retirement for an adoption that
+    # never happened (dry-run planned set is suppressed when refused).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    make_pdf(orphans_dir / "F10126108.pdf", ["NAME", "Parked part"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126108 PARKED PART", "NAME", "Adopter"])
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST", "F10126111 CHILD PART", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126111.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 2)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert "[DRY-RUN] retire orphan copy" not in "\n".join(logged)
+    assert (orphans_dir / "F10126108.pdf").is_file()
 
 
 def test_run_incremental_no_new_pdfs_returns_ctx(tmp_path, make_pdf):

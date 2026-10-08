@@ -56,8 +56,8 @@ uv pip install -r requirements.lock
 ```
 
 `requirements.txt` is the human-edited dependency source; `requirements.lock` is
-generated from it with `uv pip compile requirements.txt --generate-hashes` and is
-what CI installs (`pip install --require-hashes -r requirements.lock`).
+generated from it with `uv pip compile requirements.txt --generate-hashes -o requirements.lock`
+and is what CI installs (`pip install --require-hashes -r requirements.lock`).
 
 Add `pip install -e .` when you want the `python -m fermi_organizer.cli` entry point.
 

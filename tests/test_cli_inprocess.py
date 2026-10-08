@@ -109,7 +109,6 @@ def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
         "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
     make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
     monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
-    monkeypatch.setattr("fermi_organizer.runmodes.MAX_PLANNED_COPIES", 3)
     monkeypatch.setattr(sys, "argv",
                         ["organize_fermi_pdfs.py", str(in_dir),
                          "--output", str(out), "--no-ocr", "--jobs", "1"])

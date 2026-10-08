@@ -5,6 +5,7 @@ anywhere as a Load-context Name in the same module (module-level or inside a
 function). Wildcard and __future__ imports are compiler directives, skipped.
 """
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -88,8 +89,13 @@ def test_no_undocumented_public_functions():
 def test_no_pymupdf_cli_extract_objects_usage():
     """CVE-2026-82035 (GHSA-434w-92hw-f2m3) is a path traversal in the PyMuPDF
     CLI font path (extract_objects() in src/__main__.py); this project uses the
-    library only and must never reference that path."""
+    library only and must never reference that path.
+
+    Covers the explicit symbols plus CLI invocation forms: running the tool
+    needs a quoted ``"pymupdf"`` argument (``pymupdf extract ...`` or
+    ``python -m pymupdf``), which an import statement never produces."""
     for path in PRODUCTION_MODULES:
         text = path.read_text(encoding="utf-8")
         assert "extract_objects" not in text, path.name
         assert "pymupdf.__main__" not in text, path.name
+        assert not re.search(r"['\"]pymupdf['\"]", text), path.name
