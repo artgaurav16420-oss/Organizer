@@ -431,3 +431,10 @@ def test_formula_fuzz_every_input_field_produces_zero_formulas(tmp_path):
                 for ws in wb.worksheets for row in ws.iter_rows()
                 for c in row if c.data_type == "f"]
     assert formulas == []
+    # Guards are only pinned if the payload actually flows into these sheets:
+    # an omitted dynamic field would otherwise pass vacuously above.
+    for sheet in ("Dashboard", "Run History"):
+        hits = [c for row in wb[sheet].iter_rows() for c in row
+                if isinstance(c.value, str) and c.value.startswith("=")]
+        assert hits, f"fuzz payload must reach {sheet} cells"
+        assert all(c.data_type == "s" for c in hits), sheet
