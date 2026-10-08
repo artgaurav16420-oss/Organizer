@@ -629,19 +629,23 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     planned_set = set(planned) if dry_run else set()
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
+        if opath.is_symlink():
+            # Never compare through (or retire) a link; log only when
+            # retirement was otherwise due, matching the former behavior.
+            if live or o in sup or o in planned_set:
+                log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
+            continue
         if o not in sup and o not in planned_set:
-            # Symlinks keep the dedicated refusal log below (never compare
-            # through a link); otherwise the live copy must be byte-equal.
-            retireable = (any(_same_bytes(p, opath) for p in live)
-                          or (bool(live) and opath.is_symlink()))
+            # Only a byte-identical regular live copy retires the parked
+            # copy; a symlinked live entry never counts (same rule as the
+            # archive byte-verify: a link is not a managed copy).
+            retireable = any(not _islink(p) and _same_bytes(p, opath)
+                             for p in live)
             if not retireable:
                 if live:
-                    log(f"  WARNING: orphan copy {o} differs from its live "
-                        f"tree copy; kept: {opath}")
+                    log(f"  WARNING: orphan copy {o} not retired: no "
+                        f"byte-identical regular live copy; kept: {opath}")
                 continue
-        if opath.is_symlink():
-            log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
-            continue
         if dry_run:
             log(f"  [DRY-RUN] retire orphan copy: {opath.relative_to(folder)} (now placed in tree)")
             continue

@@ -633,7 +633,35 @@ def test_retire_adopted_orphans_keeps_differing_live_copy(tmp_path):
 
     assert retired == 0
     assert orphan.is_file()
-    assert "differs from its live tree copy; kept" in "\n".join(logged)
+    assert "not retired: no byte-identical regular live copy; kept" in "\n".join(logged)
+
+
+def test_retire_adopted_orphans_symlinked_live_copy_kept(tmp_path):
+    # A symlinked live entry is not a managed copy: even when its target has
+    # identical bytes, the parked orphan stays.
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    live_dir = out / "F10126109 Parent" / "F10126108 Child"
+    orphans_dir.mkdir(parents=True)
+    live_dir.mkdir(parents=True)
+    payload = b"%PDF-1.4 identical bytes"
+    orphan = orphans_dir / "F10126108.pdf"
+    orphan.write_bytes(payload)
+    referent = tmp_path / "external.pdf"
+    referent.write_bytes(payload)
+    link = live_dir / "F10126108.pdf"
+    try:
+        link.symlink_to(referent)
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126108": orphan}, out, False,
+                                     logged.append)
+
+    assert retired == 0
+    assert orphan.is_file()
+    assert "not retired: no byte-identical regular live copy" in "\n".join(logged)
 
 
 def test_retire_adopted_orphans_identical_live_copy_retires(tmp_path):
