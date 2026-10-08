@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Full and incremental organization runs."""
-import filecmp
 import os
 import re
 import shutil
@@ -18,8 +17,9 @@ from .naming import build_folder_names
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
-                    retire_adopted_orphans, sweep_supersede_staging, _native,
-                    _exists, _islink)
+                    retire_adopted_orphans, sweep_supersede_staging,
+                    resolve_archive_target, folder_foreign_pdfs,
+                    _native, _exists, _islink)
 
 
 class RunCounters(TypedDict):
@@ -258,7 +258,7 @@ def _resolve_duplicates(index, duplicates, jobs, log):
                          for p in (index[stem], *paths)})
     results = run_parallel(dup_meta_task, [str(p) for p in cand_paths], jobs, False)
     meta = {}
-    for p, res in zip(cand_paths, results):
+    for p, res in zip(cand_paths, results, strict=True):
         # Unreadable candidate: clean but unverified (assume scanned) - it may
         # lose to a verified text-layer copy, never to a watermarked one.
         meta[p] = (res[1], bool(res[2])) if res[0] == "ok" else (None, True)
@@ -380,7 +380,7 @@ def _scan_boms(items, jobs, log, require_desc):
     titleblocks = {}
     results = run_parallel(bom_task, [str(p) for _, p in items],
                            jobs, OCR.enabled)
-    for (stem, pdf), res in zip(items, results):
+    for (stem, pdf), res in zip(items, results, strict=True):
         if res[0] == "error":
             log(f"  {stem}: ERROR reading PDF: {res[1]}")
             continue
@@ -408,7 +408,7 @@ def _scan_used_on(items, jobs, header, log):
     log(header)
     results = run_parallel(title_task, [str(p) for _, p in items],
                            jobs, OCR.enabled)
-    for (stem, _pdf), res in zip(items, results):
+    for (stem, _pdf), res in zip(items, results, strict=True):
         if res[0] == "error":
             log(f"  {stem}: ERROR reading PDF: {res[1]}")
             continue
@@ -505,7 +505,6 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None):
     # Stored orphans from previous full runs: they are adoption candidates.
     # If a new/organized parent references one, it is placed into the tree and
     # its _orphans/ copy is retired; if not, it stays parked.
-    orphans_dir = output / "_orphans"
     stored_orphans = {s: p for p in scan_res["orph"]
                       if (s := canonical_stem(p.stem))}
     new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
@@ -559,7 +558,7 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
                  for stem in sorted(organized)]
     org_results = run_parallel(org_task, [str(p) for _, p in org_items],
                                jobs, OCR.enabled)
-    for (stem, pdf), res in zip(org_items, org_results):
+    for (stem, pdf), res in zip(org_items, org_results, strict=True):
         if res[0] == "error":
             log(f"  {stem}: ERROR reading PDF: {res[1]}")
             continue
@@ -615,26 +614,8 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
         # bytes = assume duplicate, keep the old skip behavior; OSError on
         # compare means differ (safer). Differing content archives under a
         # numeric suffix (<stem>.1.pdf, incrementing until free).
-        archive_target = target_old
-        archived = not _exists(target_old)
-        if not archived:
-            try:
-                same = filecmp.cmp(_native(target_old), _native(p),
-                                   shallow=False)
-            except OSError:
-                same = False
-            if same:
-                archived = False
-            else:
-                base = target_old.stem
-                ext = target_old.suffix
-                n = 1
-                candidate = sup_dir / f"{base}.{n}{ext}"
-                while _exists(candidate):
-                    n += 1
-                    candidate = sup_dir / f"{base}.{n}{ext}"
-                archive_target = candidate
-                archived = True
+        archive_target, already = resolve_archive_target(sup_dir, p)
+        archived = not already
         if dry_run:
             note = "" if archived else " (archive skipped: exists)"
             log(f"  [DRY-RUN] supersede: {rel_old} -> _superseded/{archive_target.name}; "
@@ -670,6 +651,24 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
     return moved, copies
 
 
+def _shared_folder_blocks_move(c, child_folder, output, log):
+    """True when `child_folder` holds another drawing's PDF or is unlistable.
+
+    Moving a shared folder would relocate files unrelated to the move, so the
+    move is refused with a manual-review warning (fail safe)."""
+    foreign = folder_foreign_pdfs(child_folder, c)
+    if foreign is None:
+        log(f"  WARNING: {c}: could not list folder, skipping move "
+            f"(manual review): {child_folder.relative_to(output)}")
+        return True
+    if foreign:
+        names = ", ".join(p.name for p in foreign)
+        log(f"  WARNING: {c}: folder shared with {names} - skipping move "
+            f"(manual review): {child_folder.relative_to(output)}")
+        return True
+    return False
+
+
 def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                                      output, dry_run, moved_dirs, log):
     """Move organized parts referenced by a superseding revision under its
@@ -691,6 +690,8 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     continue
                 child_folder = pick_shallowest(child_paths).parent
                 if child_folder == s_folder or child_folder.is_relative_to(s_folder):
+                    continue
+                if _shared_folder_blocks_move(c, child_folder, output, log):
                     continue
                 target_path = s_folder / child_folder.name
                 if _exists(target_path):
@@ -766,12 +767,14 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
         child_path = pick_shallowest(child_paths)
         child_folder = child_path.parent
         already_moved = False
-        for old, new in moved_dirs.items():
+        for old in moved_dirs:
             if child_folder == old or child_folder.is_relative_to(old):
                 already_moved = True
                 break
         if already_moved:
             log(f"  {c}: already moved, skipping")
+            continue
+        if _shared_folder_blocks_move(c, child_folder, output, log):
             continue
         # Guard against destination collisions before moving the child's folder.
         target_path = target_folder / child_folder.name
@@ -946,7 +949,8 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         total_copies += copy_orphans(orphans, index, output, dry_run, log,
                                      renames=renames)
     if old:
-        total_copies += copy_superseded(old, output, dry_run, log, overwrite=True)
+        n, _archived = copy_superseded(old, output, dry_run, log, overwrite=True)
+        total_copies += n
     if watermarked_dupes:
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
@@ -1038,7 +1042,11 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
 
 
 def _incremental_prepare(folder, output, dry_run, log):
-    """Collect candidates, log counts, archive superseded among new PDFs."""
+    """Collect candidates, log counts, archive superseded among new PDFs.
+    Returns (organized, sup_dir, stored_orphans, new_index, chk_stems,
+    supersede_pairs, new_duplicates, copies, archived_new, scan_res) where
+    archived_new holds only stems whose archive copy was verified written.
+    """
     scan_index, top_duplicates = build_pdf_index(folder, log)
     if not scan_index:
         log("No PDFs found in folder.")
@@ -1058,9 +1066,9 @@ def _incremental_prepare(folder, output, dry_run, log):
     _log_previous_report(output, log)
     log("")
     # Archive superseded copies even when there is nothing new to place.
-    total_copies = copy_superseded(old_new, output, dry_run, log)
+    total_copies, archived_new = copy_superseded(old_new, output, dry_run, log)
     return (organized, sup_dir, stored_orphans, new_index, chk_stems,
-            supersede_pairs, new_duplicates, total_copies, set(old_new), scan_res)
+            supersede_pairs, new_duplicates, total_copies, archived_new, scan_res)
 
 
 def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
@@ -1391,7 +1399,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     jobs = resolve_jobs(jobs)
     sweep_supersede_staging(output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
-        supersede_pairs, new_duplicates, total_copies, superseded_new, scan_res = \
+        supersede_pairs, new_duplicates, total_copies, archived_new, scan_res = \
         _incremental_prepare(folder, output, dry_run, log)
 
     if not new_index:
@@ -1455,6 +1463,6 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
                                  chk_stems, new_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
-                                 superseded=set(superseded_new) | set(swapped_old),
+                                 superseded=archived_new | set(swapped_old),
                                  planned=planned,
                                  scan_res=reused_scan_res)

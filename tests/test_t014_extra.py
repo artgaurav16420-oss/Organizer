@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from fermi_organizer.runmodes import (_detect_supersede_pairs,
                                       _move_children_under_superseding,
+                                      _place_above_organized_children,
                                       run_full)
 
 pytestmark = pytest.mark.skipif(not fx._OPENPYXL_OK,
@@ -153,6 +154,39 @@ def test_move_children_under_superseding(tmp_path, dry_run):
         assert (s_folder / "F10126107 Child" / "F10126107.pdf").is_file()
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_move_children_under_superseding_shared_folder_skips(tmp_path, dry_run):
+    # A folder holding another drawing's PDF is refused: moving it would take
+    # unrelated files along. Covered in dry-run too (the plan must not report
+    # a move the real run would refuse).
+    out = tmp_path / "out"
+    s_folder = out / "F10126106 Parent"
+    s_folder.mkdir(parents=True)
+    (s_folder / "F10126106.pdf").write_bytes(b"%PDF")
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    (child_folder / "F10126107.pdf").write_bytes(b"%PDF")
+    foreign = child_folder / "F10126108.pdf"
+    foreign.write_bytes(b"%PDF")
+
+    organized = {"F10126106": [s_folder / "F10126106.pdf"],
+                 "F10126107": [child_folder / "F10126107.pdf"],
+                 "F10126108": [foreign]}
+    logged = []
+    moved_dirs = {}
+    moves = _move_children_under_superseding(
+        ["F10126106"], organized, {"F10126106": ["F10126107"]},
+        {"F10126106", "F10126107"}, out, dry_run, moved_dirs, logged.append)
+
+    assert moves == 0
+    assert moved_dirs == {}
+    assert child_folder.is_dir()
+    assert not (s_folder / "F10126107 Child").exists()
+    text = "\n".join(logged)
+    assert "F10126107: folder shared with F10126108.pdf" in text
+    assert "skipping move" in text
+
+
 def test_move_children_under_superseding_oserror(tmp_path):
     out = tmp_path / "out"
     s_folder = out / "F10126106 Parent"
@@ -191,6 +225,43 @@ def test_move_children_under_superseding_oserror(tmp_path):
     expected_move = (f"moved: {Path('F10126108 Child2')} -> "
                      f"{Path('F10126106 Parent') / 'F10126108 Child2'}")
     assert expected_move in text
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_place_above_organized_children_shared_folder_skips(tmp_path, dry_run,
+                                                            make_pdf):
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(child_folder / "F10126108.pdf", ["NAME", "Other part"])
+    new_pdf = make_pdf(tmp_path / "F10126109.pdf",
+                       ["NAME", "Higher assembly"])
+
+    organized = {"F10126107": [child_folder / "F10126107.pdf"],
+                 "F10126108": [child_folder / "F10126108.pdf"]}
+    new_index = {"F10126109": new_pdf}
+    new_children = {"F10126109": set()}
+    new_names = {"F10126109": "Higher assembly"}
+    moved_dirs = {}
+    logged = []
+
+    copies, moves = _place_above_organized_children(
+        "F10126109", ["F10126107"], new_children, new_index, new_names,
+        organized, moved_dirs, out, dry_run, logged.append)
+
+    assert moves == 0
+    assert moved_dirs == {}
+    assert child_folder.is_dir()
+    assert (child_folder / "F10126108.pdf").is_file()
+    target = out / "F10126109 Higher assembly" / "F10126107 Child"
+    assert not target.exists()
+    text = "\n".join(logged)
+    assert "F10126107: folder shared with F10126108.pdf" in text
+    assert "skipping move" in text
+    if not dry_run:
+        # The new root's own PDF is still placed; only the move is refused.
+        assert (out / "F10126109 Higher assembly" / "F10126109.pdf").is_file()
 
 
 def test_copy_orphans_then_retire_adopted(tmp_path):
