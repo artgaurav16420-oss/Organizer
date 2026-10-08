@@ -153,6 +153,11 @@ directory once installed editable).
   the tree; adopted files remain available under `_orphans/` until they are placed.
 - An interrupted run is safe to re-run: incremental mode leaves existing folders
   alone, and a full re-run rebuilds the tree from the input PDFs.
+- One run per output folder at a time: a run killed mid-supersede leaves
+  `*.supersede_tmp.*` staging files behind (the PDF scans never match them), and the
+  next run's startup sweep removes **all** of them — including the live staging file
+  of a second run writing to the same output. The sweep has no PID or age check by
+  design; do not run two processes against one output tree.
 - A failing filesystem operation (copy, move, `mkdir`) logs a warning and the run
   continues rather than aborting.
 
