@@ -246,7 +246,8 @@ def ensure_placement_allowed(children, roots, log):
         log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
 
 
-def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None):
+def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
+                lock=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
     Folder names come from `folder_names` (already path-shortened), falling
@@ -255,6 +256,9 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     disk; oversized paths/subtrees are skipped with a warning. Raises
     PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (nothing is created).
+    `lock` is this run's lock path (None = unlocked): the heartbeat loss flag
+    is re-checked once per folder, so a run stolen mid-placement stops with
+    LockLostError instead of writing into another run's tree.
 
     Iterative pre-order traversal (explicit stack, children pushed in reverse
     so they pop in sorted order): the log and copy order must stay identical
@@ -277,6 +281,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
         stack = [(root, folder / fname(root), 0)]
         while stack:
             stem, current_folder, depth = stack.pop()
+            _ensure_lock(lock, log)
             if depth > TREE_MAX_DEPTH:
                 log(f"  WARNING: placement truncated at depth {depth} in "
                     f"{current_folder.name} (deeper than any healthy tree) - manual review")
@@ -528,12 +533,28 @@ def run_lock_lost(lock):
     """True when the heartbeat observed our lock replaced while held.
 
     False for unlocked runs (None) and while our token still matches. Cheap
-    flag read — call before each mutating step (see runmodes._ensure_lock).
+    flag read — call before each mutating step (see _ensure_lock).
     """
     if lock is None:
         return False
     item = _heartbeats.get(str(lock))
     return bool(item is not None and item[2].is_set())
+
+
+def _ensure_lock(lock, log):
+    """Abort when the heartbeat observed our lock stolen mid-run.
+
+    A run paused past the stale window (sleep, SIGSTOP, VM pause) may wake to
+    find another run holding the tree; writing on would interleave two live
+    writers. Raises LockLostError (the CLI exits 2 — the tree may already
+    hold this run's partial writes). No-op for unlocked runs (None).
+    """
+    if run_lock_lost(lock):
+        log("  ERROR: run lock lost mid-run (stolen while paused?) - "
+            "stopping before further tree changes")
+        raise LockLostError(
+            "run lock lost mid-run (stolen while paused?) - stopped before "
+            "further tree changes; inspect the output tree before rerunning")
 
 
 def _heartbeat_beat(lock, token):
