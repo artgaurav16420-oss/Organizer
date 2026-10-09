@@ -850,9 +850,9 @@ def _live_orphan_stems(output):
                    if (s := canonical_stem(p.stem))})
 
 
-def _full_prepare_index(folder, jobs, log):
+def _full_prepare_index(folder, output, jobs, log):
     """Build index, report CHK/superseded, resolve same-revision duplicates."""
-    index, duplicates = build_pdf_index(folder, log)
+    index, duplicates = build_pdf_index(folder, log, exclude=output)
     if not index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
@@ -1076,7 +1076,7 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     _ensure_lock(lock, log)
     sweep_supersede_staging(output, dry_run, log)
     sweep_stale_claims(output, dry_run, log)
-    index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
+    index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, output, jobs, log)
     index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems, \
         warning_count = _full_scan_boms(index, jobs, log, rekey, chk_stems)
 
@@ -1108,7 +1108,7 @@ def _incremental_prepare(folder, output, dry_run, log):
     supersede_pairs, new_duplicates, copies, archived_new, scan_res) where
     archived_new holds only stems whose archive copy was verified written.
     """
-    scan_index, top_duplicates = build_pdf_index(folder, log)
+    scan_index, top_duplicates = build_pdf_index(folder, log, exclude=output)
     if not scan_index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")

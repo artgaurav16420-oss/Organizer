@@ -94,7 +94,7 @@ def _log_scan_skips(log, skipped_output, skipped_sys):
     if not log:
         return
     if skipped_output:
-        log(f"Skipped {skipped_output} PDF(s) under Output/ (organized copies are never input)")
+        log(f"Skipped {skipped_output} PDF(s) under the output tree (organized copies are never input)")
     if skipped_sys:
         log(f"Skipped {skipped_sys} PDF(s) under _-prefixed folders (system dirs are never input)")
 
@@ -110,13 +110,17 @@ def _log_capped(log, header, items, fmt):
         log(f"  ... and {len(items) - 10} more")
 
 
-def build_pdf_index(folder, log=None):
+def build_pdf_index(folder, log=None, exclude=None):
     """Map uppercase stem -> PDF path for every part-named PDF under `folder`.
 
-    Recursive; top-level Output/ and "_"-prefixed dirs are skipped. Duplicate
-    stems keep the shallowest path (input originals beat nested organized-tree
-    copies), then lexicographic order. Skips/dupes/ignored files are logged via
-    `log` when given.
+    Recursive; top-level Output/ and "_"-prefixed dirs are skipped, and so is
+    the `exclude` subtree (the run's output folder) when it sits inside
+    `folder` under any name - a previous tree named e.g. "Organizer Output"
+    must not be re-indexed as input. `folder` and `exclude` should both be
+    resolved paths (the CLI resolves them). Duplicate stems keep the
+    shallowest path (input originals beat nested organized-tree copies), then
+    lexicographic order. Skips/dupes/ignored files are logged via `log` when
+    given.
 
     Returns (index, duplicates): `duplicates` maps a stem to the losing paths
     (sorted scan order) so callers can compare same-revision copies (e.g.
@@ -125,8 +129,20 @@ def build_pdf_index(folder, log=None):
     # Recursive: every *.pdf under the input folder counts, at any depth.
     # In-place output is the default, so the organized tree usually lives
     # inside the input folder; only top-level "Output/" and "_"-prefixed
-    # dirs (_superseded/_orphans) are skipped. Repeated full runs rescan
+    # dirs (_superseded/_orphans) are skipped by name, plus the resolved
+    # output path itself (any name). Repeated full runs rescan
     # the already-organized folders unless a separate --output is used.
+    exclude_prefix = ()
+    if exclude is not None:
+        try:
+            folder_key = os.path.normcase(os.path.abspath(folder))
+            exclude_key = os.path.normcase(os.path.abspath(exclude))
+        except (OSError, ValueError):
+            folder_key = exclude_key = None
+        if folder_key and exclude_key and exclude_key != folder_key and \
+                exclude_key.startswith(folder_key.rstrip(os.sep) + os.sep):
+            exclude_prefix = tuple(
+                Path(exclude_key).relative_to(folder_key).parts)
     index = {}
     duplicates = defaultdict(list)
     ignored = []
@@ -137,6 +153,12 @@ def build_pdf_index(folder, log=None):
         if _islink(p):
             skipped_symlinks += 1
             continue
+        if exclude_prefix:
+            rel = p.relative_to(folder)
+            if tuple(os.path.normcase(part)
+                     for part in rel.parts[:len(exclude_prefix)]) == exclude_prefix:
+                skips["skip_output"] += 1
+                continue
         kind, stem, payload = _classify_input_pdf(p, folder, index)
         if kind in skips:
             skips[kind] += 1

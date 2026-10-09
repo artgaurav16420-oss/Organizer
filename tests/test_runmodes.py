@@ -702,6 +702,27 @@ def test_run_incremental_precheck_ignores_phantom_cycle_fanout(
     assert "supersede skipped" not in text
 
 
+def test_run_full_rerun_excludes_own_output_tree(tmp_path, make_pdf):
+    # A second full run against the same in-input output folder must not
+    # re-index the previously placed tree as input (any custom name, not
+    # just top-level "Output/"): no duplicate-stem noise, same plan.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = in_dir / "Organizer Output"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    logged = []
+    ctx = run_full(in_dir, out, True, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    assert "duplicate stem(s)" not in text
+    assert "under the output tree" in text
+    assert ctx["counters"]["copies"] == 2
+    assert ctx["skipped_roots"] == []
+
+
 def test_run_incremental_no_new_pdfs_returns_ctx(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

@@ -93,7 +93,8 @@ Without `--output` the tree is organized **in place**, in the input folder itsel
 
 Input is scanned recursively — every `*.pdf` under the input folder counts, at any
 depth, except those under a top-level `Output/` (case-insensitive) or `_`-prefixed
-folder. A nested `sub/Output/` **is** scanned.
+folder, plus the run's own `--output` folder by resolved path (whatever it is
+named). A nested `sub/Output/` **is** scanned.
 
 ## Outputs
 

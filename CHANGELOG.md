@@ -25,6 +25,13 @@ All notable changes to the Fermi PDF organizer are recorded here.
   Dashboard `Placement refused` action row actually lights up after real
   runs (it was only reachable via direct `build_workbook` calls before).
 
+### Input scan
+- The input scan excludes the run's output folder by resolved path, not just
+  by the top-level `Output/` name: a previous tree kept inside the input
+  folder under any custom name (e.g. `Organizer Output`) is no longer
+  re-indexed as input on later full runs. Name-based skips (`Output/`,
+  `_`-prefixed dirs) are unchanged.
+
 ### Concurrency & process safety
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of

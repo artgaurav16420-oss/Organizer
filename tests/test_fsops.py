@@ -391,7 +391,7 @@ def test_build_pdf_index_classification_warnings_and_order(tmp_path):
     assert index["F10126107"] == tmp_path / "sub" / "F10126107.pdf"
     assert duplicates["F10126106"] == [tmp_path / "sub2" / "F10126106.pdf"]
     assert lines == [
-        "Skipped 1 PDF(s) under Output/ (organized copies are never input)",
+        "Skipped 1 PDF(s) under the output tree (organized copies are never input)",
         "Skipped 1 PDF(s) under _-prefixed folders (system dirs are never input)",
         "WARNING: 1 duplicate stem(s) across input subfolders (shallowest path kept):",
         f"  {'sub2' + os.sep + 'F10126106.pdf'}  (kept F10126106.pdf)",
@@ -420,6 +420,37 @@ def test_build_pdf_index_prefers_shallowest_over_nested_tree_copy(tmp_path):
     text = "\n".join(lines)
     assert "shallowest path kept" in text
     assert f"kept {loose.name}" in text
+
+
+def test_build_pdf_index_exclude_skips_output_subtree_by_path(tmp_path):
+    # An output folder with a custom name inside the input tree is excluded
+    # by resolved path, not just by the top-level "Output/" convention.
+    tree_dir = tmp_path / "Organizer Output" / "F10126106 Assembly"
+    tree_dir.mkdir(parents=True)
+    loose = tmp_path / "F10126106.pdf"
+    nested = tree_dir / "F10126107.pdf"
+    loose.write_bytes(b"original")
+    nested.write_bytes(b"tree copy")
+
+    lines = []
+    index, _duplicates = build_pdf_index(
+        tmp_path, lines.append, exclude=tmp_path / "Organizer Output")
+
+    assert sorted(index) == ["F10126106"]
+    assert "under the output tree" in "\n".join(lines)
+
+
+def test_build_pdf_index_exclude_ignores_outside_and_equal_paths(tmp_path):
+    # exclude outside the input (the usual separate-tree layout) and
+    # exclude == folder (in-place default) are both no-ops.
+    (tmp_path / "F10126106.pdf").write_bytes(b"%PDF")
+    outside = tmp_path / "elsewhere"
+
+    index, _duplicates = build_pdf_index(tmp_path, None, exclude=outside)
+    assert sorted(index) == ["F10126106"]
+
+    index, _duplicates = build_pdf_index(tmp_path, None, exclude=tmp_path)
+    assert sorted(index) == ["F10126106"]
 
 
 def test_copy_superseded_skip_vs_overwrite(tmp_path):
