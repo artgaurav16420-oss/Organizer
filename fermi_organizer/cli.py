@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .extraction import (OCR, resolve_jobs)
 from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
+from .fsops import RunLockedError
 from .report_glue import names_from_tree
 
 
@@ -136,9 +137,13 @@ def main():
                            rekey=args.rekey_titleblock)
     except NoPDFsFoundError:
         sys.exit(1)
+    except RunLockedError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
 
     if ctx.get("placement_refused"):
-        log("  WARNING: placement refused - nothing was placed; review the "
+        log("  WARNING: placement refused - folder placement skipped (bounded "
+            "orphan/archive copies still ran); review the "
             "BOM graph (report + workbook still written)")
 
     if OCR.enabled and OCR.events:

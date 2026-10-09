@@ -6,10 +6,14 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
 ## PyMuPDF 1.28.2
 
 - **License:** dual-licensed — AGPL-3.0-only **or** Artifex commercial license.
-- **Usage note:** internal use by a single entity does not trigger AGPL obligations.
-  Distribution of a combined work, or offering it as a network service, requires
-  either releasing the combined work's source under AGPL-3.0 or holding a
-  commercial license from Artifex.
+- **Usage note (PyMuPDF's terms, not this repo's):** under PyMuPDF's own
+  licensing, purely internal use by a single entity does not trigger AGPL
+  obligations. That does not describe this repository: this project itself is
+  licensed AGPL-3.0-only (see `LICENSE`) and is published publicly, so the
+  combined work is conveyed under AGPL-3.0 with full source obligations.
+  Distribution of a combined work, or offering it as a network service,
+  requires either releasing the combined work's source under AGPL-3.0 or
+  holding a commercial license from Artifex.
 - **Security:** advisory GHSA-434w-92hw-f2m3 / CVE-2026-82035 (high, path
   traversal in the font branch of `extract_objects()`). Verified directly on
   2026-10-08 against the GitHub advisory API and the PyPI JSON API:

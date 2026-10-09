@@ -94,6 +94,7 @@ class _OcrContext:
         self.available = False
         self.reason = None
         self.tesseract_path = None
+        self.install_dir = None
         self.version = None
         self.events = {}
         self.page_memo = {}
@@ -107,12 +108,44 @@ class _OcrContext:
         self.available = False
         self.reason = None
         self.tesseract_path = None
+        self.install_dir = None
         self.version = None
         self.events = {}
         self.page_memo = {}
         self.words_memo = {}
         self.page_scale = {}
         self._doc_seq = 0
+
+    def _export_for_pymupdf(self, install_dir):
+        """Export a common-dir Tesseract install to the process environment.
+
+        This global mutation exists for exactly one consumer: PyMuPDF's
+        in-process OCR (`get_textpage_ocr`) resolves the tesseract binary and
+        TESSDATA_PREFIX from the process environment at OCR time, with no API
+        to pass them explicitly. Our own CLI invocations do NOT rely on it —
+        they get an explicit env via subprocess_env(). The PATH prepend is
+        idempotent: repeated detection/reset cycles must not grow PATH with
+        the same directory again.
+        """
+        if install_dir not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = (install_dir + os.pathsep
+                                  + os.environ.get("PATH", ""))
+        os.environ.setdefault("TESSDATA_PREFIX",
+                              os.path.join(install_dir, "tessdata"))
+
+    def subprocess_env(self):
+        """Explicit env for OUR tesseract child processes (never the global).
+
+        The exe is always invoked by absolute path, so only TESSDATA_PREFIX
+        can matter; when detection found no common-dir install there is
+        nothing to add and None inherits the process env unchanged.
+        """
+        if not self.install_dir:
+            return None
+        env = dict(os.environ)
+        env.setdefault("TESSDATA_PREFIX",
+                       os.path.join(self.install_dir, "tessdata"))
+        return env
 
     def ensure_tesseract(self):
         """Locate Tesseract once (PATH, TESSERACT_EXE, common Windows dirs)."""
@@ -137,21 +170,16 @@ class _OcrContext:
             for d in cand_dirs:
                 if d and os.path.isfile(os.path.join(d, "tesseract.exe")):
                     exe = os.path.join(d, "tesseract.exe")
-                    # PyMuPDF resolves the tesseract binary and TESSDATA_PREFIX
-                    # from the process environment at OCR time, so the discovered
-                    # install dir must be exported here.  The PATH prepend is
-                    # idempotent: repeated detection/reset cycles must not grow
-                    # PATH with the same directory again.
-                    if d not in os.environ.get("PATH", "").split(os.pathsep):
-                        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-                    os.environ.setdefault("TESSDATA_PREFIX", os.path.join(d, "tessdata"))
+                    self.install_dir = d
+                    self._export_for_pymupdf(d)
                     break
         if not exe or not os.path.isfile(exe):
             if self.reason is None:
                 self.reason = "tesseract not found"
             return None
         try:
-            ver = subprocess.run([exe, "--version"], capture_output=True, timeout=20)
+            ver = subprocess.run([exe, "--version"], capture_output=True,
+                                 timeout=20, env=self.subprocess_env())
         except (OSError, subprocess.SubprocessError) as e:
             self.reason = f"tesseract not runnable ({exe}): {e}"
             return None
@@ -527,13 +555,16 @@ def _tesseract_run(args, timeout):
     Non-zero exit (bad tessdata, engine init crash) leaves stdout empty:
     callers must not read that as a genuinely blank region, so a failed
     run surfaces as an extraction error instead of silent accuracy loss.
+    The child gets an explicit env (OCR.subprocess_env), never relying on
+    the process-global export that exists only for PyMuPDF's in-process OCR.
     """
     r = subprocess.run(args, capture_output=True, text=True,
                        # UTF-8, not the locale codepage: Tesseract output
                        # contains multi-byte characters (e.g. curly quotes)
                        # that cp1252 cannot decode - the reader thread then
                        # dies and r.stdout is None.
-                       encoding="utf-8", errors="replace", timeout=timeout)
+                       encoding="utf-8", errors="replace", timeout=timeout,
+                       env=OCR.subprocess_env())
     if r.returncode != 0:
         err = (r.stderr or "").strip().replace("\n", " ")[:160]
         raise RuntimeError(f"tesseract exit {r.returncode}: {err}")
