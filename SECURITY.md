@@ -16,8 +16,12 @@ copies into an output folder. The most relevant classes of issues:
   `TESSERACT_EXE` environment variable is operator-controlled and validated.
 
 Dependency advisories: see `THIRD_PARTY_NOTICES.md` for known PyMuPDF/Tesseract
-notes (e.g. GHSA-434w-92hw-f2m3 / CVE-2026-82035 affects only the PyMuPDF CLI
-font path, which this project does not use; no fixed release exists yet).
+notes. GHSA-434w-92hw-f2m3 / CVE-2026-82035 (path traversal) is confined to the
+PyMuPDF **CLI** entry module (`src/__main__.py`), which this project never
+imports or invokes; the library API surface it does use never executes that
+module (verified 2026-10-08 against the advisory and PyPI; no fixed release
+exists yet — the first PyPI release containing upstream fix `b2c8f3a` must be
+adopted, see THIRD_PARTY_NOTICES.md for the standing action).
 
 ## Reporting a vulnerability
 

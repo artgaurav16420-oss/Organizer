@@ -615,6 +615,117 @@ def test_retire_adopted_orphans_planned_covers_dry_run_placement(tmp_path):
     assert "F10126108" in text
 
 
+def test_retire_adopted_orphans_keeps_differing_live_copy(tmp_path):
+    # A same-stem live copy with different bytes must not retire the parked
+    # copy: it may be the only copy of those bytes (input updated later).
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    live_dir = out / "F10126109 Parent" / "F10126108 Child"
+    orphans_dir.mkdir(parents=True)
+    live_dir.mkdir(parents=True)
+    orphan = orphans_dir / "F10126108.pdf"
+    orphan.write_bytes(b"newer input bytes")
+    (live_dir / "F10126108.pdf").write_bytes(b"older placed bytes")
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126108": orphan}, out, False,
+                                     logged.append)
+
+    assert retired == 0
+    assert orphan.is_file()
+    assert "not retired: no byte-identical regular live copy; kept" in "\n".join(logged)
+
+
+def test_retire_adopted_orphans_symlinked_live_copy_kept(tmp_path):
+    # A symlinked live entry is not a managed copy: even when its target has
+    # identical bytes, the parked orphan stays.
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    live_dir = out / "F10126109 Parent" / "F10126108 Child"
+    orphans_dir.mkdir(parents=True)
+    live_dir.mkdir(parents=True)
+    payload = b"%PDF-1.4 identical bytes"
+    orphan = orphans_dir / "F10126108.pdf"
+    orphan.write_bytes(payload)
+    referent = tmp_path / "external.pdf"
+    referent.write_bytes(payload)
+    link = live_dir / "F10126108.pdf"
+    try:
+        link.symlink_to(referent)
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126108": orphan}, out, False,
+                                     logged.append)
+
+    assert retired == 0
+    assert orphan.is_file()
+    assert "not retired: no byte-identical regular live copy" in "\n".join(logged)
+
+
+def test_retire_adopted_orphans_identical_live_copy_retires(tmp_path):
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    live_dir = out / "F10126109 Parent" / "F10126108 Child"
+    orphans_dir.mkdir(parents=True)
+    live_dir.mkdir(parents=True)
+    payload = b"%PDF-1.4 identical bytes"
+    orphan = orphans_dir / "F10126108.pdf"
+    orphan.write_bytes(payload)
+    (live_dir / "F10126108.pdf").write_bytes(payload)
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126108": orphan}, out, False,
+                                     logged.append)
+
+    assert retired == 1
+    assert not orphan.exists()
+
+
+def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
+    # Only the exact `<name>.pdf.supersede_tmp.<pid>` shape is swept; anything
+    # else that happens to contain the marker is not ours to delete.
+    folder = tmp_path / "F10126106 Assembly"
+    folder.mkdir()
+    not_pdf = folder / "notes.supersede_tmp.123"
+    bad_pid = folder / "F10126107.pdf.supersede_tmp.abc"
+    upper = folder / "F10126107.PDF.supersede_tmp.7"
+    for p in (not_pdf, bad_pid, upper):
+        p.write_bytes(b"partial")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, False, logged.append)
+
+    assert not_pdf.is_file()
+    assert bad_pid.is_file()
+    assert not upper.exists()
+    assert sum("removed leftover supersede staging" in m for m in logged) == 1
+
+
+def test_place_files_iterative_below_default_recursion_limit(tmp_path, monkeypatch):
+    # Regression for the iterative rewrite: 600-deep chain, recursion limit
+    # far below the traversal depth (the recursive version raised here).
+    # Path limits are lifted so the traversal actually reaches the depth cap.
+    import sys
+
+    from fermi_organizer.config import TREE_MAX_DEPTH
+
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    chain = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(600)}
+    chain["F10126599"] = []
+    index = {stem: tmp_path / (stem + ".pdf") for stem in chain}
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(300)
+    try:
+        total = place_files(chain, ["F10126000"], index, tmp_path / "out",
+                            True, lambda msg: None)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert total == TREE_MAX_DEPTH + 1
+
+
 def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"

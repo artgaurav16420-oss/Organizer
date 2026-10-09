@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fermi-pdf-organizer"
-version = "0.1.1"
+version = "0.2.0"
 description = "Organize Fermilab PDF drawings into a BOM-derived folder tree"
 readme = "README.md"
 requires-python = ">=3.10"

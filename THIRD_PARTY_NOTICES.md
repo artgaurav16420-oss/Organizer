@@ -10,13 +10,26 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
   Distribution of a combined work, or offering it as a network service, requires
   either releasing the combined work's source under AGPL-3.0 or holding a
   commercial license from Artifex.
-- **Security:** advisory GHSA-434w-92hw-f2m3 / CVE-2026-82035 (path traversal)
-  affects PyMuPDF through 1.28.2, but only the PyMuPDF CLI font path
-  (`extract_objects()` in `src/__main__.py`). This project imports PyMuPDF as a
-  library and never invokes that CLI path (pinned by
-  `tests/test_no_dead_imports.py::test_no_pymupdf_cli_extract_objects_usage`).
-  The upstream fix is commit `b2c8f3a`; **no fixed release exists yet** (latest
-  is 1.28.2) — bump to >= 1.28.3 when released.
+- **Security:** advisory GHSA-434w-92hw-f2m3 / CVE-2026-82035 (high, path
+  traversal in the font branch of `extract_objects()`). Verified directly on
+  2026-10-08 against the GitHub advisory API and the PyPI JSON API:
+  - **Scope:** the flawed code lives in the **CLI entry module**
+    (`src/__main__.py`): it joins a document-controlled BaseFont name onto the
+    user-supplied output directory without stripping separators. The library
+    API used by this project (`pymupdf.open`, text/image extraction, page
+    render, OCR) never imports or executes `src/__main__.py`, so library-only
+    use does not reach the vulnerable path. The advisory covers every CLI
+    invocation, not the library surface.
+  - **Enforcement:** this project must never invoke the PyMuPDF CLI; pinned by
+    `tests/test_no_dead_imports.py:89`
+    (`test_no_pymupdf_cli_extract_objects_usage`), which rejects the vulnerable
+    symbols and CLI invocation forms (`"pymupdf"` argv, `python -m pymupdf`).
+  - **Fix status:** upstream fix is commit `b2c8f3a`; as of 2026-10-08 **no
+    fixed release exists** (PyPI latest is 1.28.2, the pinned version). No pin
+    bump is possible today.
+  - **Standing action:** re-check PyPI on each PyMuPDF release; when the first
+    release containing `b2c8f3a` appears, bump `pyproject.toml`,
+    `requirements.txt`, and `requirements.lock` (re-lock) together.
 
 ## openpyxl 3.1.5
 

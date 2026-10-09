@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Filesystem scans and side effects (indexing, placement, copies)."""
 import os
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -176,21 +177,44 @@ def _copy_counter(children):
 
     Keyed by (stem, remaining depth): the count depends on the TREE_MAX_DEPTH
     truncation, so a stem-only key would undercount a subtree first visited
-    near the limit when reused on a shallower path (fan-out cap bypass)."""
+    near the limit when reused on a shallower path (fan-out cap bypass).
+    Iterative post-order (explicit stack): depth up to TREE_MAX_DEPTH must
+    not depend on the process-wide recursion limit. Cyclic input terminates
+    on the depth cap, exactly like the former recursion (memo entries only
+    exist for completed expansions)."""
     memo = {}
 
-    def count(stem, depth=0):
-        remaining = TREE_MAX_DEPTH - depth
+    def count(root_stem, root_depth=0):
+        remaining = TREE_MAX_DEPTH - root_depth
         if remaining < 0:
             return 0
-        key = (stem, remaining)
+        key = (root_stem, remaining)
         if key in memo:
             return memo[key]
-        total = 1
-        for child in children.get(stem, ()):
-            total += count(child, depth + 1)
-        memo[key] = total
-        return total
+        result = None
+        stack = [[root_stem, root_depth, 1,
+                  iter(children.get(root_stem, ()))]]
+        while stack:
+            stem, depth, total, it = stack[-1]
+            child = next(it, None)
+            if child is None:
+                memo[(stem, TREE_MAX_DEPTH - depth)] = total
+                stack.pop()
+                if stack:
+                    stack[-1][2] += total
+                else:
+                    result = total
+                continue
+            c_remaining = TREE_MAX_DEPTH - (depth + 1)
+            if c_remaining < 0:
+                continue
+            c_key = (child, c_remaining)
+            if c_key in memo:
+                stack[-1][2] += memo[c_key]
+                continue
+            stack.append([child, depth + 1, 1,
+                          iter(children.get(child, ()))])
+        return result
 
     return count
 
@@ -227,6 +251,11 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     disk; oversized paths/subtrees are skipped with a warning. Raises
     PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (nothing is created).
+
+    Iterative pre-order traversal (explicit stack, children pushed in reverse
+    so they pop in sorted order): the log and copy order must stay identical
+    to the former recursion, and depth up to TREE_MAX_DEPTH must not depend
+    on the process-wide recursion limit.
     """
     total_copies = 0
     skipped_count = 0
@@ -240,51 +269,52 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)
 
-    def dfs(stem, current_folder, depth=0):
-        nonlocal total_copies, skipped_count, failed_count
-        if depth > TREE_MAX_DEPTH:
-            log(f"  WARNING: placement truncated at depth {depth} in "
-                f"{current_folder.name} (deeper than any healthy tree) - manual review")
-            skipped_count += count_copies(stem)
-            return
-        pdf = index[stem]
-        target_name = renames.get(stem, pdf.name)
-        target = current_folder / target_name
-        if _islink(pdf) or _islink(target):
-            log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
-            failed_count += 1
-            for child in sorted(children.get(stem, ())):
-                dfs(child, current_folder / fname(child), depth + 1)
-            return
-        # Dir path checked against MAX_DIR, full target against MAX_PATH.
-        if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
-            log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
-            skipped_count += count_copies(stem)
-            return
-        if dry_run:
-            log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
-            total_copies += 1
-        else:
-            # mkdir failure: the subtree's paths cannot exist - skip it;
-            # copy2 failure: only this file is lost, children are still tried.
-            try:
-                current_folder.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                log(f"  WARNING: {stem}: copy failed ({target}): {e}")
-                failed_count += count_copies(stem)
-                return
-            try:
-                shutil.copy2(_native(pdf), _native(target))
-            except OSError as e:
-                log(f"  WARNING: {stem}: copy failed ({target}): {e}")
-                failed_count += 1
-            else:
-                total_copies += 1
-        for child in sorted(children.get(stem, ())):
-            dfs(child, current_folder / fname(child), depth + 1)
-
     for root in sorted(roots):
-        dfs(root, folder / fname(root))
+        stack = [(root, folder / fname(root), 0)]
+        while stack:
+            stem, current_folder, depth = stack.pop()
+            if depth > TREE_MAX_DEPTH:
+                log(f"  WARNING: placement truncated at depth {depth} in "
+                    f"{current_folder.name} (deeper than any healthy tree) - manual review")
+                skipped_count += count_copies(stem)
+                continue
+            kids = sorted(children.get(stem, ()))
+            pdf = index[stem]
+            target_name = renames.get(stem, pdf.name)
+            target = current_folder / target_name
+            if _islink(pdf) or _islink(target):
+                log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
+                failed_count += 1
+                stack.extend((child, current_folder / fname(child), depth + 1)
+                             for child in reversed(kids))
+                continue
+            # Dir path checked against MAX_DIR, full target against MAX_PATH.
+            if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
+                log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
+                skipped_count += count_copies(stem)
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
+                total_copies += 1
+            else:
+                # mkdir failure: the subtree's paths cannot exist - skip it;
+                # copy2 failure: only this file is lost, children are still tried.
+                try:
+                    current_folder.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    log(f"  WARNING: {stem}: copy failed ({target}): {e}")
+                    failed_count += count_copies(stem)
+                    continue
+                try:
+                    shutil.copy2(_native(pdf), _native(target))
+                except OSError as e:
+                    log(f"  WARNING: {stem}: copy failed ({target}): {e}")
+                    failed_count += 1
+                else:
+                    total_copies += 1
+            stack.extend((child, current_folder / fname(child), depth + 1)
+                         for child in reversed(kids))
+
     if skipped_count:
         log(f"  Skipped {skipped_count} path(s) due to length limits")
     if failed_count:
@@ -322,31 +352,42 @@ def scan_output_tree(output):
 
 
 def sweep_supersede_staging(output, dry_run, log):
-    """Remove leftover `<name>.supersede_tmp.<pid>` staging files.
+    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` staging files.
 
     _swap_revision_files stages the new revision next to its target before
     os.replace; a run killed mid-swap leaves the staging file behind. It
     never ends in .pdf, so scans ignore it - only this sweep cleans it up.
-    Staging only ever happens in the organized tree, so "_"-prefixed system
-    dirs are skipped (a random matching name there is not ours to delete).
+    Only the exact staging shape is swept (a PDF target name plus
+    `.supersede_tmp.<digits>`), and "_"-prefixed system dirs are pruned from
+    the walk: staging only ever happens next to targets in the organized
+    tree, so matching lookalikes elsewhere are not ours to delete.
     Dry-run reports without touching the tree.
     """
     output = Path(output)
     if not output.is_dir():
         return
-    for p in sorted(output.rglob("*.supersede_tmp.*")):
-        rel = p.relative_to(output)
-        if is_system_dir(rel.parts[0]):
-            continue
-        if dry_run:
-            log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
-            continue
-        try:
-            p.unlink()
-        except OSError as e:
-            log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
-            continue
-        log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
+    staging_re = re.compile(r"\.pdf\.supersede_tmp\.\d+$", re.IGNORECASE)
+    for dirpath, dirnames, filenames in os.walk(output):
+        if Path(dirpath) == output:
+            # Only top-level "_" dirs are system dirs; nested ones are not
+            # pruned (is_system_dir's convention covers the top level only).
+            dirnames[:] = [d for d in dirnames if not is_system_dir(d)]
+        for name in sorted(filenames):
+            if not staging_re.search(name):
+                continue
+            p = Path(dirpath) / name
+            rel = p.relative_to(output)
+            if is_system_dir(rel.parts[0]):
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
+                continue
+            try:
+                p.unlink()
+            except OSError as e:
+                log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
+                continue
+            log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
 
 
 def find_organized_pdfs(folder, scan_res=None):
@@ -562,12 +603,16 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                            planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    `superseded` must list only stems whose archive copy was verified written
-    (e.g. copy_superseded's archived set) - a failed archive must never
-    delete the parked copy. In dry-run only, stems in planned (placed by this
-    run but not yet on disk) also count as live. Returns the number retired.
-    Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
-    to avoid redundant filesystem scans when the tree on disk has not changed.
+    A live same-stem copy only counts when its bytes match the parked copy:
+    a differing copy may be the only copy of those bytes (e.g. the input was
+    updated after the parked copy was made), so the parked copy is kept with
+    a warning instead. `superseded` must list only stems whose archive copy
+    was verified written (e.g. copy_superseded's archived set) - a failed
+    archive must never delete the parked copy. In dry-run only, stems in
+    planned (placed by this run but not yet on disk) also count as live.
+    Returns the number retired. Accepts an optional `scan_res` (precomputed
+    `scan_output_tree` result) to avoid redundant filesystem scans when the
+    tree on disk has not changed.
     """
     live_pdfs = defaultdict(list)
     tree_pdfs = (scan_res["tree"] if scan_res is not None
@@ -584,11 +629,23 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     planned_set = set(planned) if dry_run else set()
     for o, opath in sorted(stored_orphans.items()):
         live = [p for p in live_pdfs.get(o, []) if p != opath]
-        if not live and o not in sup and o not in planned_set:
-            continue
         if opath.is_symlink():
-            log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
+            # Never compare through (or retire) a link; log only when
+            # retirement was otherwise due, matching the former behavior.
+            if live or o in sup or o in planned_set:
+                log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
             continue
+        if o not in sup and o not in planned_set:
+            # Only a byte-identical regular live copy retires the parked
+            # copy; a symlinked live entry never counts (same rule as the
+            # archive byte-verify: a link is not a managed copy).
+            retireable = any(not _islink(p) and _same_bytes(p, opath)
+                             for p in live)
+            if not retireable:
+                if live:
+                    log(f"  WARNING: orphan copy {o} not retired: no "
+                        f"byte-identical regular live copy; kept: {opath}")
+                continue
         if dry_run:
             log(f"  [DRY-RUN] retire orphan copy: {opath.relative_to(folder)} (now placed in tree)")
             continue

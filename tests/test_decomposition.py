@@ -1,4 +1,4 @@
-"""T-014 remainder: cycle e2e, workbook, supersede/move helpers, orphan flow."""
+"""Characterization suite: cycle e2e, workbook, supersede/move helpers, orphan flow."""
 from pathlib import Path
 
 import pytest

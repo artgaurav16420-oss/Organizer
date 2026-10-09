@@ -224,23 +224,37 @@ def collect_reachable(children, roots):
 
 
 def break_cycles(children, parents, log):
-    """Break cycles by removing back-edges (BOM graph is the only edge source)."""
+    """Break cycles by removing back-edges (BOM graph is the only edge source).
+
+    Iterative white/gray/black DFS (explicit stack of per-node child
+    iterators): recursion is avoided because inputs can be up to
+    TREE_MAX_DEPTH deep and the traversal must not depend on the process-wide
+    recursion limit.
+    """
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {}
     removed = []
     sorted_children = {}
 
-    def dfs(u, depth=0):
-        if depth > TREE_MAX_DEPTH:
-            log(f"  WARNING: cycle search stopped at depth {depth} from {u} "
-                f"(deeper than any healthy tree) - review manually")
-            return
-        color[u] = GRAY
+    def ordered_children(u):
         ch_list = sorted_children.get(u)
         if ch_list is None:
             ch_list = sorted(children.get(u, ()))
             sorted_children[u] = ch_list
-        for v in ch_list:
+        return ch_list
+
+    for node in sorted(set(children) | set(parents)):
+        if color.get(node, WHITE) != WHITE:
+            continue
+        stack = [(node, 0, iter(ordered_children(node)))]
+        color[node] = GRAY
+        while stack:
+            u, depth, it = stack[-1]
+            v = next(it, None)
+            if v is None:
+                color[u] = BLACK
+                stack.pop()
+                continue
             v_color = color.get(v, WHITE)
             if v_color == GRAY:
                 # Found a cycle: remove the closing back-edge u -> v.
@@ -249,10 +263,10 @@ def break_cycles(children, parents, log):
                 removed.append((u, v))
                 log(f"  CYCLE BREAK: removed edge {u} -> {v}")
             elif v_color == WHITE:
-                dfs(v, depth + 1)
-        color[u] = BLACK
-
-    for node in sorted(set(children) | set(parents)):
-        if color.get(node, WHITE) == WHITE:
-            dfs(node)
+                if depth + 1 > TREE_MAX_DEPTH:
+                    log(f"  WARNING: cycle search stopped at depth {depth + 1} from {v} "
+                        f"(deeper than any healthy tree) - review manually")
+                else:
+                    color[v] = GRAY
+                    stack.append((v, depth + 1, iter(ordered_children(v))))
     return removed

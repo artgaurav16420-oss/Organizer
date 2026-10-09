@@ -6,7 +6,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from .config import TREE_MAX_DEPTH
 from .extraction import (OCR, resolve_jobs)
 from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
 from .report_glue import names_from_tree
@@ -86,14 +85,6 @@ def main():
     """Parse args, run the full/incremental organizer, write report + workbook."""
     parser = build_parser()
     args = parser.parse_args()
-    # Recursion limit: REQUIRED, not a convenience. Three recursive traversals
-    # are depth-capped at TREE_MAX_DEPTH=500 (graph.break_cycles.dfs,
-    # fsops.place_files.dfs, naming._collect_placements.walk); each nesting
-    # level costs more than one Python frame, so the default limit of 1000 is
-    # not enough headroom for a degenerate 500-deep input. 10000 ==
-    # TREE_MAX_DEPTH * 20. Safe: max() never lowers the existing limit, and
-    # every traversal stops at the depth cap regardless.
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), TREE_MAX_DEPTH * 20))
 
     folder = Path(args.folder).resolve()
     if not folder.is_dir():

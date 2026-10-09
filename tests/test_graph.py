@@ -235,6 +235,25 @@ def test_break_cycles_breaks_a_bom_cycle():
     assert not (b in children.get(a, ()) and a in children.get(b, ()))
 
 
+def test_break_cycles_iterative_below_default_recursion_limit():
+    # Regression for the iterative rewrite: a 600-deep chain must traverse
+    # with a recursion limit far below the traversal depth (the recursive
+    # version raised RecursionError here).
+    import sys
+
+    children = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(600)}
+    children["F10126599"] = []
+    logged = []
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(300)
+    try:
+        removed = break_cycles(children, {}, logged.append)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert removed == []
+    assert sum("cycle search stopped" in m for m in logged) == 1
+
+
 def test_collect_reachable_includes_roots_and_terminates_on_cycles():
     children = {"A": {"B", "C"}, "B": {"A"}, "C": set()}
     assert collect_reachable(children, ["A"]) == {"A", "B", "C"}
