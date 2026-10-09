@@ -10,8 +10,9 @@ All notable changes to the Fermi PDF organizer are recorded here.
   racing the sweep/supersede machinery. Locks older than 2 h are stolen with
   a warning; anything younger fails closed with a recovery pointer. A steal
   claims the file aside with an atomic rename and deletes the staged copy
-  only if it still matches, so a double-starter race ends with exactly one
-  holder; a heartbeat refreshes a held lock so long runs never look
+  only if it still matches, so a double-starter race leaves a single holder
+  short of a documented 3-party microsecond interleave; a heartbeat refreshes
+  a held lock so long runs never look
   stealable. The CLI holds the lock through report + workbook writes
   (`hold_lock`), closing the post-run shared-file window; a failed lock
   write cleans up instead of leaking a refusing file.
@@ -32,10 +33,23 @@ All notable changes to the Fermi PDF organizer are recorded here.
   the double-starter race; the loser observes the winner's fresh lock and
   refuses. Stale window shortened 24 h -> 2 h; refusal names the holder host.
   No PID probing by design (unreliable signal semantics across platforms).
+- The heartbeat verifies its own token before every refresh: a run paused
+  past the stale window (sleep, SIGSTOP, VM pause) that wakes stolen stops
+  refreshing (never touches the stealer's file), flags the loss, and aborts
+  with `LockLostError` at the next lock check before any further tree
+  mutation (CLI exits 2); the wrappers stop the heartbeat without unlinking
+  the stealer's live lock, and the CLI re-checks before report/workbook
+  writes (discards + exits 2 on loss).
+- Leftover steal-staging files (`<lock>.claim.<pid>` from a kill between
+  rename and unlink) are swept only when older than the stale window — a
+  fresh claim may be a live stealer mid-protocol.
 - The CLI holds the lock through report + workbook writes (`hold_lock`), so a
   second run cannot interleave those shared-file updates.
-- Network-share output documented as not lock-safe (README Known limits);
-  the CLI warns on Windows UNC paths.
+- Network-share output documented as not lock-safe (README Known limits),
+  now explicit that mapped drive letters / NFS mounts presenting as local
+  paths are included (only Windows UNC paths get a CLI warning, since the
+  rest cannot be detected); the lock dotfile is visible in Windows Explorer
+  (harmless).
 
 ### Robustness (hostile/corrupt inputs can no longer abort a run)
 - Drawing-derived folder names are stripped of C0/C1 control characters and

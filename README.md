@@ -191,9 +191,15 @@ directory once installed editable).
   losers are archived in `_superseded/`.
 - Network-share output (SMB/NFS, lab drives) is not lock-safe: those filesystems
   do not reliably honor the exclusive-create the run lock depends on, so two
-  runs against one shared output can both proceed. Prefer local output; if the
-  tree must live on a share, coordinate runs manually (the CLI warns on Windows
-  UNC paths).
+  runs against one shared output can both proceed. This includes mapped drive
+  letters and Linux NFS mounts that present as local paths — only Windows UNC
+  paths get a CLI warning, since the rest cannot be detected. Prefer local
+  output; if the tree must live on a share, coordinate runs manually.
+  (The lock file itself, `<output>/.fermi_organizer.lock`, is a dotfile: on
+  Windows dotfiles are not hidden, so Explorer shows it — harmless, leave it
+  alone.) A run paused past the 2 h stale window (sleep, SIGSTOP, VM pause)
+  may wake to find its lock stolen; it then stops with an error (CLI exit 2)
+  before its next tree change instead of writing into the other run's tree.
 
 ## Project layout
 
