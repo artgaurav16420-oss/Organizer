@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import socket
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -347,6 +348,11 @@ class RunLockedError(Exception):
 
 
 RUN_LOCK_STALE_SECS = 2 * 3600
+# Heartbeat: a live holder re-touches its lock this often, so a run longer
+# than the stale window never looks stealable. Daemon thread, parent process
+# only (spawn workers get a fresh interpreter without it); stopped at release.
+RUN_LOCK_HEARTBEAT_SECS = 600
+_heartbeats = {}
 
 
 def acquire_run_lock(output, dry_run, log):
@@ -359,10 +365,13 @@ def acquire_run_lock(output, dry_run, log):
     younger is honored unconditionally — PIDs cannot be checked reliably
     across hosts or platforms, so the lock fails closed with a recovery
     pointer instead of guessing. Creation uses O_EXCL so two starters cannot
-    both win; a steal re-reads the file and only unlinks it when the content
-    still matches what was examined as stale, then retries the create — so
-    the loser of a double-steal race observes the winner's fresh lock and
-    refuses instead of deleting it. The file is a dotfile with JSON {pid, host, created}; scans
+    both win; a steal claims the stale file aside with an atomic rename and
+    only deletes the staged copy when it still matches the examined content,
+    then retries the create — so the loser of a double-steal race observes
+    the winner's fresh lock and refuses instead of deleting it. Residual risk
+    is a 3-party microsecond interleave (file locks cannot do better
+    portably; NFS ignores even fcntl). The file is a dotfile with JSON {pid, host, created}; scans
+    only collect PDFs, so it is invisible to every tree walk.
     only collect PDFs, so it is invisible to every tree walk.
     """
     # NOTE: dry_run is intentionally not exempted — a dry-run's sweep report
@@ -398,29 +407,47 @@ def acquire_run_lock(output, dry_run, log):
                 log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
                     "continuing unlocked (do not run two processes against one output)")
                 return None
+            _heartbeat_start(lock)
             return lock
         try:
             raw = lock.read_bytes()
             age = time.time() - os.path.getmtime(_native(lock))
         except OSError:
-            raw, age = None, 0.0
+            continue  # vanished mid-read; retry the create.
         if age <= RUN_LOCK_STALE_SECS:
             raise RunLockedError(
                 f"output tree is locked ({lock.name} present"
                 f"{_holder_note(raw)}); refusing a concurrent "
                 "run against one output - wait for it to finish, or delete the lock "
                 "file if no run is active")
+        # Stale: claim it aside with an atomic rename, then delete the staged
+        # copy ONLY if it still matches what we examined. An unconditional
+        # unlink here could delete a competitor's fresh lock (double-steal:
+        # both verified stale, one already recreated). Mismatch means someone
+        # interfered: put a displaced live lock back when the way is clear,
+        # else leave the staged copy (inert dotfile, invisible to scans) and
+        # refuse — never delete a file we did not verify.
+        claim = lock.parent / f"{RUN_LOCK_NAME}.claim.{os.getpid()}"
         try:
-            # Re-verify before unlinking: a competitor may have replaced the
-            # stale file since we examined it - deleting that would hand both
-            # runs the tree. Mismatch restarts the loop (fresh → refuse).
-            if raw is None or lock.read_bytes() != raw:
-                continue
+            os.replace(_native(lock), _native(claim))
+        except OSError:
+            continue  # lost the race; re-read on next attempt.
+        try:
+            staged = claim.read_bytes()
         except OSError:
             continue
+        if staged != raw:
+            try:
+                if not _exists(lock):
+                    os.replace(_native(claim), _native(lock))
+            except OSError:
+                pass
+            raise RunLockedError(
+                f"output tree changed hands during steal ({lock.name}); "
+                "refusing rather than risk a concurrent run")
         log(f"  WARNING: stealing stale run lock ({age / 3600:.1f} h old)")
         try:
-            os.unlink(_native(lock))
+            os.unlink(_native(claim))
         except OSError:
             pass  # lost the race (or it vanished): re-read on next attempt.
     raise RunLockedError(f"could not acquire run lock ({lock.name}) after "
@@ -441,10 +468,37 @@ def release_run_lock(lock):
     until it goes stale, then it is stolen with a warning)."""
     if lock is None:
         return
+    _heartbeat_stop(lock)
     try:
         os.unlink(_native(lock))
     except OSError:
         pass
+
+
+def _heartbeat_start(lock):
+    """Refresh the lock mtime periodically while we hold it."""
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(RUN_LOCK_HEARTBEAT_SECS):
+            try:
+                os.utime(_native(lock), None)
+            except OSError:
+                return
+
+    t = threading.Thread(target=beat, daemon=True,
+                         name="fermi-lock-heartbeat")
+    _heartbeats[str(lock)] = (stop, t)
+    t.start()
+
+
+def _heartbeat_stop(lock):
+    """Stop the refresh thread; join briefly so release is ordered."""
+    item = _heartbeats.pop(str(lock), None)
+    if item is not None:
+        stop, t = item
+        stop.set()
+        t.join(timeout=5)
 
 
 def scan_output_tree(output):
