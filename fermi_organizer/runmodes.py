@@ -21,6 +21,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     retire_adopted_orphans, sweep_supersede_staging,
                     resolve_archive_target, folder_foreign_pdfs,
                     ensure_placement_allowed, PlacementRefusedError,
+                    acquire_run_lock, release_run_lock,
                     _native, _exists, _islink)
 
 
@@ -1016,18 +1017,38 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     }
 
 
-def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
+             *, hold_lock=False):
     """Full run: index all of `folder` and place the whole tree under `output`.
 
-    Returns the structured run context consumed by the Excel workbook:
-    counters {scanned, roots, copies, cycles, warnings},
+    Holds the exclusive output-tree lock for the whole run (refuses with
+    RunLockedError when another live run holds it); see
+    fsops.acquire_run_lock. With hold_lock=True the lock is NOT released on
+    return: the caller receives (ctx, lock_path) and must release_run_lock it
+    once its own post-work (report + workbook writes) finishes, so a second
+    run cannot interleave those shared-file updates. Returns the structured run context consumed by
+    the Excel workbook: counters {scanned, roots, copies, cycles, warnings},
     missing [(referencing stem, missing ref)], chk [stem], orphans [stem],
     roots [(stem, [used_on])], used_on_mismatches [(parent, child, actual)],
     used_on_bugs [(parent, child)],
     titleblock_mismatches [(stem, field, filename value, title-block value)],
     scanned [(stem, [pages])], watermarks [(stem, evidence)],
-    names {stem/ref: NAME}.     Raises NoPDFsFoundError on an empty input.
+    names {stem/ref: NAME}. Raises NoPDFsFoundError on an empty input.
     """
+    lock = acquire_run_lock(output, dry_run, log)
+    try:
+        ctx = _run_full_inner(folder, output, dry_run, log, jobs, rekey)
+    except BaseException:
+        release_run_lock(lock)
+        raise
+    if hold_lock:
+        return ctx, lock
+    release_run_lock(lock)
+    return ctx
+
+
+def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+    """run_full body (see run_full); split out so the lock spans all returns."""
     jobs = resolve_jobs(jobs)
     sweep_supersede_staging(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
@@ -1431,11 +1452,15 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
     }
 
 
-def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
+                    *, hold_lock=False):
     """Incremental run: process only stems not already in the output tree plus stored orphans.
 
-    The input scan is recursive; already-organized subfolders are never
-    re-sorted (supersede swaps and parent-adoption moves still touch them).
+    Holds the exclusive output-tree lock like run_full (see
+    fsops.acquire_run_lock); with hold_lock=True returns (ctx, lock_path) and
+    the caller must release_run_lock it after its post-work. The input scan is recursive; already-organized
+    subfolders are never re-sorted (supersede swaps and parent-adoption moves
+    still touch them).
 
     Returns the same structured run context as run_full: counters {scanned,
     roots, copies, cycles, warnings}, missing [(referencing stem, missing ref)],
@@ -1447,6 +1472,20 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     names {stem/ref: NAME}.
     Raises NoPDFsFoundError when the input has no indexable PDFs.
     """
+    lock = acquire_run_lock(output, dry_run, log)
+    try:
+        ctx = _run_incremental_inner(folder, output, dry_run, log, jobs, rekey)
+    except BaseException:
+        release_run_lock(lock)
+        raise
+    if hold_lock:
+        return ctx, lock
+    release_run_lock(lock)
+    return ctx
+
+
+def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+    """run_incremental body (see run_incremental); split out so the lock spans all returns."""
     jobs = resolve_jobs(jobs)
     sweep_supersede_staging(output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \

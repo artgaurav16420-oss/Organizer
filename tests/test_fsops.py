@@ -10,7 +10,107 @@ from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_supersede
                                    copy_watermarked_duplicates,
                                    find_organized_pdfs, is_system_dir,
                                    place_files, retire_adopted_orphans,
-                                   scan_output_tree, sweep_supersede_staging)
+                                   scan_output_tree, sweep_supersede_staging,
+                                   acquire_run_lock, release_run_lock,
+                                   RunLockedError, RUN_LOCK_NAME)
+
+
+def test_run_lock_acquire_and_release(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+
+    lock = acquire_run_lock(out, False, logged.append)
+
+    assert lock is not None and lock.name == RUN_LOCK_NAME
+    assert lock.is_file()
+    assert logged == []
+    release_run_lock(lock)
+    assert not lock.exists()
+
+
+def test_run_lock_second_holder_refused_while_live(tmp_path):
+    # Our own PID is alive, so a second acquire must refuse (this is also
+    # what a concurrent second process observes).
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = acquire_run_lock(out, False, lambda m: None)
+    try:
+        with pytest.raises(RunLockedError):
+            acquire_run_lock(out, False, lambda m: None)
+    finally:
+        release_run_lock(lock)
+    # After release the tree is acquirable again.
+    lock2 = acquire_run_lock(out, False, lambda m: None)
+    release_run_lock(lock2)
+
+
+def test_run_lock_stale_same_host_stolen(tmp_path):
+    import json
+    import socket
+    import time
+
+    from fermi_organizer.fsops import RUN_LOCK_STALE_SECS
+
+    out = tmp_path / "out"
+    out.mkdir()
+    lock_path = out / RUN_LOCK_NAME
+    lock_path.write_text(json.dumps({"pid": 2 ** 30,
+                                     "host": socket.gethostname(),
+                                     "created": 0.0}), encoding="utf-8")
+    old = time.time() - RUN_LOCK_STALE_SECS - 60
+    os.utime(lock_path, (old, old))
+    logged = []
+
+    lock = acquire_run_lock(out, False, logged.append)
+
+    assert lock is not None
+    assert any("stale run lock" in m for m in logged)
+    release_run_lock(lock)
+
+
+def test_run_lock_fresh_or_garbage_refused(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / RUN_LOCK_NAME).write_text('{"pid": 1234, "host": "some-other-host"}',
+                                     encoding="utf-8")
+    with pytest.raises(RunLockedError):
+        acquire_run_lock(out, False, lambda m: None)
+    (out / RUN_LOCK_NAME).write_text("not json{{", encoding="utf-8")
+    with pytest.raises(RunLockedError):
+        acquire_run_lock(out, False, lambda m: None)
+
+
+def test_run_lock_missing_output_dir_skips_silently(tmp_path):
+    # No tree yet (first dry-run): nothing to protect, and dry-run must not
+    # create the folder — skip with no log lines (golden-log contract).
+    logged = []
+    lock = acquire_run_lock(tmp_path / "nope", False, logged.append)
+    assert lock is None
+    assert logged == []
+    assert not (tmp_path / "nope").exists()
+
+
+def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
+    # Review finding: a failed lock write must not leak the O_EXCL-created
+    # file (no lock path exists to clean it up) and refuse later runs.
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fsops.json, "dumps", boom)
+    logged = []
+
+    assert acquire_run_lock(out, False, logged.append) is None
+    assert not (out / RUN_LOCK_NAME).exists()
+    assert any("could not write run lock" in m for m in logged)
+    # A later run is not refused by the leaked file.
+    monkeypatch.undo()
+    lock = acquire_run_lock(out, False, logged.append)
+    assert lock is not None
+    release_run_lock(lock)
 
 
 def test_is_system_dir_convention():

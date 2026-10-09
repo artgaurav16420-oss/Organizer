@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Filesystem scans and side effects (indexing, placement, copies)."""
+import json
 import os
 import re
 import shutil
+import socket
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -328,6 +331,99 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
 def is_system_dir(name):
     """Convention: any top-level directory whose name starts with '_' is a system dir."""
     return name.startswith("_")
+
+
+RUN_LOCK_NAME = ".fermi_organizer.lock"
+# A lock older than this is presumed left by a crashed run and stolen with a
+# warning. 24 h is far beyond any healthy run (thousands of PDFs take
+# minutes); the check is mtime-only on purpose — PID-liveness probing via
+# os.kill has fatally inconsistent signal semantics across platforms, so the
+# lock fails closed (refuse + tell the operator how to recover) instead.
+
+
+class RunLockedError(Exception):
+    """Another run holds the output-tree lock; this run is refused."""
+
+
+RUN_LOCK_STALE_SECS = 24 * 3600
+
+
+def acquire_run_lock(output, dry_run, log):
+    """Exclusive per-output-tree lock; returns the lock path, None when the
+    lock could not be created (warned, run continues unlocked), and raises
+    RunLockedError when another run may hold the tree.
+
+    A lock older than RUN_LOCK_STALE_SECS is stolen with a warning (a crashed
+    run leaks its lock; the steal message is the audit trail). Anything
+    younger is honored unconditionally — PIDs cannot be checked reliably
+    across hosts or platforms, so the lock fails closed with a recovery
+    pointer instead of guessing. Creation uses O_EXCL so two starters cannot
+    both win; a steal retries the create and re-reads, so the loser of a
+    double-steal race observes the winner's fresh lock and refuses instead of
+    deleting it. The file is a dotfile with JSON {pid, host, created}; scans
+    only collect PDFs, so it is invisible to every tree walk.
+    """
+    # NOTE: dry_run is intentionally not exempted — a dry-run's sweep report
+    # and workbook write must not interleave with a live run's staging either.
+    lock = Path(output) / RUN_LOCK_NAME
+    if not Path(output).is_dir():
+        # No tree yet (typical for a first dry-run): nothing to protect, and
+        # dry-run must not create the folder — skip silently.
+        return None
+    for _ in range(3):
+        try:
+            fd = os.open(_native(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            pass  # held or stale - adjudicated below.
+        except OSError as e:
+            log(f"  WARNING: could not create run lock ({lock.name}): {e} - "
+                "continuing unlocked (do not run two processes against one output)")
+            return None
+        else:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps({"pid": os.getpid(),
+                                        "host": socket.gethostname(),
+                                        "created": time.time()}))
+            except OSError as e:
+                # The O_EXCL-created file would otherwise linger (no lock path
+                # to clean up) and refuse later runs until stale: remove it
+                # and run unlocked like a creation failure.
+                try:
+                    os.unlink(_native(lock))
+                except OSError:
+                    pass
+                log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
+                    "continuing unlocked (do not run two processes against one output)")
+                return None
+            return lock
+        try:
+            age = time.time() - os.path.getmtime(_native(lock))
+        except OSError:
+            age = 0.0
+        if age <= RUN_LOCK_STALE_SECS:
+            raise RunLockedError(
+                f"output tree is locked ({lock.name} present); refusing a concurrent "
+                "run against one output - wait for it to finish, or delete the lock "
+                "file if no run is active")
+        log(f"  WARNING: stealing stale run lock ({age / 3600:.1f} h old)")
+        try:
+            os.unlink(_native(lock))
+        except OSError:
+            pass  # lost the race (or it vanished): re-read on next attempt.
+    raise RunLockedError(f"could not acquire run lock ({lock.name}) after "
+                         "contended steals - wait for the other run to finish")
+
+
+def release_run_lock(lock):
+    """Remove our lock file; best-effort (a leftover only blocks the next run
+    until it goes stale, then it is stolen with a warning)."""
+    if lock is None:
+        return
+    try:
+        os.unlink(_native(lock))
+    except OSError:
+        pass
 
 
 def scan_output_tree(output):

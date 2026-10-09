@@ -595,3 +595,53 @@ def test_extract_title_block_ocr_failure_recorded_not_silent(monkeypatch, tmp_pa
     assert extraction.extract_title_block(doc, issues) == (None, None)
     assert issues == ["title-block zoom OCR failed: engine gone"]
     doc.close()
+
+
+def test_subprocess_env_scoped_not_global(monkeypatch, tmp_path):
+    # Our CLI children get an explicit env; the process-global export exists
+    # only for PyMuPDF's in-process OCR (which offers no env parameter).
+    import os
+
+    ocr = extraction._OcrContext()
+    ocr.reset(enabled=True)
+    assert ocr.subprocess_env() is None
+
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    ocr.install_dir = str(tmp_path)
+    env = ocr.subprocess_env()
+    assert env["TESSDATA_PREFIX"] == str(tmp_path / "tessdata")
+    assert "TESSDATA_PREFIX" not in os.environ
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        import subprocess as sp
+        return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+    monkeypatch.setattr(extraction.OCR, "install_dir", str(tmp_path))
+    extraction._tesseract_run(["tesseract", "x.png", "stdout"], 60)
+    assert captured["env"]["TESSDATA_PREFIX"] == str(tmp_path / "tessdata")
+
+
+def test_export_for_pymupdf_switch_drops_stale_prefix(monkeypatch, tmp_path):
+    # FIX: switching installs mid-process must not leave the old dir first on
+    # PATH (later OCR would resolve the wrong tessdata through it).
+    import os
+
+    a = tmp_path / "A"
+    b = tmp_path / "B"
+    monkeypatch.setenv("PATH", "C:\\x")
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    ocr = extraction._OcrContext()
+
+    ocr._export_for_pymupdf(str(a))
+    ocr._export_for_pymupdf(str(a))
+    assert os.environ["PATH"].split(os.pathsep).count(str(a)) == 1
+
+    ocr._export_for_pymupdf(str(b))
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(a) not in parts and parts[0] == str(b)
+    assert os.environ["TESSDATA_PREFIX"] == str(b / "tessdata")

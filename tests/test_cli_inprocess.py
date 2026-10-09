@@ -173,3 +173,22 @@ def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):
     cli_module._log_ocr_startup(logged.append)
     assert logged[0] == "OCR: enabled (tesseract: /x/tesseract, v4.1.0)"
     assert "older than v5" in logged[1]
+
+
+def test_cli_main_locked_output_exits_1(monkeypatch, tmp_path, make_pdf):
+    # A live run lock on the output refuses the run at main() with exit 1.
+    from fermi_organizer.fsops import RUN_LOCK_NAME
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", ["NAME", "Part"])
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / RUN_LOCK_NAME).write_text('{"pid": 1}', encoding="utf-8")
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr", "--jobs", "1"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+    assert exc.value.code == 1

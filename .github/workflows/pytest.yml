@@ -17,9 +17,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install --require-hashes -r requirements-dev.txt
-      # Coverage ratchet: 80 is the measured baseline floor (actual ~83%);
+      # Coverage ratchet: 83 is the measured baseline floor (actual ~84%);
       # raise it when coverage improves, never lower it to absorb a regression.
-      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=80
+      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=83
   test-windows:
     # MAX_PATH, _native(), os.replace and symlink-refusal tests skip off-Windows.
     # No coverage ratchet here by design: the ratchet is enforced once, on the

@@ -4,6 +4,27 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Concurrency & process safety
+- Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
+  concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
+  racing the sweep/supersede machinery. Locks older than 24 h are stolen with
+  a warning; anything younger fails closed with a recovery pointer. Steals
+  retry the create and re-read, so a double-starter race ends with exactly
+  one holder (the loser sees the fresh lock and refuses). The CLI holds the
+  lock through report + workbook writes (`hold_lock`), closing the post-run
+  shared-file window; a failed lock write cleans up instead of leaking a
+  refusing file.
+- Tesseract environment is scoped: our CLI children get an explicit env
+  (`TESSDATA_PREFIX` only); the process-global export remains solely for
+  PyMuPDF's in-process OCR, which offers no env parameter (documented in
+  `OCR._export_for_pymupdf`).
+
+### CI & coverage
+- Weekly `cve-watch` workflow compares the PyMuPDF pin against PyPI latest
+  and opens a tracking issue on change (the CVE-2026-82035 standing action,
+  automated).
+- Coverage ratchet raised 80 -> 83 (measured ~84%).
+
 ### Robustness (hostile/corrupt inputs can no longer abort a run)
 - Drawing-derived folder names are stripped of C0/C1 control characters and
   bidi override codepoints; a PDF whose NAME (or BOM description) contains a
