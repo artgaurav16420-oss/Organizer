@@ -85,10 +85,22 @@ clone/locate the repo first and run the commands from it.
 | Very large folder / slow extraction | `--jobs N` (0 = auto = CPU count, default; 1 = serial) |
 | User trusts title blocks over filenames | `--rekey-titleblock` — opt-in only; re-keys misnamed **text-layer** PDFs, never scanned ones |
 
-Exit code `1` is fatal - read the log tail first: either bad input
-(`ERROR: not a directory`, no PDFs found → fix the path, don't retry) **or** an
-unhandled crash (a Python traceback in the captured output).
-
+Exit codes: `0` = normal outcome (orphans/CHK/missing references are still
+`0`). `1` is fatal - read the log tail first: bad input (`ERROR: not a
+directory`, no PDFs found → fix the path, don't retry), an output folder that
+could not be created (`ERROR: could not create output folder` → check the
+path/permissions, don't retry), **or** an unhandled crash (a Python traceback
+in the captured output). `2` means
+**placement was refused** because the planned fan-out exceeded the 10,000-copy
+cap (`placement refused` + a `WARNING: NNNN copies planned exceeds the
+10000-copy cap` line in the log, a `Placement refused` row on the Dashboard):
+folder placement and supersede swaps/moves are skipped, but the bounded
+orphan-parking and supersede-archive copies still run (full mode parks
+`_orphans/` + archives `_superseded/`; incremental still parks new standalone
+orphans) — the tree is *not* guaranteed untouched. Report + workbook are still
+written. Do **not** retry and do **not** treat it
+as a crash — inspect the BOM graph (a diamond/cycle explosion) and ask the user
+before re-running.
 ## Report to the user
 
 From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles
@@ -138,6 +150,7 @@ PDF count of the output minus `_orphans/` and `_superseded/`.
 | `No module named fermi_organizer` | use the venv interpreter, or reinstall editable (`-e .`) |
 | `.venv` missing | `uv venv --python 3.11 .venv` then install `requirements.txt pytest -e .` |
 | `OCR: unavailable` | expected without Tesseract; scanned PDFs stay orphans — offer `--no-ocr` |
+| Exit code 2 + `placement refused` in the log | fan-out cap hit, not a crash: nothing was mutated, report + workbook were written; inspect the BOM graph (diamond DAG) and ask the user before re-running |
 | `Report NOT saved (output folder missing)` on a dry run | normal: dry runs don't create the folder; the workbook is still written |
 | `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | add `--output <input>\Output` and re-run |
 | Everything landed in `_orphans/` | the parents are missing from the folder; they get placed once those PDFs arrive |

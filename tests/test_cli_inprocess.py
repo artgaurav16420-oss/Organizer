@@ -1,4 +1,4 @@
-"""In-process cli.main tests (T-023): exit codes + dry-run artifacts."""
+"""In-process cli.main tests: exit codes + dry-run artifacts."""
 import sys
 
 import pytest
@@ -121,3 +121,55 @@ def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
     assert list(out.glob("organize_fermi_pdfs_report_*.txt"))
     assert (out / "organize_fermi_report.xlsx").is_file()
     assert not any(out.rglob("*.pdf"))
+
+
+def test_cli_main_empty_folder_exits_1(monkeypatch, tmp_path):
+    # A directory with no PDFs at all: NoPDFsFoundError -> exit 1 at main()
+    # (the runmodes-level raise was tested; the CLI glue was not).
+    empty = tmp_path / "in"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("not a pdf")
+    monkeypatch.setattr(sys, "argv", ["organize_fermi_pdfs.py", str(empty)])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+    assert exc.value.code == 1
+
+
+def test_log_ocr_startup_disabled_line(monkeypatch):
+    from fermi_organizer import extraction
+
+    logged = []
+    monkeypatch.setattr(extraction.OCR, "enabled", False)
+    cli_module._log_ocr_startup(logged.append)
+    assert logged == ["OCR: disabled"]
+
+
+def test_log_ocr_startup_unavailable_line(monkeypatch):
+    from fermi_organizer import extraction
+
+    logged = []
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: None)
+    monkeypatch.setattr(extraction.OCR, "reason", "tesseract not found")
+    cli_module._log_ocr_startup(logged.append)
+    assert logged == ["OCR: unavailable (tesseract not found; "
+                      "scanned PDFs stay orphans)"]
+
+
+def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):
+    from fermi_organizer import extraction
+
+    logged = []
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: "/x/tesseract")
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "/x/tesseract")
+    monkeypatch.setattr(extraction.OCR, "version", "5.5.3")
+    cli_module._log_ocr_startup(logged.append)
+    assert logged == ["OCR: enabled (tesseract: /x/tesseract, v5.5.3)"]
+
+    logged.clear()
+    monkeypatch.setattr(extraction.OCR, "version", "4.1.0")
+    cli_module._log_ocr_startup(logged.append)
+    assert logged[0] == "OCR: enabled (tesseract: /x/tesseract, v4.1.0)"
+    assert "older than v5" in logged[1]

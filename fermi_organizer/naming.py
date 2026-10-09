@@ -8,7 +8,12 @@ from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES, TREE_MAX_DEPTH
 
 def sanitize_folder_name(name):
     """Make a drawing name safe for a Windows folder name."""
-    s = name.replace('"', "").replace("/", "-")
+    # Drop C0/C1 control chars (NUL would crash mkdir/copy2 with ValueError,
+    # past the OSError-only placement guards) and bidi overrides (display
+    # spoofing in Explorer); whitespace is collapsed below, not dropped.
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]",
+               "", name)
+    s = s.replace('"', "").replace("/", "-")
     s = re.sub(r'[<>:\\|?*]', "-", s)
     s = re.sub(r"\s+", " ", s).strip().rstrip(".")
     return s

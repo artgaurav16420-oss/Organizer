@@ -406,6 +406,7 @@ def test_ensure_tesseract_unparseable_version_is_none(tmp_path, monkeypatch):
     class _Proc:
         stdout = b"tesseract (no numeric version)"
         stderr = b""
+        returncode = 0
 
     monkeypatch.setattr(extraction.subprocess, "run", lambda *a, **k: _Proc())
     ocr = extraction._OcrContext()
@@ -433,6 +434,7 @@ def test_ensure_tesseract_path_prepend_idempotent(monkeypatch):
     class _Proc:
         stdout = b"tesseract v5.3.0"
         stderr = b""
+        returncode = 0
 
     monkeypatch.delenv("TESSERACT_EXE", raising=False)
     monkeypatch.setattr(extraction.shutil, "which", lambda name: None)
@@ -484,4 +486,112 @@ def test_ocr_strip_tokens_utf8_decode_and_none_stdout(monkeypatch, tmp_path, mak
     assert calls, "tesseract subprocess must be invoked"
     assert all(k.get("encoding") == "utf-8" and k.get("errors") == "replace"
                for k in calls)
+    doc.close()
+
+
+def test_tesseract_run_raises_on_nonzero_exit(monkeypatch):
+    # A failing tesseract leaves stdout empty; callers must not read that as
+    # a genuinely blank strip (silent accuracy loss - review finding S-021).
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 3, stdout="", stderr="E: broken tessdata")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="tesseract exit 3: E: broken tessdata"):
+        extraction._tesseract_run(["tesseract", "x.png", "stdout"], 60)
+
+
+def test_ensure_tesseract_nonzero_version_exit_is_unavailable(tmp_path, monkeypatch):
+    fake = tmp_path / "tesseract.exe"
+    fake.write_bytes(b"fake tesseract binary")
+    monkeypatch.setenv("TESSERACT_EXE", str(fake))
+
+    class _Proc:
+        stdout = b""
+        stderr = b"Error opening data file"
+        returncode = 1
+
+    monkeypatch.setattr(extraction.subprocess, "run", lambda *a, **k: _Proc())
+    ocr = extraction._OcrContext()
+    ocr.reset(enabled=True)
+
+    assert ocr.ensure_tesseract() is None
+    assert not ocr.available
+    assert "--version exit 1" in ocr.reason
+
+
+def test_ocr_strip_tokens_survives_single_pass_failure(monkeypatch, tmp_path, make_pdf):
+    # PR-FIX-008: one failing voting pass must not kill the strip - the
+    # remaining passes still vote. (A fully broken engine still raises.)
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return sp.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        return sp.CompletedProcess(cmd, 0, stdout="F10126107", stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert out == ["F10126107"]
+    assert len(calls) == 3
+    doc.close()
+
+
+def test_ocr_strip_tokens_all_passes_failing_raises(monkeypatch, tmp_path, make_pdf):
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 3, stdout="", stderr="broken")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    with pytest.raises(RuntimeError, match="tesseract exit 3"):
+        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+    doc.close()
+
+
+def test_extract_title_block_ocr_failure_recorded_not_silent(monkeypatch, tmp_path,
+                                                             make_pdf):
+    # Review finding: a failed title-block OCR read returned (None, None) with
+    # no record, so the file silently skipped mismatch reporting. Failures now
+    # land in the caller's issues list (same idiom as the USED ON zoom path).
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
+    doc = fitz.open(pdf)
+    assert len(doc[0].get_text().strip()) < extraction.OCR_MIN_CHARS
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+
+    def boom(page):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(extraction.OCR, "words_cached", boom)
+    issues = []
+    assert extraction.extract_title_block(doc, issues) == (None, None)
+    assert issues == ["title-block OCR failed: engine gone"]
+
+    monkeypatch.setattr(extraction.OCR, "words_cached", lambda page: [])
+
+    def boom_zoom(*a):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(extraction, "_ocr_words_zoom", boom_zoom)
+    issues = []
+    assert extraction.extract_title_block(doc, issues) == (None, None)
+    assert issues == ["title-block zoom OCR failed: engine gone"]
     doc.close()

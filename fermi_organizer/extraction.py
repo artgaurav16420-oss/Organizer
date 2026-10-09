@@ -43,7 +43,7 @@ from .config import (canonical_stem,
                       OCR_ITEM_X_FALLBACK, OCR_ROW_STRIP_DY_TOP,
                       OCR_ROW_STRIP_DY_BOTTOM, OCR_MAX_RENDER_MP)
 
-# Resource-exhaustion guards (T-018) + OCR memo bound (T-006).
+# Resource-exhaustion guards + OCR memo bound.
 # OCR_MIN_CHARS itself lives in config.py; these thresholds sit here so
 # extraction.py stays the only touched module. Thresholds are best-judgment
 # values ([uncertain] per fix-plan: 500MB / 200 pages / 512 memo entries).
@@ -154,6 +154,15 @@ class _OcrContext:
             ver = subprocess.run([exe, "--version"], capture_output=True, timeout=20)
         except (OSError, subprocess.SubprocessError) as e:
             self.reason = f"tesseract not runnable ({exe}): {e}"
+            return None
+        if ver.returncode != 0:
+            # A non-zero --version means the install is broken (missing/invalid
+            # tessdata, engine init failure); treating it as available would
+            # silently degrade every later OCR pass to "blank strip".
+            detail = ((ver.stderr or b"") + (ver.stdout or b""))
+            detail = detail.decode("utf-8", "replace").strip()[:160]
+            self.reason = (f"tesseract not runnable ({exe}): --version "
+                           f"exit {ver.returncode}: {detail}")
             return None
         self.tesseract_path = exe
         self.available = True
@@ -512,6 +521,25 @@ def _join_split_f_strings(tokens):
     return out
 
 
+def _tesseract_run(args, timeout):
+    """Invoke the Tesseract CLI for OCR output; raise on a failed run.
+
+    Non-zero exit (bad tessdata, engine init crash) leaves stdout empty:
+    callers must not read that as a genuinely blank region, so a failed
+    run surfaces as an extraction error instead of silent accuracy loss.
+    """
+    r = subprocess.run(args, capture_output=True, text=True,
+                       # UTF-8, not the locale codepage: Tesseract output
+                       # contains multi-byte characters (e.g. curly quotes)
+                       # that cp1252 cannot decode - the reader thread then
+                       # dies and r.stdout is None.
+                       encoding="utf-8", errors="replace", timeout=timeout)
+    if r.returncode != 0:
+        err = (r.stderr or "").strip().replace("\n", " ")[:160]
+        raise RuntimeError(f"tesseract exit {r.returncode}: {err}")
+    return r
+
+
 def _ocr_strip_tokens(page, rect, psm="7"):
     """OCR of one small strip via the Tesseract CLI, with consensus voting.
 
@@ -557,6 +585,8 @@ def _ocr_strip_tokens(page, rect, psm="7"):
     pngs = {}
     try:
         results = []
+        failed = 0
+        last_err = None
         for zoom, mode, oem in passes:
             if zoom not in pngs:
                 pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect)
@@ -564,15 +594,18 @@ def _ocr_strip_tokens(page, rect, psm="7"):
                 os.close(fd)
                 pix.save(png)
                 pngs[zoom] = png
-            r = subprocess.run(
-                [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
-                 "--dpi", str(int(72 * zoom))],
-                # UTF-8, not the locale codepage: Tesseract output contains
-                # multi-byte characters (e.g. curly quotes) that cp1252 cannot
-                # decode - the reader thread then dies and r.stdout is None.
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=120,
-            )
+            try:
+                r = _tesseract_run(
+                    [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
+                     "--dpi", str(int(72 * zoom))], 120)
+            except (RuntimeError, subprocess.SubprocessError) as e:
+                # One failing pass (hung engine on this strip) must not kill
+                # the vote: the remaining passes still run. Only when every
+                # pass fails does the broken engine surface (re-raised below).
+                failed += 1
+                last_err = e
+                results.append([])
+                continue
             # Glue pipe-separated fragments back together ('FLO |44633'): the
             # pipe is Tesseract's border/1 confusion and OCR_CORR maps it to 1.
             text = re.sub(r"\s*\|\s*", "|", (r.stdout or "").upper())
@@ -599,6 +632,8 @@ def _ocr_strip_tokens(page, rect, psm="7"):
         for vals in results:
             if vals:
                 return vals
+        if failed == len(passes):
+            raise last_err
         return []
     finally:
         for png in pngs.values():
@@ -1172,11 +1207,7 @@ def _ocr_words_zoom(page, clip, zoom=8, psm="11"):
     os.close(fd)
     try:
         pix.save(png)
-        r = subprocess.run(
-            [exe, png, "stdout", "tsv", "--psm", psm],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=180,
-        )
+        r = _tesseract_run([exe, png, "stdout", "tsv", "--psm", psm], 180)
         words = []
         for line in (r.stdout or "").splitlines()[1:]:
             f = line.split("\t")
@@ -1262,12 +1293,14 @@ def _title_value_under(words, label, val_re, dx_left, dx_right,
     return vals[0][3] if vals else None
 
 
-def extract_title_block(doc):
+def extract_title_block(doc, issues=None):
     """(drawing number, revision) from the title block on page 1.
 
     The revision is a single letter ('-' when the drawing has none); both are
     None when the field cannot be read. Scanned pages reuse the memoized OCR
-    words, so this adds no second OCR pass.
+    words, so this adds no second OCR pass. OCR failures are recorded into
+    `issues` when provided (a failed read must not pass as "no title block"
+    downstream), mirroring the USED ON zoom path.
     """
     if doc.page_count == 0:
         return None, None
@@ -1277,7 +1310,9 @@ def extract_title_block(doc):
             return None, None
         try:
             words = OCR.words_cached(page)
-        except (RuntimeError, OSError, ValueError):
+        except (RuntimeError, OSError, ValueError) as e:
+            if issues is not None:
+                issues.append(f"title-block OCR failed: {e}")
             return None, None
 
         def from_words(ws):
@@ -1302,7 +1337,9 @@ def extract_title_block(doc):
             for psm in ("11", "6"):
                 try:
                     zoom_words += _ocr_words_zoom(page, clip, 8, psm)
-                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+                    if issues is not None:
+                        issues.append(f"title-block zoom OCR failed: {e}")
                     break
                 number, rev = from_words(zoom_words)
                 if number and rev:
@@ -1487,12 +1524,12 @@ def bom_task(pdf_path):
                     entries, method = extract_bom_from_doc(doc, issues)
                     entries = _strip_self_bom(entries, pdf_path)
                     watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc)
+                    number, rev = extract_title_block(doc, issues)
                     name = extract_drawing_name(doc)
                     scanned = _doc_is_scanned(doc)
                     out = ("ok", entries, method, issues, watermark, number,
                            rev, name, scanned)
-    except (RuntimeError, OSError, ValueError) as e:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
         out = ("error", str(e), None, None, None, None, None, None, None)
     return out + (OCR.event_delta(before),)
 
@@ -1513,7 +1550,7 @@ def title_task(pdf_path):
                 else:
                     out = ("ok", _strip_self_ref(extract_used_on(doc), pdf_path),
                            extract_drawing_name(doc))
-    except (RuntimeError, OSError, ValueError) as e:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
         out = ("error", str(e), None)
     return out + (OCR.event_delta(before),)
 
@@ -1539,12 +1576,12 @@ def org_task(pdf_path):
                     entries = _strip_self_bom(entries, pdf_path)
                     used = _strip_self_ref(extract_used_on(doc), pdf_path)
                     watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc)
+                    number, rev = extract_title_block(doc, issues)
                     name = extract_drawing_name(doc)
                     scanned = _doc_is_scanned(doc)
                     out = ("ok", entries, method, used, issues, watermark,
                            number, rev, name, scanned)
-    except (RuntimeError, OSError, ValueError) as e:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
         out = ("error", str(e), None, None, None, None, None, None, None, None)
     return out + (OCR.event_delta(before),)
 

@@ -229,4 +229,8 @@ is not required.
   traversal in the PyMuPDF **CLI** font path — `extract_objects()` in
   `src/__main__.py` — which this project does not use; upstream fix is commit
   `b2c8f3a` and no fixed release exists yet).
-- Tesseract OCR: 5.5.3 or newer recommended.
+- Tesseract OCR: 5.5.3 or newer recommended; note that eight model-file
+  deserialization advisories (CVE-2026-88047..-88054, 2026-09-10) still apply to
+  5.5.3 with **no fixed release yet** — they trigger only on a malicious
+  tessdata `.traineddata`, never on drawings, see
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

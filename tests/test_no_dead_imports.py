@@ -19,7 +19,7 @@ PRODUCTION_MODULES = sorted(
 # Only true re-exports would belong here (module -> allowlisted binding names).
 ALLOWLIST = {}
 
-# NODOC gate (T-026): public top-level functions without docstrings in
+# NODOC gate: public top-level functions without docstrings in
 # fermi_organizer/*.py. Production code is frozen, so the 9 currently
 # undocumented helpers stay allowlisted; the gate fails on any NEW one.
 NODOC_ALLOWLIST = {

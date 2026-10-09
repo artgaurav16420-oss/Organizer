@@ -1,4 +1,4 @@
-"""Multiprocess path (T-022): jobs=2 parity + OCR event merge round-trip."""
+"""Multiprocess path: jobs=2 parity + OCR event merge round-trip."""
 from fermi_organizer import extraction
 from fermi_organizer.runmodes import run_full
 
