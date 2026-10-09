@@ -284,6 +284,50 @@ def test_place_files_aborts_when_lock_stolen_mid_run(tmp_path, monkeypatch):
     assert sorted(p.name for p in out.rglob("*.pdf")) == ["P.pdf"]
 
 
+def test_place_files_sees_file_steal_without_heartbeat_tick(tmp_path):
+    # Synchronous detection: the lock file is replaced (a completed steal)
+    # with the 600 s heartbeat never firing and the flag never set — the
+    # first folder check still aborts with nothing written.
+    out = tmp_path / "out"
+    out.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    index = {}
+    for stem in ("P", "A"):
+        p = src / f"{stem}.pdf"
+        p.write_bytes(b"%PDF")
+        index[stem] = p
+    children = {"P": {"A"}}
+    folder_names = {"P": "P Parent", "A": "A Child"}
+
+    logged = []
+    lock = acquire_run_lock(out, False, logged.append)
+    try:
+        assert run_lock_lost(lock) is False  # ours, no tick needed
+        lock.write_bytes(b'{"pid": 999999, "host": "stealer"}')
+        with pytest.raises(LockLostError):
+            place_files(children, ["P"], index, out, False, logged.append,
+                        names_of={}, folder_names=folder_names, lock=lock)
+        assert any("lock lost" in m for m in logged)
+    finally:
+        abandon_run_lock(lock)
+    assert list(out.rglob("*.pdf")) == []
+
+
+def test_run_lock_lost_missing_file_reads_as_lost(tmp_path):
+    # Fail closed: a lock path holding nothing readable is not ours
+    # (mid-steal the rename/unlink window leaves exactly this).
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = acquire_run_lock(out, False, lambda m: None)
+    try:
+        assert run_lock_lost(lock) is False
+        lock.unlink()
+        assert run_lock_lost(lock) is True
+    finally:
+        abandon_run_lock(lock)
+
+
 def test_is_system_dir_convention():
     # System directories start with '_'
     assert is_system_dir("_superseded")
