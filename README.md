@@ -93,7 +93,8 @@ Without `--output` the tree is organized **in place**, in the input folder itsel
 
 Input is scanned recursively — every `*.pdf` under the input folder counts, at any
 depth, except those under a top-level `Output/` (case-insensitive) or `_`-prefixed
-folder. A nested `sub/Output/` **is** scanned.
+folder, plus the run's own `--output` folder by resolved path (whatever it is
+named). A nested `sub/Output/` **is** scanned.
 
 ## Outputs
 
@@ -189,6 +190,10 @@ directory once installed editable).
   before acting.
 - Losing copies of a same-revision duplicate stay in the input folder; only watermarked
   losers are archived in `_superseded/`.
+- Over-cap fan-out (10,000 planned copies) skips the largest root assemblies
+  instead of refusing the run: skipped roots are reported and never placed,
+  while the rest of the tree is built (the CLI exits 2 so the skip is
+  noticed).
 - Network-share output (SMB/NFS, lab drives) is not lock-safe: those filesystems
   do not reliably honor the exclusive-create the run lock depends on, so two
   runs against one shared output can both proceed. This includes mapped drive

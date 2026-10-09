@@ -75,6 +75,7 @@ def test_refresh_workbook_uses_explicit_run_time(tmp_path, monkeypatch):
                                  logged.append)
 
     assert captured["run_time"] == "2026-10-08T01:02:03"
+    assert captured["placement_refused"] is False
 
 
 def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,
@@ -97,6 +98,8 @@ def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,
 
 
 def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
+    # Over-cap placement still exits 2, but only the oversized root is
+    # skipped: the rest is placed and the report names the skipped root.
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -118,9 +121,71 @@ def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
 
     assert exc.value.code == 2
     # Report + workbook are still written before the nonzero exit.
-    assert list(out.glob("organize_fermi_pdfs_report_*.txt"))
+    reports = list(out.glob("organize_fermi_pdfs_report_*.txt"))
+    assert reports
     assert (out / "organize_fermi_report.xlsx").is_file()
+    # The kept root placed, the skipped one absent, the report says which.
+    assert (out / "F10126109 Parent two" / "F10126109.pdf").is_file()
+    assert not list(out.rglob("F10126106*.pdf"))
+    text = reports[0].read_text(encoding="utf-8")
+    assert "partially refused - 1 oversized root(s) skipped (F10126106)" in text
+
+
+def test_cli_main_partial_refusal_dry_run_says_would_be_placed(
+        monkeypatch, tmp_path, make_pdf):
+    # Dry-run copies nothing: the partial-refusal warning must not claim the
+    # rest "was placed".
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr", "--jobs", "1",
+                         "--dry-run"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+
+    assert exc.value.code == 2
+    reports = list(out.glob("organize_fermi_pdfs_report_*.txt"))
+    assert reports
+    text = reports[0].read_text(encoding="utf-8")
+    assert "the rest would be placed" in text
+    assert "was placed" not in text
     assert not any(out.rglob("*.pdf"))
+
+
+def test_cli_main_refused_without_skips_logs_generic_warning(
+        monkeypatch, tmp_path, capsys):
+    # Defensive branch: refused with an empty skip list (a pre-check drop the
+    # backstop later absorbs) keeps the old generic message and exit code.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = _minimal_ctx()
+    ctx.update({"placement_refused": True, "skipped_roots": []})
+    monkeypatch.setattr(cli_module, "run_full", lambda *a, **k: (ctx, None))
+    monkeypatch.setattr(cli_module, "run_lock_lost", lambda held: False)
+    monkeypatch.setattr(cli_module, "release_run_lock", lambda held: None)
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+
+    assert exc.value.code == 2
+    assert ("placement refused - folder placement skipped"
+            in capsys.readouterr().out)
 
 
 def test_cli_main_empty_folder_exits_1(monkeypatch, tmp_path):

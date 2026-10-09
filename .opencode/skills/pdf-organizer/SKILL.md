@@ -90,17 +90,25 @@ Exit codes: `0` = normal outcome (orphans/CHK/missing references are still
 directory`, no PDFs found → fix the path, don't retry), an output folder that
 could not be created (`ERROR: could not create output folder` → check the
 path/permissions, don't retry), **or** an unhandled crash (a Python traceback
-in the captured output). `2` means
-**placement was refused** because the planned fan-out exceeded the 10,000-copy
-cap (`placement refused` + a `WARNING: NNNN copies planned exceeds the
-10000-copy cap` line in the log, a `Placement refused` row on the Dashboard):
-folder placement and supersede swaps/moves are skipped, but the bounded
-orphan-parking and supersede-archive copies still run (full mode parks
-`_orphans/` + archives `_superseded/`; incremental still parks new standalone
-orphans) — the tree is *not* guaranteed untouched. Report + workbook are still
-written. Do **not** retry and do **not** treat it
-as a crash — inspect the BOM graph (a diamond/cycle explosion) and ask the user
-before re-running.
+in the captured output). `2` means the planned fan-out exceeded the
+10,000-copy cap (`placement refused for N oversized root(s)` + `skipped
+oversized root STEM (NNNN copies planned)` lines in the log, a `Roots skipped
+(oversized)` summary line, a `Placement refused` row on the Dashboard):
+the largest roots are skipped (never placed - their shared children still land
+under their other parents) and **the rest is placed normally**; supersede
+swaps/moves are skipped while over cap, but the bounded orphan-parking and
+supersede-archive copies still run. A fully over-cap run places no folders
+(full mode still parks orphans; incremental parks nothing new). Report + workbook are still written. Do **not** retry and do **not**
+treat it as a crash — inspect the BOM graph (a diamond/cycle explosion; the
+skipped roots are usually "bag" drawings like procurement-kit lists, not real
+assemblies) and ask the user before re-running. (The pre-check fits the
+cycle-broken graph, so phantom refusals from unbroken cycles are gone; if exit
+2 ever shows no skipped roots, the conservative pre-check tripped and a re-run
+converges.)
+Note: exit `2` is shared with run-lock loss (`ERROR: ...lock...`, mid-run
+steal) — but that path prints an ERROR and writes **no** report/workbook, so a
+refusal (both artifacts written) is unmistakable. Never read lock-loss as a
+completed placement.
 ## Report to the user
 
 From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles
@@ -150,7 +158,7 @@ PDF count of the output minus `_orphans/` and `_superseded/`.
 | `No module named fermi_organizer` | use the venv interpreter, or reinstall editable (`-e .`) |
 | `.venv` missing | `uv venv --python 3.11 .venv` then install `requirements.txt pytest -e .` |
 | `OCR: unavailable` | expected without Tesseract; scanned PDFs stay orphans — offer `--no-ocr` |
-| Exit code 2 + `placement refused` in the log | fan-out cap hit, not a crash: nothing was mutated, report + workbook were written; inspect the BOM graph (diamond DAG) and ask the user before re-running |
+| Exit code 2 + `placement refused` in the log | fan-out cap hit, not a crash: the named oversized roots were skipped, the rest was placed, report + workbook were written; inspect the BOM graph (usually a "bag" drawing like a procurement-kit list) and ask the user before re-running |
 | `Report NOT saved (output folder missing)` on a dry run | normal: dry runs don't create the folder; the workbook is still written |
 | `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | add `--output <input>\Output` and re-run |
 | Everything landed in `_orphans/` | the parents are missing from the folder; they get placed once those PDFs arrive |

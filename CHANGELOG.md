@@ -4,6 +4,34 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Placement fan-out guard
+- Over-cap runs now degrade gracefully instead of refusing the whole batch:
+  `fit_roots_within_cap` drops the largest roots (deterministic stem-order
+  tie-break) until the plan fits `MAX_PLANNED_COPIES`, places the rest, and
+  reports every skipped root with its planned count (`skipped_roots` in the
+  run context, `Roots skipped (oversized)` summary line, CLI exit still 2).
+  Skipped roots are never placed; their shared children still land under
+  their other parents, and a child exclusive to a skipped root is listed
+  under Unplaced PDFs instead of vanishing from the report. A fully
+  over-cap run places no folders (full mode still parks BOM-less orphans;
+  bounded archive copies still run in both modes). Both run modes share the helper; the incremental pre-check and the
+  placement backstop both fit, so the backstop (on the final graph) is
+  authoritative.
+- The incremental pre-check now fits the cycle-broken new graph (placement
+  always ran broken): previously an unbroken plan failed closed on phantom
+  fan-out — e.g. 16,386 planned collapsing to ~1,100 after 7 cycle breaks —
+  refusing swaps/moves for a batch that placed fine.
+- The CLI now forwards `placement_refused` to the workbook, so the
+  Dashboard `Placement refused` action row actually lights up after real
+  runs (it was only reachable via direct `build_workbook` calls before).
+
+### Input scan
+- The input scan excludes the run's output folder by resolved path, not just
+  by the top-level `Output/` name: a previous tree kept inside the input
+  folder under any custom name (e.g. `Organizer Output`) is no longer
+  re-indexed as input on later full runs. Name-based skips (`Output/`,
+  `_`-prefixed dirs) are unchanged.
+
 ### Concurrency & process safety
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
