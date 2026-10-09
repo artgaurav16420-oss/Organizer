@@ -564,3 +564,34 @@ def test_ocr_strip_tokens_all_passes_failing_raises(monkeypatch, tmp_path, make_
     with pytest.raises(RuntimeError, match="tesseract exit 3"):
         extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
     doc.close()
+
+
+def test_extract_title_block_ocr_failure_recorded_not_silent(monkeypatch, tmp_path,
+                                                             make_pdf):
+    # Review finding: a failed title-block OCR read returned (None, None) with
+    # no record, so the file silently skipped mismatch reporting. Failures now
+    # land in the caller's issues list (same idiom as the USED ON zoom path).
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
+    doc = fitz.open(pdf)
+    assert len(doc[0].get_text().strip()) < extraction.OCR_MIN_CHARS
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+
+    def boom(page):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(extraction.OCR, "words_cached", boom)
+    issues = []
+    assert extraction.extract_title_block(doc, issues) == (None, None)
+    assert issues == ["title-block OCR failed: engine gone"]
+
+    monkeypatch.setattr(extraction.OCR, "words_cached", lambda page: [])
+
+    def boom_zoom(*a):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(extraction, "_ocr_words_zoom", boom_zoom)
+    issues = []
+    assert extraction.extract_title_block(doc, issues) == (None, None)
+    assert issues == ["title-block zoom OCR failed: engine gone"]
+    doc.close()

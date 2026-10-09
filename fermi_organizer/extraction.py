@@ -1293,12 +1293,14 @@ def _title_value_under(words, label, val_re, dx_left, dx_right,
     return vals[0][3] if vals else None
 
 
-def extract_title_block(doc):
+def extract_title_block(doc, issues=None):
     """(drawing number, revision) from the title block on page 1.
 
     The revision is a single letter ('-' when the drawing has none); both are
     None when the field cannot be read. Scanned pages reuse the memoized OCR
-    words, so this adds no second OCR pass.
+    words, so this adds no second OCR pass. OCR failures are recorded into
+    `issues` when provided (a failed read must not pass as "no title block"
+    downstream), mirroring the USED ON zoom path.
     """
     if doc.page_count == 0:
         return None, None
@@ -1308,7 +1310,9 @@ def extract_title_block(doc):
             return None, None
         try:
             words = OCR.words_cached(page)
-        except (RuntimeError, OSError, ValueError):
+        except (RuntimeError, OSError, ValueError) as e:
+            if issues is not None:
+                issues.append(f"title-block OCR failed: {e}")
             return None, None
 
         def from_words(ws):
@@ -1333,7 +1337,9 @@ def extract_title_block(doc):
             for psm in ("11", "6"):
                 try:
                     zoom_words += _ocr_words_zoom(page, clip, 8, psm)
-                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+                    if issues is not None:
+                        issues.append(f"title-block zoom OCR failed: {e}")
                     break
                 number, rev = from_words(zoom_words)
                 if number and rev:
@@ -1518,7 +1524,7 @@ def bom_task(pdf_path):
                     entries, method = extract_bom_from_doc(doc, issues)
                     entries = _strip_self_bom(entries, pdf_path)
                     watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc)
+                    number, rev = extract_title_block(doc, issues)
                     name = extract_drawing_name(doc)
                     scanned = _doc_is_scanned(doc)
                     out = ("ok", entries, method, issues, watermark, number,
@@ -1570,7 +1576,7 @@ def org_task(pdf_path):
                     entries = _strip_self_bom(entries, pdf_path)
                     used = _strip_self_ref(extract_used_on(doc), pdf_path)
                     watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc)
+                    number, rev = extract_title_block(doc, issues)
                     name = extract_drawing_name(doc)
                     scanned = _doc_is_scanned(doc)
                     out = ("ok", entries, method, used, issues, watermark,

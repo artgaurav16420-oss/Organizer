@@ -68,6 +68,9 @@ All notable changes to the Fermi PDF organizer are recorded here.
   fully broken engine still raises).
 - Timeout threat-model note now covers CLI OCR subprocesses only (the
   in-process `get_textpage_ocr` pass has no such timeout).
+- Title-block OCR/zoom failures are recorded in the run issues instead of
+  returning `(None, None)` silently (mismatch reporting no longer skips
+  failed reads without a trace).
 
 ### Previously undocumented (folded in from 0.2.0-era commits)
 - Excel formula-injection neutralization for PDF-derived cell values
