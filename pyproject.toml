@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=68"]
+# setuptools>=80 is the measured floor: the SPDX-string `project.license`
+# form is rejected by setuptools 77 and below (verified by building with
+# 68/77/80; 80 builds, 77 fails with "must be valid exactly by one
+# definition"). Do not lower this without re-probing.
+requires = ["setuptools>=80"]
 build-backend = "setuptools.build_meta"
 
 [project]

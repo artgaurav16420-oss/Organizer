@@ -585,6 +585,8 @@ def _ocr_strip_tokens(page, rect, psm="7"):
     pngs = {}
     try:
         results = []
+        failed = 0
+        last_err = None
         for zoom, mode, oem in passes:
             if zoom not in pngs:
                 pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect)
@@ -592,9 +594,18 @@ def _ocr_strip_tokens(page, rect, psm="7"):
                 os.close(fd)
                 pix.save(png)
                 pngs[zoom] = png
-            r = _tesseract_run(
-                [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
-                 "--dpi", str(int(72 * zoom))], 120)
+            try:
+                r = _tesseract_run(
+                    [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
+                     "--dpi", str(int(72 * zoom))], 120)
+            except (RuntimeError, subprocess.SubprocessError) as e:
+                # One failing pass (hung engine on this strip) must not kill
+                # the vote: the remaining passes still run. Only when every
+                # pass fails does the broken engine surface (re-raised below).
+                failed += 1
+                last_err = e
+                results.append([])
+                continue
             # Glue pipe-separated fragments back together ('FLO |44633'): the
             # pipe is Tesseract's border/1 confusion and OCR_CORR maps it to 1.
             text = re.sub(r"\s*\|\s*", "|", (r.stdout or "").upper())
@@ -621,6 +632,8 @@ def _ocr_strip_tokens(page, rect, psm="7"):
         for vals in results:
             if vals:
                 return vals
+        if failed == len(passes):
+            raise last_err
         return []
     finally:
         for png in pngs.values():

@@ -22,6 +22,8 @@ jobs:
       - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=80
   test-windows:
     # MAX_PATH, _native(), os.replace and symlink-refusal tests skip off-Windows.
+    # No coverage ratchet here by design: the ratchet is enforced once, on the
+    # ubuntu job (same suite, plus the symlink tests that only run on Linux).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

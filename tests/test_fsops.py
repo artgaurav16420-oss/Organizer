@@ -166,12 +166,14 @@ def test_copy_superseded_identical_archive_not_recopied_every_run(tmp_path, monk
     real_copy2 = fsops.shutil.copy2
     monkeypatch.setattr(fsops.shutil, "copy2",
                         lambda a, b: calls.append(a) or real_copy2(a, b))
+    logged = []
 
     n, archived = copy_superseded({"F10126106": old_pdf}, out, False,
-                                  lambda m: None, overwrite=True)
+                                  logged.append, overwrite=True)
 
     assert (n, archived) == (1, {"F10126106"})
     assert calls == []
+    assert "already identical" in "\n".join(logged)
 
 
 def test_copy_watermarked_identical_archive_not_recopied(tmp_path, monkeypatch):
@@ -186,11 +188,13 @@ def test_copy_watermarked_identical_archive_not_recopied(tmp_path, monkeypatch):
     real_copy2 = fsops.shutil.copy2
     monkeypatch.setattr(fsops.shutil, "copy2",
                         lambda a, b: calls.append(a) or real_copy2(a, b))
+    logged = []
 
-    n = copy_watermarked_duplicates([w1], out, False, lambda m: None)
+    n = copy_watermarked_duplicates([w1], out, False, logged.append)
 
     assert n == 1
     assert calls == []
+    assert "already identical" in "\n".join(logged)
 
 
 def test_copy_superseded_symlink_target_not_archived(tmp_path):
@@ -487,6 +491,35 @@ def test_copy_watermarked_duplicates_dry_run_plans_distinct_suffixes(tmp_path):
     assert "_superseded/F10126106.pdf" in text
     assert "_superseded/F10126106.1.pdf" in text
     assert not (out / "_superseded").exists()
+
+
+def test_copy_watermarked_duplicates_dry_run_identical_sources_share_target(tmp_path):
+    # PR-FIX-007: same-name sources with identical bytes must plan the same
+    # destination (execution reuses the first archive instead of suffixing).
+    a_dir = tmp_path / "a"
+    b_dir = tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    a = a_dir / "F10126106.pdf"
+    b = b_dir / "F10126106.pdf"
+    a.write_text("same")
+    b.write_text("same")
+    out = tmp_path / "out"
+    logged = []
+
+    n = copy_watermarked_duplicates([a, b], out, dry_run=True, log=logged.append)
+
+    assert n == 2
+    text = "\n".join(logged).replace("\\", "/")
+    assert text.count("_superseded/F10126106.pdf") == 2
+    assert "F10126106.1.pdf" not in text
+
+    logged.clear()
+    n = copy_watermarked_duplicates([a, b], out, dry_run=False, log=logged.append)
+
+    assert n == 2
+    assert (out / "_superseded" / "F10126106.pdf").read_text() == "same"
+    assert not (out / "_superseded" / "F10126106.1.pdf").exists()
 
 
 def test_copy_watermarked_duplicates_never_clobbers_different_content(tmp_path):

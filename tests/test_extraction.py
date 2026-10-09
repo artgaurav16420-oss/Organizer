@@ -520,3 +520,47 @@ def test_ensure_tesseract_nonzero_version_exit_is_unavailable(tmp_path, monkeypa
     assert ocr.ensure_tesseract() is None
     assert not ocr.available
     assert "--version exit 1" in ocr.reason
+
+
+def test_ocr_strip_tokens_survives_single_pass_failure(monkeypatch, tmp_path, make_pdf):
+    # PR-FIX-008: one failing voting pass must not kill the strip - the
+    # remaining passes still vote. (A fully broken engine still raises.)
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return sp.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        return sp.CompletedProcess(cmd, 0, stdout="F10126107", stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert out == ["F10126107"]
+    assert len(calls) == 3
+    doc.close()
+
+
+def test_ocr_strip_tokens_all_passes_failing_raises(monkeypatch, tmp_path, make_pdf):
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 3, stdout="", stderr="broken")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    with pytest.raises(RuntimeError, match="tesseract exit 3"):
+        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+    doc.close()

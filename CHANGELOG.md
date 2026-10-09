@@ -54,6 +54,21 @@ All notable changes to the Fermi PDF organizer are recorded here.
   `pyproject.toml` license field set), matching the AGPL terms of PyMuPDF;
   `THIRD_PARTY_NOTICES.md` records the decision and its obligations.
 
+### Review follow-ups (PR #42 bot comments, verified before applying)
+- Build floor is now `setuptools>=80`: the SPDX-string `project.license` form
+  is rejected by setuptools 77 and below (measured by building with 68/77/80).
+- Corrected the refusal guarantee everywhere (runbook, AGENTS.md, 0.2.0
+  notes): a refused run skips folder placement and supersede swaps/moves, but
+  the bounded orphan-parking and supersede-archive copies still run.
+- Archive reuse is now logged (`already identical ... - not rewritten`) so
+  repeat-run copy counts stay honest.
+- Dry-run archive planning matches execution for identical same-name sources
+  (same destination, no phantom `.1` suffix).
+- Strip-OCR voting survives a single failing pass (remaining passes vote; a
+  fully broken engine still raises).
+- Timeout threat-model note now covers CLI OCR subprocesses only (the
+  in-process `get_textpage_ocr` pass has no such timeout).
+
 ### Previously undocumented (folded in from 0.2.0-era commits)
 - Excel formula-injection neutralization for PDF-derived cell values
   (`_inert_text`, 141aab5/d776322) with a cross-sheet fuzz test (b82ec61).
@@ -68,7 +83,8 @@ All notable changes to the Fermi PDF organizer are recorded here.
 ### Placement safety
 - Placement refusal is surfaced: the run writes report + workbook, shows a
   "Placement refused" action row on the Dashboard, and exits with code 2.
-  Nothing in the input or tree is touched by a refused run.
+  Folder placement and supersede swaps/moves are skipped, but the bounded
+  orphan-parking and supersede-archive copies still run.
 - The copy cap (`MAX_PLANNED_COPIES`) is enforced **per run** and checked
   before naming or any tree write; parked roots are excluded from the count,
   and a refused batch performs no supersede swaps or folder moves.

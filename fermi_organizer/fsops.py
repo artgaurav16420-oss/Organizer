@@ -474,7 +474,11 @@ def resolve_archive_target(sup_dir, src, taken=()):
     (`filecmp.cmp` can reuse a stale verdict when bytes change without size or
     mtime changing); symlink candidates are always treated as occupied.
     `taken` lists destinations already claimed in this call sequence (dry-run
-    planned copies), so same-name sources get distinct names there too.
+    planned copies), so same-name sources get distinct names there too — unless
+    the planned source has identical bytes, in which case the same destination
+    is reused (execution reuses the first archive via the byte compare below,
+    so the plan matches it). Pass `taken` as a {destination: source} dict for
+    that check; a set of destinations keeps the old distinct-name behavior.
     Callers must refuse symlinks at the base name first: `_exists` follows
     links, so a dangling link there would otherwise be written through.
     """
@@ -483,11 +487,22 @@ def resolve_archive_target(sup_dir, src, taken=()):
         return target, False
     if _same_bytes(target, src):
         return target, True
+    if isinstance(taken, dict):
+        planned_src = taken.get(target)
+        if planned_src is not None and _same_bytes(planned_src, src):
+            # Dry-run: the planned source has identical bytes, so execution
+            # reuses the first archive instead of suffixing — plan the same
+            # destination so the printed plan matches the real run.
+            return target, True
     n = 1
     candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
     while _exists(candidate) or _islink(candidate) or candidate in taken:
         if not _islink(candidate) and _same_bytes(candidate, src):
             return candidate, True
+        if isinstance(taken, dict):
+            planned_src = taken.get(candidate)
+            if planned_src is not None and _same_bytes(planned_src, src):
+                return candidate, True
         n += 1
         candidate = sup_dir / f"{target.stem}.{n}{target.suffix}"
     return candidate, False
@@ -524,7 +539,10 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         target, already = resolve_archive_target(sf, pdf)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
-        elif not already:
+        elif already:
+            # Proven byte-identical: counted as archived without rewriting.
+            log(f"  {stem}: archive already identical ({target.name}) - not rewritten")
+        else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(pdf), _native(target))
@@ -552,7 +570,7 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     """
     n = 0
     sf = folder / "_superseded"
-    planned = set()
+    planned = {}
     for p in sorted(paths):
         target = sf / p.name
         if _islink(p) or _islink(target):
@@ -561,8 +579,10 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         target, already = resolve_archive_target(sf, p, planned)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
-            planned.add(target)
-        elif not already:
+            planned[target] = p
+        elif already:
+            log(f"  {p.name}: archive already identical ({target.name}) - not rewritten")
+        else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(p), _native(target))

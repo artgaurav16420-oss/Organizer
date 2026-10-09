@@ -53,9 +53,11 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
   2026-10-09 against the NVD API: **no fixed release is available** (5.5.3 is
   still the latest). Scope here: all eight trigger on a **malicious tessdata
   model file**, not on untrusted PDFs or rendered images (the OCR child process
-  only ever reads a locally rendered PNG), and the run-time OCR invocations are
+  only ever reads a locally rendered PNG), and the CLI OCR invocations are
   subprocess-bounded (120/180 s timeouts), so the threat model of this tool is
-  not reached by feeding it hostile drawings.
+  not reached by feeding it hostile drawings. (The separate in-process
+  `get_textpage_ocr` full-page pass has no such subprocess timeout; it renders
+  and reads the page in-process rather than shelling out.)
   - **Mitigation note:** the legacy-engine vectors (88047/88051/88053) are
     additionally avoided by an LSTM-only engine (`--oem 1`); this tool also
     runs `--oem 3` passes for accuracy, so forcing oem 1 is an operator
