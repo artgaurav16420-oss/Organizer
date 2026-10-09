@@ -171,6 +171,18 @@ SINGLE_LINE_RE = re.compile(
 )
 TOKEN_RE = re.compile(r"\b(F\d{1,8}[A-Za-z]?|FC\d{1,8}[A-Za-z]?)(?![\dA-Za-z])")
 USED_RE = re.compile(r"^USED\s*ON\s*$", re.IGNORECASE)
+# A parts-list header line: standalone caption ("PARTS LIST", "BOM", ...) or
+# the single-line column combo ("ITEM FERMI # PART NAME", wording varies).
+# Gates the line-based BOM fallback: F-numbered lines on a sheet with no
+# parts list at all are notes/title-block content, never BOM rows.
+PARTS_HEADER_RE = re.compile(
+    r"^(FERMI\s+)?PARTS?\s+LIST\b|^BOM\b|^BILL\s+OF\s+MATERIALS?\b",
+    re.IGNORECASE,
+)
+PARTS_HEADER_COMBO_RE = re.compile(
+    r"\bITEM\b.*\bFERMI\b|\bFERMI\b.*\bITEM\b",
+    re.IGNORECASE,
+)
 STOP_RE = re.compile(
     r"^(?:MATERIAL|DESCRIPTION|PROJECT|CATEGORY|GROUP|DRAWING|SHEET|REV|"
     r"SCALE|SIZE|DRAWN|CHECKED|APPROVED|DATE|NAME|TITLE|NUMBER|NOTES?|"

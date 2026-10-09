@@ -23,6 +23,52 @@ def test_bom_requires_fermi_header_gate(tmp_path, make_pdf):
     assert entries == []
 
 
+def test_note_reference_to_other_drawings_is_not_bom(tmp_path, make_pdf):
+    # F10118360-style fabrication note: the F-number leads the wrapped line
+    # ("... PER WELDMENT DRAWING / F10126107 AND F10126108.") but only points
+    # at other drawings. The bare dimension lines (80/70) satisfy ITEM_RE, so
+    # a context gate would not reject this - the cross-reference description
+    # must. The real USED ON box below is guarded separately. The FERMI
+    # title-block line forces the page into the text parser (without any
+    # FERMI text the page is skipped before parsing starts).
+    lines = ["FERMI NATIONAL ACCELERATOR LABORATORY",
+             "3. PEM-NUT HOLE SIZE TO BE DETERMINED",
+             "BY VENDORS CHOICE OF PEM-NUT STYLE,",
+             "PEM-NUT THREAD SIZE SHALL BE",
+             "MAINTAINED PER WELDMENT DRAWING",
+             "F10126107 AND F10126108.",
+             "4. TRAILING ZERO DENOTE TOLERANCE.",
+             "267.0", "80", "250.0", "70",
+             "USED ON",
+             "F10126107 & F10126108"]
+    pdf = make_pdf(tmp_path / "F10126106.pdf", lines)
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert entries == []
+
+
+def test_note_reference_rejected_even_with_parts_header(tmp_path, make_pdf):
+    # Same note on a sheet that DOES carry a parts list: the header lets the
+    # line parser run, but the cross-reference description still rejects the
+    # note row while the genuine row is kept.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST",
+                    "F10126109 GUSSET RING",
+                    "MAINTAINED PER WELDMENT DRAWING",
+                    "F10126107 AND F10126108."])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert ("F10126109", 1, "text-fallback", "GUSSET RING") in entries
+    assert all(v != "F10126107" for v, *_rest in entries)
+
+
+def test_single_line_desc_containing_reference_is_kept(tmp_path, make_pdf):
+    # Boundary: a genuine part name that merely mentions another drawing
+    # ("CLAMP REF F10126108") is not a pure cross-reference - keep it.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "F10126107 CLAMP REF F10126108"])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert ("F10126107", 1, "text-fallback", "CLAMP REF F10126108") in entries
+
+
 def test_multiline_bom_skips_note_lines_until_qty(tmp_path, make_pdf):
     pdf = make_pdf(tmp_path / "F10126106.pdf",
                    ["FERMI PART LIST", "1", "F10126107", "CHILD PART A",

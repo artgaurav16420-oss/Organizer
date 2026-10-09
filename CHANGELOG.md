@@ -32,6 +32,19 @@ All notable changes to the Fermi PDF organizer are recorded here.
   re-indexed as input on later full runs. Name-based skips (`Output/`,
   `_`-prefixed dirs) are unchanged.
 
+### Extraction precision
+- Fabrication-note references no longer become BOM edges: a single-line
+  "description" that only points at other drawings (`F10112550 AND
+  F10118731.`) is rejected as a cross-reference, and the USED ON title-block
+  guard of both positional parsers now looks further above the row (tall
+  cells park the value several rows below the label). Both had attached
+  phantom parent-child edges that surfaced as BOM cycles.
+- The line-based fallback additionally requires a parts-list header
+  (`PARTS LIST`, `BOM`, or an `ITEM`/`FERMI` column combo) somewhere in the
+  document: on a headerless sheet every F-numbered text line is a note, a
+  reference, or title-block content. Table and positional parsers keep their
+  own structural gates.
+
 ### Concurrency & process safety
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
