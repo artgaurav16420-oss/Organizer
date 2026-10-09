@@ -134,6 +134,30 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     release_run_lock(lock)
 
 
+def test_run_lock_heartbeat_start_failure_cleans_up(tmp_path, monkeypatch):
+    # Thread.start() failing after creation must not leak a fresh lock that
+    # refuses later runs until stale: same degraded-unlocked path as a write
+    # failure.
+    import threading
+
+    def boom(self):
+        raise RuntimeError("can't start thread")
+
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+    assert acquire_run_lock(out, False, logged.append) is None
+    assert not (out / RUN_LOCK_NAME).exists()
+    assert any("heartbeat" in m for m in logged)
+    assert str(out / RUN_LOCK_NAME) not in fsops._heartbeats
+    # A later run is not refused by the leaked file.
+    monkeypatch.undo()
+    lock = acquire_run_lock(out, False, logged.append)
+    assert lock is not None
+    release_run_lock(lock)
+
+
 def test_heartbeat_beat_refreshes_only_own_token(tmp_path):
     # Ownership-checked refresh: our token is re-touched; foreign content is
     # never touched (a steal racing the beat must not get a fresh mtime).

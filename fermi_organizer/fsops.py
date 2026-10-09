@@ -432,7 +432,19 @@ def acquire_run_lock(output, dry_run, log):
                 log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
                     "continuing unlocked (do not run two processes against one output)")
                 return None
-            _heartbeat_start(lock, token)
+            try:
+                _heartbeat_start(lock, token)
+            except RuntimeError as e:
+                # Thread.start() can fail (thread limits) after the lock file
+                # exists: remove it like a write failure, or the fresh lock
+                # refuses later runs until stale.
+                try:
+                    os.unlink(_native(lock))
+                except OSError:
+                    pass
+                log(f"  WARNING: could not start run lock heartbeat ({lock.name}): {e} - "
+                    "continuing unlocked (do not run two processes against one output)")
+                return None
             return lock
         try:
             raw = lock.read_bytes()
@@ -562,7 +574,11 @@ def _heartbeat_start(lock, token):
     t = threading.Thread(target=beat, daemon=True,
                          name="fermi-lock-heartbeat")
     _heartbeats[str(lock)] = (stop, t, lost)
-    t.start()
+    try:
+        t.start()
+    except BaseException:
+        _heartbeats.pop(str(lock), None)
+        raise
 
 
 def _heartbeat_stop(lock):
