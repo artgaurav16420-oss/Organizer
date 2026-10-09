@@ -14,7 +14,7 @@ from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_supersede
                                    sweep_stale_claims,
                                    acquire_run_lock, release_run_lock,
                                    abandon_run_lock, run_lock_lost,
-                                   RunLockedError, RUN_LOCK_NAME)
+                                   RunLockedError, LockLostError, RUN_LOCK_NAME)
 
 
 def test_run_lock_acquire_and_release(tmp_path):
@@ -243,6 +243,45 @@ def test_sweep_stale_claims(tmp_path):
 
     # Missing dir: silent no-op.
     sweep_stale_claims(tmp_path / "nope", False, logged.append)
+
+
+def test_place_files_aborts_when_lock_stolen_mid_run(tmp_path, monkeypatch):
+    # A steal landing mid-placement stops at the next folder: LockLostError
+    # with no further writes after the steal point.
+    out = tmp_path / "out"
+    out.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    index = {}
+    for stem in ("P", "A", "B"):
+        p = src / f"{stem}.pdf"
+        p.write_bytes(b"%PDF")
+        index[stem] = p
+    children = {"P": {"A", "B"}}
+    folder_names = {"P": "P Parent", "A": "A Child", "B": "B Child"}
+
+    lock = acquire_run_lock(out, False, lambda m: None)
+    real_copy2 = fsops.shutil.copy2
+    calls = []
+
+    def stealing_copy2(s, d, *a, **k):
+        out_ = real_copy2(s, d, *a, **k)
+        calls.append(d)
+        if len(calls) == 1:
+            fsops._heartbeats[str(lock)][2].set()  # stealer strikes mid-run
+        return out_
+
+    monkeypatch.setattr(fsops.shutil, "copy2", stealing_copy2)
+    logged = []
+    try:
+        with pytest.raises(LockLostError):
+            place_files(children, ["P"], index, out, False, logged.append,
+                        names_of={}, folder_names=folder_names, lock=lock)
+        assert any("lock lost" in m for m in logged)
+    finally:
+        abandon_run_lock(lock)
+    # Exactly the first folder's copy exists; the stolen run wrote nothing more.
+    assert sorted(p.name for p in out.rglob("*.pdf")) == ["P.pdf"]
 
 
 def test_is_system_dir_convention():

@@ -22,7 +22,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     sweep_stale_claims, resolve_archive_target, folder_foreign_pdfs,
                     ensure_placement_allowed, PlacementRefusedError,
                     acquire_run_lock, release_run_lock, abandon_run_lock,
-                    run_lock_lost, LockLostError,
+                    LockLostError, _ensure_lock,
                     _native, _exists, _islink)
 
 
@@ -601,12 +601,17 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
             org_titleblocks, warnings)
 
 
-def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log):
+def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
+                         lock=None):
     """Archive old revision copies and place the new revision in their spot.
-    Returns (new_locations, copies_written)."""
+    Returns (new_locations, copies_written). `lock` is this run's lock path
+    (None = unlocked): re-checked before each swap, so a run stolen
+    mid-supersede stops with LockLostError instead of replacing into another
+    run's tree."""
     moved = []
     copies = 0
     for p in old_paths:
+        _ensure_lock(lock, log)
         target_old = sup_dir / p.name
         target_new = p.parent / new_pdf.name
         staging = target_new.with_name(f"{target_new.name}.supersede_tmp.{os.getpid()}")
@@ -739,19 +744,19 @@ def _current_folder_of(stem, organized, output, moved_dirs):
 
 
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
-                          base, output, dry_run, log, renames=None):
+                          base, output, dry_run, log, renames=None, lock=None):
     """R is a sub-assembly of organized part(s) P; place under P. Returns copies."""
     if len(org_par) > 1:
         log(f"  {R}: referenced by multiple organized parts {org_par}; placing under {P}")
     fn = build_folder_names(new_children, [R], new_index, new_names, base, log)
     log(f"  {R}: sub-assembly of organized part {P} -> {(base / fn.get(R, R)).relative_to(output)}")
     return place_files(new_children, [R], new_index, base, dry_run, log, new_names, fn,
-                       renames=renames)
+                       renames=renames, lock=lock)
 
 
 def _place_above_organized_children(R, org_child, new_children, new_index, new_names,
                                     organized, moved_dirs, output, dry_run, log,
-                                    renames=None):
+                                    renames=None, lock=None):
     """R is a higher-level assembly referencing organized part(s): create its
     folder, move the organized child folders under it, then place R's subtree.
     Mutates moved_dirs; returns (copies, moves)."""
@@ -812,17 +817,17 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
             moved_dirs[child_folder] = target_path
         moves += 1
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
-                          renames=renames)
+                          renames=renames, lock=lock)
     return copies, moves
 
 
 def _place_standalone_new_root(R, new_children, new_index, new_names,
-                               output, dry_run, log, renames=None):
+                               output, dry_run, log, renames=None, lock=None):
     """Standalone new root with a BOM/children -> new root folder. Returns copies."""
     fn = build_folder_names(new_children, [R], new_index, new_names, output, log)
     log(f"  {R}: standalone assembly -> new root folder {fn.get(R, R)}/")
     return place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
-                       renames=renames)
+                       renames=renames, lock=lock)
 
 
 def _ctx_names(names_of, missing, bom_names):
@@ -947,7 +952,7 @@ def _full_analyze(bom_of, index, children, parents, used_on_of, names_of, log):
 
 
 def _full_place(children, roots, orphans, old, watermarked_dupes, index,
-                names_of, output, dry_run, log, rekeyed):
+                names_of, output, dry_run, log, rekeyed, lock=None):
     """Folder creation + orphan/superseded/duplicate copies.
 
     Returns (copies, placement_refused): a refused fan-out (the warning is
@@ -963,7 +968,8 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         ensure_placement_allowed(children, roots, log)
         folder_names = build_folder_names(children, roots, index, names_of, output, log)
         total_copies = place_files(children, roots, index, output, dry_run,
-                                   log, names_of, folder_names, renames=renames)
+                                   log, names_of, folder_names, renames=renames,
+                                   lock=lock)
     except PlacementRefusedError:
         refused = True
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
@@ -1016,22 +1022,6 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
         "names": _ctx_names(names_of, unmatched, bom_names),
         "placement_refused": refused,
     }
-
-
-def _ensure_lock(lock, log):
-    """Abort when the heartbeat observed our lock stolen mid-run.
-
-    A run paused past the stale window (sleep, SIGSTOP, VM pause) may wake to
-    find another run holding the tree; writing on would interleave two live
-    writers. Raises LockLostError (the CLI exits 2 — the tree may already
-    hold this run's partial writes). No-op for unlocked runs (None).
-    """
-    if run_lock_lost(lock):
-        log("  ERROR: run lock lost mid-run (stolen while paused?) - "
-            "stopping before further tree changes")
-        raise LockLostError(
-            "run lock lost mid-run (stolen while paused?) - stopped before "
-            "further tree changes; inspect the output tree before rerunning")
 
 
 def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
@@ -1096,7 +1086,8 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     _ensure_lock(lock, log)
     total_copies, refused = _full_place(children, roots, orphans, old,
                                         watermarked_dupes, index, names_of,
-                                        output, dry_run, log, rekeyed)
+                                        output, dry_run, log, rekeyed,
+                                        lock=lock)
     return _full_finalize(roots, children, index, orphans, removed,
                           total_copies, warning_count, unmatched, chk_stems,
                           used_on_of, used_mism, used_on_bugs, tb_mismatches,
@@ -1278,7 +1269,7 @@ def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
 def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
                            new_boms, new_used_on, new_index, new_stems,
                            org_stems, all_stems, sup_dir, output, dry_run,
-                           log, total_copies):
+                           log, total_copies, lock=None):
     """In-place revision swaps + child moves. Returns (moved_dirs, moves, copies, stems, swapped_old)."""
     # Supersede in place. When a new revision supersedes an organized one, the
     # old revision's PDF(s) move to _superseded/ and the new revision's PDF takes their
@@ -1295,7 +1286,7 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
                 log(f"  WARNING: {s}: no organized copy of {o} found - placing as a new PDF")
                 continue
             moved, copies = _swap_revision_files(old_paths, new_pdf, sup_dir, output,
-                                                 dry_run, log)
+                                                 dry_run, log, lock=lock)
             total_copies += copies
             org_boms[s] = new_boms.pop(s, [])
             org_used_on[s] = new_used_on.pop(s, [])
@@ -1364,7 +1355,7 @@ def _incremental_placeable(R, new_boms, new_children, org_parents_of,
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
-                       log, rekeyed, total_copies, total_moves):
+                       log, rekeyed, total_copies, total_moves, lock=None):
     """Placement decisions for new roots.
 
     Returns (new_roots, copies, moves, placement_refused). The per-run
@@ -1404,12 +1395,12 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             base = _current_folder_of(P, organized, output, moved_dirs)
             total_copies += _place_subassembly_of(R, P, org_par, new_children, new_index,
                                                   new_names, base, output, dry_run, log,
-                                                  renames=renames)
+                                                  renames=renames, lock=lock)
         elif org_child:
             copies, moves = _place_above_organized_children(R, org_child, new_children,
                                                             new_index, new_names, organized,
                                                             moved_dirs, output, dry_run, log,
-                                                            renames=renames)
+                                                            renames=renames, lock=lock)
             total_copies += copies
             total_moves += moves
         elif not (new_boms.get(R) or new_children.get(R)):
@@ -1423,7 +1414,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
         else:
             total_copies += _place_standalone_new_root(R, new_children, new_index,
                                                        new_names, output, dry_run, log,
-                                                       renames=renames)
+                                                       renames=renames, lock=lock)
     if standalone_orphans:
         total_copies += copy_orphans(standalone_orphans, new_index, output, dry_run, log,
                                      renames=renames)
@@ -1590,7 +1581,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             _incremental_supersede(supersede_pairs, organized, org_boms,
                                    org_used_on, new_boms, new_used_on, new_index,
                                    new_stems, org_stems, all_stems, sup_dir,
-                                   output, dry_run, log, total_copies)
+                                   output, dry_run, log, total_copies,
+                                   lock=lock)
     new_children, new_parents, org_parents_of, org_children_of, used_on_bugs, \
         incr_mism, removed = _incremental_graph(
             new_boms, org_boms, new_used_on, org_used_on, new_names,
@@ -1602,7 +1594,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         new_roots, total_copies, total_moves, refused = _incremental_place(
             new_stems, new_parents, org_parents_of, org_children_of, new_children,
             new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
-            output, dry_run, log, rekeyed, total_copies, total_moves)
+            output, dry_run, log, rekeyed, total_copies, total_moves,
+            lock=lock)
     # Planned tree stems for orphan retirement: in dry-run the placements
     # above logged but copied nothing, so a stored orphan adopted by this
     # run's placement is not yet live on disk. BOM-less standalone roots stay
