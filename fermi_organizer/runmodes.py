@@ -759,8 +759,13 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
                                     organized, moved_dirs, output, dry_run, log,
                                     renames=None, lock=None):
     """R is a higher-level assembly referencing organized part(s): create its
-    folder, move the organized child folders under it, then place R's subtree.
-    Mutates moved_dirs; returns (copies, moves)."""
+    folder, adopt the organized child folders under it, then place R's subtree.
+    Mutates moved_dirs; returns (copies, moves).
+
+    A top-level organized root is re-homed (moved) so no stale root folder is
+    left behind. A child nested under another live parent is COPIED - moving
+    it would hollow out its existing parent, and later claimants would find
+    nothing (every claimant gets its own copy, matching place_files)."""
     copies = 0
     moves = 0
     log(f"  {R}: higher-level assembly referencing organized part(s): {org_child}")
@@ -776,28 +781,29 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
             log(f"  WARNING: {R}: mkdir failed ({target_folder}): {e} - skipping child moves")
             can_move = False
     for c in (org_child if can_move else ()):
-        # Move the child's folder, not just its PDF.
         child_paths = organized.get(c, [])
         if not child_paths:
             continue
         child_path = pick_shallowest(child_paths)
         child_folder = child_path.parent
-        already_moved = False
-        for old in moved_dirs:
-            if child_folder == old or child_folder.is_relative_to(old):
-                already_moved = True
+        # Follow earlier relocations: the folder may have moved along with an
+        # adopted ancestor claimed earlier this run.
+        current = child_folder
+        for old, new in moved_dirs.items():
+            if current == old or current.is_relative_to(old):
+                current = new / current.relative_to(old)
                 break
-        if already_moved:
+        if not _exists(current):
             log(f"  {c}: already moved, skipping")
             continue
-        if _shared_folder_blocks_move(c, child_folder, output, log):
+        if _shared_folder_blocks_move(c, current, output, log):
             continue
-        # Guard against destination collisions before moving the child's folder.
+        # Guard against destination collisions before adopting the folder.
         target_path = target_folder / child_folder.name
         if _exists(target_path):
             same = False
             try:
-                same = target_path.resolve() == child_folder.resolve()
+                same = target_path.resolve() == current.resolve()
             except OSError:
                 same = False
             if same:
@@ -806,17 +812,38 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
             log(f"  WARNING: {c}: destination exists, skipping move (manual review): "
                 f"{target_path.relative_to(output)}")
             continue
+        if current.parent == output:
+            # Top-level organized root: move (re-home) so no stale root
+            # folder is left behind. Later claimants copy from the new home
+            # via the relocation tracking above.
+            if _shared_folder_blocks_move(c, current, output, log):
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] move {current.relative_to(output)} -> {target_path.relative_to(output)}")
+                moved_dirs[current] = target_path
+            else:
+                try:
+                    shutil.move(str(current), str(target_path))
+                except OSError as e:
+                    log(f"  WARNING: move failed for {c}: {e}")
+                    continue
+                moved_dirs[current] = target_path
+            moves += 1
+            continue
+        # Nested under a live parent: copy the whole subtree so the existing
+        # parent keeps its copy. Copying cannot strand unrelated files, so
+        # the shared-folder guard does not apply; a failed copy is guarded
+        # below.
         if dry_run:
-            log(f"  [DRY-RUN] move {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
-            moved_dirs[child_folder] = target_path
+            log(f"  [DRY-RUN] copy {current.relative_to(output)} -> {target_path.relative_to(output)}")
         else:
             try:
-                shutil.move(str(child_folder), str(target_path))
+                shutil.copytree(str(current), str(target_path))
             except OSError as e:
-                log(f"  WARNING: move failed for {c}: {e}")
+                log(f"  WARNING: copy failed for {c}: {e}")
                 continue
-            moved_dirs[child_folder] = target_path
-        moves += 1
+        copies += sum(1 for paths in organized.values() for p in paths
+                      if p.is_relative_to(current))
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
                           renames=renames, lock=lock)
     return copies, moves

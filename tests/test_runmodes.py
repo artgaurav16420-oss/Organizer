@@ -1332,6 +1332,67 @@ def test_log_unplaced_handles_multiple_unplaced_sorted():
         "",
     ]
 
+def _write_organized_nested_child(make_pdf, out):
+    # Organized tree: parent folder holding its PDF plus a nested child
+    # folder (the shared-leaf shape: F10128174 under F10187622).
+    parent_dir = out / "F10126106 Old parent"
+    parent_dir.mkdir(parents=True)
+    make_pdf(parent_dir / "F10126106.pdf", ["NAME", "Old parent"])
+    child_dir = parent_dir / "F10126107 Child"
+    child_dir.mkdir()
+    make_pdf(child_dir / "F10126107.pdf", ["NAME", "Child part"])
+    return parent_dir, child_dir
+
+
+def test_place_above_copies_nested_shared_child_to_every_claimant(
+        tmp_path, make_pdf):
+    # A child nested under a live parent must be COPIED, not moved: the
+    # source parent keeps its copy and every new claimant gets one (the
+    # F10128174 adoption that hollowed out F10187622 moved instead).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    parent_dir, child_dir = _write_organized_nested_child(make_pdf, out)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Higher one"])
+    make_pdf(in_dir / "F10126111.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Higher two"])
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    # Source intact, both claimants served.
+    assert (child_dir / "F10126107.pdf").is_file()
+    assert (out / "F10126109 Higher one" / "F10126107 Child"
+            / "F10126107.pdf").is_file()
+    assert (out / "F10126111 Higher two" / "F10126107 Child"
+            / "F10126107.pdf").is_file()
+    assert "already moved, skipping" not in "\n".join(logged)
+
+
+def test_place_above_moves_top_level_root_adoption(tmp_path, make_pdf):
+    # A top-level organized root claimed by a new parent is still re-homed
+    # (moved): leaving the old root folder behind would strand a stale root.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    root_dir = out / "F10126107 Child"
+    root_dir.mkdir()
+    make_pdf(root_dir / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Higher assembly"])
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    assert not root_dir.exists()
+    assert (out / "F10126109 Higher assembly" / "F10126107 Child"
+            / "F10126107.pdf").is_file()
+
+
 def test_place_above_organized_children_mkdir_oserror(tmp_path, make_pdf):
     # Test uncaught OSError handling when creating target_folder in _place_above_organized_children.
     in_dir = tmp_path / "in"

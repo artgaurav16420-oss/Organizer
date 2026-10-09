@@ -32,8 +32,15 @@ All notable changes to the Fermi PDF organizer are recorded here.
   re-indexed as input on later full runs. Name-based skips (`Output/`,
   `_`-prefixed dirs) are unchanged.
 
-### Extraction precision
-- Fabrication-note references no longer become BOM edges: a single-line
+### Incremental adoption
+- Adopting an organized child under a newly arrived parent no longer steals
+  shared folders: a child nested under another live parent is now COPIED to
+  every claimant (matching place_files), while a top-level organized root is
+  still re-homed (moved). Previously the move hollowed out the former parent
+  (e.g. `F10187622` lost its `F10128174` copy to `F10119081`) and left later
+  claimants empty-handed. Affected trees should be rebuilt with a fresh run.
+
+### Extraction precision- Fabrication-note references no longer become BOM edges: a single-line
   "description" that only points at other drawings (`F10112550 AND
   F10118731.`) is rejected as a cross-reference, and the USED ON title-block
   guard of both positional parsers now looks further above the row (tall
