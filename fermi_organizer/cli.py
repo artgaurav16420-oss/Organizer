@@ -77,7 +77,8 @@ def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, i
             mismatches=mismatches,
             used_on_bugs=ctx["used_on_bugs"],
             titleblock_mismatches=ctx["titleblock_mismatches"],
-            scanned=ctx["scanned"], watermarks=ctx["watermarks"], log=log)
+            scanned=ctx["scanned"], watermarks=ctx["watermarks"], log=log,
+            placement_refused=ctx.get("placement_refused", False))
         if xlsx:
             log(f"  Excel report saved to: {xlsx}")
     except Exception as e:
@@ -164,7 +165,15 @@ def main():
         sys.exit(2)
 
     try:
-        if ctx.get("placement_refused"):
+        skipped = ctx.get("skipped_roots", [])
+        if skipped:
+            names = ", ".join(r for r, _ in skipped[:5])
+            more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+            log("  WARNING: placement partially refused - "
+                f"{len(skipped)} oversized root(s) skipped ({names}{more}); "
+                "the rest was placed (bounded orphan/archive copies still "
+                "ran); review the BOM graph (report + workbook still written)")
+        elif ctx.get("placement_refused"):
             log("  WARNING: placement refused - folder placement skipped (bounded "
                 "orphan/archive copies still ran); review the "
                 "BOM graph (report + workbook still written)")

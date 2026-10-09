@@ -829,7 +829,7 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
 def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
                      orphans, report_txt, names=None, roots=None, mismatches=None,
                      used_on_bugs=None, titleblock_mismatches=None, scanned=None,
-                     watermarks=None, log=None):
+                     watermarks=None, log=None, placement_refused=False):
     """Called by the organizer after every run (execute AND dry-run).
 
     Dry-runs into a fresh --output never create the folder; the workbook is
@@ -854,4 +854,5 @@ def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
         "watermarks": watermarks or [],
         "report_txt": os.path.basename(report_txt or ""),
         "names": names or {},
+        "placement_refused": placement_refused,
     }, log=log)

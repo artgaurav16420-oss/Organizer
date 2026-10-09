@@ -394,9 +394,10 @@ def test_run_full_returns_structured_ctx(tmp_path, make_pdf):
     assert set(ctx) == {"counters", "missing", "chk", "orphans", "roots",
                         "used_on_mismatches", "used_on_bugs",
                         "titleblock_mismatches", "scanned", "watermarks",
-                        "names", "placement_refused"}
+                        "names", "placement_refused", "skipped_roots"}
     assert ctx["counters"] == {"scanned": 3, "roots": 1, "copies": 3,
                                "cycles": 0, "warnings": 0}
+    assert ctx["skipped_roots"] == []
     assert ctx["missing"] == []
     assert ctx["chk"] == []
     assert ctx["orphans"] == ["F10126108"]
@@ -459,9 +460,10 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
     assert set(ctx) == {"counters", "missing", "chk", "orphans", "roots",
                         "used_on_mismatches", "used_on_bugs",
                         "titleblock_mismatches", "scanned", "watermarks",
-                        "names", "placement_refused"}
+                        "names", "placement_refused", "skipped_roots"}
     assert ctx["counters"] == {"scanned": 2, "roots": 1, "copies": 2,
                                "cycles": 0, "warnings": 0}
+    assert ctx["skipped_roots"] == []
     assert ctx["missing"] == []
     assert ctx["chk"] == []
     assert ctx["orphans"] == []
@@ -472,11 +474,12 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
     assert ctx["names"]["F10126109"] == "New assembly"
 
 
-def test_run_incremental_per_run_cap_refuses_many_roots(tmp_path, make_pdf,
-                                                        monkeypatch):
-    # The cap is per run, not per place_files call: two roots with two copies
-    # each exceed a cap of 3 even though neither single call would (old
-    # per-call behavior placed all 4).
+def test_run_incremental_per_run_cap_skips_only_oversized_roots(
+        tmp_path, make_pdf, monkeypatch):
+    # The cap is per run, not per place_files call, and it degrades
+    # gracefully: two roots with two copies each exceed a cap of 3, so the
+    # largest (stem order breaks the tie) is skipped and reported while the
+    # other is still placed.
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -491,15 +494,24 @@ def test_run_incremental_per_run_cap_refuses_many_roots(tmp_path, make_pdf,
     ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
 
     assert ctx["placement_refused"] is True
-    assert not out.exists() or not any(out.rglob("*.pdf"))
+    assert ctx["skipped_roots"] == [("F10126106", 2)]
+    # The kept root landed in the tree; the skipped one never did.
+    assert (out / "F10126109 Parent two" / "F10126109.pdf").is_file()
+    assert (out / "F10126109 Parent two" / "F10126110 Second child"
+            / "F10126110.pdf").is_file()
+    assert not list(out.rglob("F10126106*.pdf"))
     text = "\n".join(logged)
-    assert "placement refused" in text
+    assert "placement refused for 1 oversized root(s), placing 1 of 2" in text
+    assert "skipped oversized root F10126106 (2 copies planned)" in text
+    assert "Roots skipped (oversized): 1" in text
 
 
 def test_run_incremental_refused_before_supersede_swaps(tmp_path, make_pdf,
-                                                        monkeypatch):
+                                                         monkeypatch):
     # The cap is checked before _incremental_supersede: a refused batch must
-    # not have swapped revisions or moved folders already.
+    # not have swapped revisions or moved folders already. The refusal is
+    # partial now (the kept root is still placed), but swaps stay skipped
+    # while anything is over cap.
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -520,19 +532,25 @@ def test_run_incremental_refused_before_supersede_swaps(tmp_path, make_pdf,
     ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
 
     assert ctx["placement_refused"] is True
-    # No swap, no archive, no new folders: the tree is exactly as before.
+    assert ctx["skipped_roots"] == [("F10126109", 2)]
+    # No swap, no archive: the old organized copy stands. Bounded orphan
+    # parking still runs under a partial refusal, so the superseding
+    # revision waits in _orphans/ for a later run to swap it in.
     assert (organized_dir / "F10126106.pdf").is_file()
-    assert not list(out.rglob("F10126106_A.pdf"))
+    assert (out / "_orphans" / "F10126106_A.pdf").is_file()
     assert not (out / "_superseded").exists()
+    # The dropped root never landed, but the kept one still placed.
     assert not (out / "F10126109 Parent one").exists()
+    assert (out / "F10126111 Parent two" / "F10126111.pdf").is_file()
     assert "supersede skipped" in "\n".join(logged)
 
 
 def test_run_incremental_refused_dry_run_skips_orphan_retirement(tmp_path,
                                                                  make_pdf,
                                                                  monkeypatch):
-    # A refused placement must not log orphan retirement for an adoption that
-    # never happened (dry-run planned set is suppressed when refused).
+    # A skipped adopter must not log orphan retirement for an adoption that
+    # never happened (the dry-run planned set excludes skipped roots). Here
+    # the adopter loses the cap tie-break, so the parked copy stays put.
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -552,6 +570,108 @@ def test_run_incremental_refused_dry_run_skips_orphan_retirement(tmp_path,
     assert ctx["placement_refused"] is True
     assert "[DRY-RUN] retire orphan copy" not in "\n".join(logged)
     assert (orphans_dir / "F10126108.pdf").is_file()
+
+
+def test_run_full_cap_skips_only_oversized_roots(tmp_path, make_pdf,
+                                                   monkeypatch):
+    # Full mode degrades the same way: the over-cap root is skipped and
+    # reported while the rest of the tree is still built.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    ctx = run_full(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["skipped_roots"] == [("F10126106", 2)]
+    text = "\n".join(logged)
+    assert "placement refused for 1 oversized root(s), placing 1 of 2" in text
+    assert "Roots skipped (oversized): 1" in text
+
+
+def test_run_incremental_partial_dry_run_credits_kept_placements(
+        tmp_path, make_pdf, monkeypatch):
+    # Partial refusal still reports adoptions under kept roots: the adopter
+    # wins the cap tie-break here, so its orphan adoption is planned.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    make_pdf(orphans_dir / "F10126108.pdf", ["NAME", "Parked part"])
+    make_pdf(in_dir / "F10126113.pdf", [
+        "FERMI PART LIST", "F10126108 PARKED PART", "NAME", "Adopter"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 CHILD PART", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["skipped_roots"] == [("F10126109", 2)]
+    assert "[DRY-RUN] retire orphan copy" in "\n".join(logged)
+    assert (orphans_dir / "F10126108.pdf").is_file()
+
+
+def test_run_incremental_full_refusal_places_and_parks_nothing(
+        tmp_path, make_pdf, monkeypatch):
+    # Cap below every root's count: all placeable roots drop, so nothing is
+    # placed and standalone roots are not even parked - the old full-refusal
+    # shape is preserved (only bounded archive copies may run).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 1)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["skipped_roots"] == [("F10126106", 2)]
+    assert ctx["roots"] == []
+    assert ctx["counters"]["roots"] == 0
+    assert not any(out.rglob("*.pdf"))
+    text = "\n".join(logged)
+    assert "placing 0 of 1" in text
+    assert "New graph roots:      0" in text
+
+
+def test_run_incremental_precheck_ignores_phantom_cycle_fanout(
+        tmp_path, make_pdf, monkeypatch):
+    # A two-cycle explodes the unbroken path count past any small cap, but
+    # the pre-check fits the cycle-broken graph (like placement does), so a
+    # healthy cyclic pair is placed instead of refused. The break is logged
+    # once, by the merged-graph pass - the silent pre-break adds no lines.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Cyclic parent"])
+    make_pdf(in_dir / "F10126107.pdf", [
+        "FERMI PART LIST", "F10126106 PARENT PART", "NAME", "Cyclic child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    ctx = run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    assert ctx["skipped_roots"] == []
+    assert ctx["counters"]["cycles"] == 1
+    text = "\n".join(logged)
+    assert text.count("CYCLE BREAK") == 1
+    assert "supersede skipped" not in text
 
 
 def test_run_incremental_no_new_pdfs_returns_ctx(tmp_path, make_pdf):

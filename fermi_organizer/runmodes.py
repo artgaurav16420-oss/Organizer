@@ -20,8 +20,8 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans, sweep_supersede_staging,
                     sweep_stale_claims, resolve_archive_target, folder_foreign_pdfs,
-                    ensure_placement_allowed, PlacementRefusedError,
-                    acquire_run_lock, release_run_lock, abandon_run_lock,
+                     fit_roots_within_cap,
+                     acquire_run_lock, release_run_lock, abandon_run_lock,
                     LockLostError, _ensure_lock,
                     _native, _exists, _islink)
 
@@ -49,6 +49,7 @@ class RunContext(TypedDict):
     watermarks: list[tuple[str, str]]
     names: dict[str, str]
     placement_refused: bool
+    skipped_roots: list[tuple[str, int]]
 
 
 class NoPDFsFoundError(RuntimeError):
@@ -955,23 +956,23 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
                 names_of, output, dry_run, log, rekeyed, lock=None):
     """Folder creation + orphan/superseded/duplicate copies.
 
-    Returns (copies, placement_refused): a refused fan-out (the warning is
-    already logged by place_files) skips folder placement, while the bounded
-    orphan/archive copies still run so the run still reports."""
+    Returns (copies, placement_refused, skipped_roots): an over-cap fan-out
+    drops the largest roots (logged with their planned counts) and still
+    places the rest; only when nothing fits is folder placement skipped
+    entirely. The bounded orphan/archive copies always run so the run still
+    reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
-    refused = False
+    # Cap check first: a pathological DAG must be trimmed before
+    # build_folder_names enumerates its root-to-leaf paths.
+    kept, skipped = fit_roots_within_cap(children, roots, log)
+    refused = bool(skipped)
     total_copies = 0
-    try:
-        # Cap check first: a pathological DAG must be refused before
-        # build_folder_names enumerates its root-to-leaf paths.
-        ensure_placement_allowed(children, roots, log)
-        folder_names = build_folder_names(children, roots, index, names_of, output, log)
-        total_copies = place_files(children, roots, index, output, dry_run,
+    if kept:
+        folder_names = build_folder_names(children, kept, index, names_of, output, log)
+        total_copies = place_files(children, kept, index, output, dry_run,
                                    log, names_of, folder_names, renames=renames,
                                    lock=lock)
-    except PlacementRefusedError:
-        refused = True
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).
@@ -985,23 +986,26 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
     log("")
-    return total_copies, refused
+    return total_copies, refused, skipped
 
 
 def _full_finalize(roots, children, index, orphans, removed, total_copies,
-                   warning_count, unmatched, chk_stems, used_on_of, used_mism,
-                   used_on_bugs, tb_mismatches, watermarks, names_of,
-                   bom_names, log, refused=False) -> RunContext:
+                    warning_count, unmatched, chk_stems, used_on_of, used_mism,
+                    used_on_bugs, tb_mismatches, watermarks, names_of,
+                    bom_names, log, refused=False, skipped=()) -> RunContext:
     """Unplaced log + summary + structured RunContext for the workbook."""
     _log_unplaced(roots, children, index, orphans, log)
-    _log_summary([
+    summary = [
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",
         f"  Root assemblies:     {len(roots)}",
         f"  BOM edges kept:      {sum(len(v) for v in children.values())}",
         f"  Cycles broken:       {len(removed)}",
         f"  PDF copies written:  {total_copies}",
-    ], log)
+    ]
+    if skipped:
+        summary.append(f"  Roots skipped (oversized): {len(skipped)}")
+    _log_summary(summary, log)
     return {
         "counters": {
             "scanned": len(index),
@@ -1021,6 +1025,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
         "watermarks": sorted(watermarks.items()),
         "names": _ctx_names(names_of, unmatched, bom_names),
         "placement_refused": refused,
+        "skipped_roots": list(skipped),
     }
 
 
@@ -1084,15 +1089,15 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
     _ensure_lock(lock, log)
-    total_copies, refused = _full_place(children, roots, orphans, old,
-                                        watermarked_dupes, index, names_of,
-                                        output, dry_run, log, rekeyed,
-                                        lock=lock)
+    total_copies, refused, skipped = _full_place(children, roots, orphans, old,
+                                                 watermarked_dupes, index, names_of,
+                                                 output, dry_run, log, rekeyed,
+                                                 lock=lock)
     return _full_finalize(roots, children, index, orphans, removed,
                           total_copies, warning_count, unmatched, chk_stems,
                           used_on_of, used_mism, used_on_bugs, tb_mismatches,
                           watermarks, names_of, bom_names, log,
-                          refused=refused)
+                          refused=refused, skipped=skipped)
 
 
 def _incremental_prepare(folder, output, dry_run, log):
@@ -1171,6 +1176,7 @@ def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
         "watermarks": [],
         "names": {},
         "placement_refused": False,
+        "skipped_roots": [],
     }
 
 
@@ -1358,32 +1364,34 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        log, rekeyed, total_copies, total_moves, lock=None):
     """Placement decisions for new roots.
 
-    Returns (new_roots, copies, moves, placement_refused). The per-run
-    fan-out check runs before any placement, so a refusal cannot leave a
-    partial tree; BOM-less standalone roots are still parked (bounded by the
-    root count, not by the graph fan-out), matching full mode."""
+    Returns (new_roots, copies, moves, placement_refused, skipped_roots). The
+    per-run fan-out check trims oversized roots before any placement, so a
+    partial refusal still places the rest; skipped roots are reported, never
+    placed. BOM-less standalone roots are still parked (bounded by the root
+    count, not by the graph fan-out), matching full mode - except on a full
+    refusal, which places and parks nothing, as before."""
     new_roots = sorted(s for s in new_stems if not new_parents.get(s))
     log("--- Placement decisions ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
-    refused = False
     # Parked roots (no BOM, no children, no organized relation) never reach
     # place_files, so they must not be charged against the cap.
     placeable = [R for R in new_roots
                  if _incremental_placeable(R, new_boms, new_children,
                                            org_parents_of, org_children_of)]
-    try:
-        ensure_placement_allowed(new_children, placeable, log)
-    except PlacementRefusedError:
-        refused = True
+    kept, skipped = fit_roots_within_cap(new_children, placeable, log)
+    refused = bool(skipped)
+    skipped_set = {r for r, _ in skipped}
+    if refused and not kept:
+        # Full refusal, as before: nothing is placed and nothing is parked
+        # (bounded archive copies already ran in prepare).
+        log("")
+        return [], total_copies, total_moves, refused, skipped
     standalone_orphans = []
     for R in new_roots:
-        if refused:
-            if not (new_boms.get(R) or new_children.get(R)):
-                if R in stored_orphans:
-                    log(f"  {R}: standalone part (no BOM) - already parked in _orphans/")
-                else:
-                    log(f"  {R}: standalone part (no BOM) - storing in _orphans/")
-                    standalone_orphans.append(R)
+        if R in skipped_set:
+            # Oversized root: reported by fit_roots_within_cap above, never
+            # placed (its shared children still land under their other
+            # parents).
             continue
         org_par = sorted(org_parents_of.get(R, ()))
         org_child = sorted(org_children_of.get(R, ()))
@@ -1419,7 +1427,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
         total_copies += copy_orphans(standalone_orphans, new_index, output, dry_run, log,
                                      renames=renames)
     log("")
-    return new_roots, total_copies, total_moves, refused
+    return new_roots, total_copies, total_moves, refused, skipped
 
 
 def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
@@ -1428,7 +1436,8 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           chk_stems, new_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
                           bom_names, superseded=(), planned=(),
-                          scan_res=None, refused=False) -> RunContext:
+                          scan_res=None, refused=False,
+                          skipped=()) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
     # exists live in the tree (adopted into an earlier or this run's placement)
@@ -1440,7 +1449,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                                superseded=superseded, planned=planned,
                                scan_res=scan_res)
     log("")
-    _log_summary([
+    summary = [
         "--- Summary ---",
         f"  New PDFs scanned:     {scanned_new}",
         f"  Already organized:    {len(organized)}",
@@ -1449,7 +1458,10 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         f"  Cycles broken:        {len(removed)}",
         f"  PDF copies written:   {total_copies}",
         f"  Root folders moved:   {total_moves}",
-    ], log)
+    ]
+    if skipped:
+        summary.append(f"  Roots skipped (oversized): {len(skipped)}")
+    _log_summary(summary, log)
     return {
         "counters": {
             "scanned": scanned_new,
@@ -1469,6 +1481,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "watermarks": sorted(watermarks.items()),
         "names": _ctx_names(new_names, unmatched, bom_names),
         "placement_refused": refused,
+        "skipped_roots": list(skipped),
     }
 
 
@@ -1553,8 +1566,9 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                                            all_stems, log)
 
     # Cap check BEFORE any supersede swaps/moves: a refused run must not
-    # mutate the tree. Uses the pre-merge new graph plus organized-parent
-    # relations (invariant for roots) and excludes roots that would be parked;
+    # mutate the tree. Uses the pre-merge new graph (cycle-broken, like the
+    # placement graphs below) plus organized-parent relations (invariant for
+    # roots) and excludes roots that would be parked;
     # `_incremental_place` re-checks its exact placement set as a backstop.
     # The lock is re-checked first: swaps/moves/placements are the run's
     # heaviest mutations and must not start under a stolen lock.
@@ -1562,20 +1576,28 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     pre_children, pre_parents = _graph_edges(new_boms, new_stems)
     _, pre_org_par = _graph_edges(org_boms, new_stems)
     pre_org_ch, _ = _graph_edges(new_boms, org_stems)
+    # Break new-graph cycles before the cap fit: placement below runs on
+    # cycle-broken graphs too, so an unbroken plan would fail closed on
+    # phantom fan-out (a few breaks can collapse tens of thousands of cyclic
+    # paths back under the cap). Silent here; _incremental_graph logs the
+    # same breaks on the merged graph later.
+    break_cycles(pre_children, pre_parents, lambda msg: None)
     pre_placeable = [r for r in sorted(s for s in new_stems
-                                       if not pre_parents.get(s))
-                     if _incremental_placeable(r, new_boms, pre_children,
-                                               pre_org_par, pre_org_ch)]
-    refused = False
-    try:
-        ensure_placement_allowed(pre_children, pre_placeable, log)
-    except PlacementRefusedError:
-        refused = True
+                                        if not pre_parents.get(s))
+                      if _incremental_placeable(r, new_boms, pre_children,
+                                                pre_org_par, pre_org_ch)]
+    # Silent fit: the pre-check only gates the supersede swaps below. The
+    # backstop in _incremental_place logs authoritatively, on the final
+    # graph.
+    _pre_kept, _pre_dropped = fit_roots_within_cap(pre_children,
+                                                   pre_placeable,
+                                                   lambda msg: None)
+    refused = bool(_pre_dropped)
 
     swapped_old: list = []
     if refused:
         moved_dirs, total_moves = {}, 0
-        log("  supersede skipped: placement refused (no tree changes)")
+        log("  supersede skipped: placement refused (no swaps/moves while over cap)")
     else:
         moved_dirs, total_moves, total_copies, all_stems, swapped_old = \
             _incremental_supersede(supersede_pairs, organized, org_boms,
@@ -1588,32 +1610,39 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             new_boms, org_boms, new_used_on, org_used_on, new_names,
             all_stems, new_stems, org_stems, log)
 
-    if refused:
-        new_roots = []
-    else:
-        new_roots, total_copies, total_moves, refused = _incremental_place(
-            new_stems, new_parents, org_parents_of, org_children_of, new_children,
-            new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
-            output, dry_run, log, rekeyed, total_copies, total_moves,
-            lock=lock)
+    # Placement always runs through the backstop fit below (authoritative,
+    # on the post-supersede graph): a full refusal drops everything there and
+    # places nothing, exactly as before.
+    (new_roots, total_copies, total_moves, place_refused,
+     skipped) = _incremental_place(
+        new_stems, new_parents, org_parents_of, org_children_of, new_children,
+        new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
+        output, dry_run, log, rekeyed, total_copies, total_moves,
+        lock=lock)
+    # A pre-check drop stays refused even when the backstop drops nothing
+    # further (cycle breaking can only shrink the plan between the two).
+    refused = refused or place_refused
     # Planned tree stems for orphan retirement: in dry-run the placements
     # above logged but copied nothing, so a stored orphan adopted by this
     # run's placement is not yet live on disk. BOM-less standalone roots stay
-    # parked in _orphans/ (never placed) and are excluded. A refused run must
-    # not advertise retirements for placements that never happened.
+    # parked in _orphans/ (never placed) and are excluded, as are oversized
+    # roots skipped above. A fully refused run must not advertise retirements
+    # for placements that never happened.
+    skipped_stems = {r for r, _ in skipped}
     planned = set()
-    if not refused:
-        for _r in new_roots:
-            if not _incremental_placeable(_r, new_boms, new_children,
-                                          org_parents_of, org_children_of):
+    for _r in new_roots:
+        if _r in skipped_stems:
+            continue
+        if not _incremental_placeable(_r, new_boms, new_children,
+                                      org_parents_of, org_children_of):
+            continue
+        _stack = [_r]
+        while _stack:
+            _s = _stack.pop()
+            if _s in planned:
                 continue
-            _stack = [_r]
-            while _stack:
-                _s = _stack.pop()
-                if _s in planned:
-                    continue
-                planned.add(_s)
-                _stack.extend(new_children.get(_s, ()))
+            planned.add(_s)
+            _stack.extend(new_children.get(_s, ()))
     reused_scan_res = scan_res if (dry_run or (total_copies == 0 and total_moves == 0)) else None
     # Finalize retires adopted orphans (deletes), so the lock is re-checked.
     _ensure_lock(lock, log)
@@ -1627,4 +1656,4 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                  superseded=archived_new | set(swapped_old),
                                  planned=planned,
                                  scan_res=reused_scan_res,
-                                 refused=refused)
+                                 refused=refused, skipped=skipped)

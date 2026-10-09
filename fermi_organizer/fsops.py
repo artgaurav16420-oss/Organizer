@@ -246,6 +246,41 @@ def ensure_placement_allowed(children, roots, log):
         log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
 
 
+def fit_roots_within_cap(children, roots, log):
+    """Drop the largest roots until the planned fan-out fits MAX_PLANNED_COPIES.
+
+    Returns (kept, skipped): kept preserves the input root order; skipped is
+    [(root, planned_copies)] largest-first (stem order breaks ties, so repeat
+    runs agree). Never raises: when nothing fits, kept is empty and the caller
+    treats it like a full refusal. A single shared _copy_counter memoizes
+    across roots, so the per-root breakdown costs one traversal, not one per
+    root. Dropped roots are reported, never placed: their shared children are
+    still placed under their other parents.
+    """
+    count = _copy_counter(children)
+    counts = {r: count(r) for r in roots}
+    planned = sum(counts.values())
+    if planned <= MAX_PLANNED_COPIES:
+        return list(roots), []
+    skipped = []
+    remaining = planned
+    for r in sorted(roots, key=lambda s: (-counts[s], s)):
+        if remaining <= MAX_PLANNED_COPIES:
+            break
+        skipped.append((r, counts[r]))
+        remaining -= counts[r]
+    dropped = {r for r, _ in skipped}
+    kept = [r for r in roots if r not in dropped]
+    log(f"  WARNING: {planned} copies planned exceeds the "
+        f"{MAX_PLANNED_COPIES}-copy cap - placement refused for "
+        f"{len(skipped)} oversized root(s), placing {len(kept)} of "
+        f"{len(roots)}")
+    for r, c in skipped:
+        log(f"  skipped oversized root {r} ({c} copies planned): not placed - "
+            "shared children are still placed under their other parents")
+    return kept, skipped
+
+
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
                 lock=None):
     """Copy every root's subtree into nested folders; returns the copy count.

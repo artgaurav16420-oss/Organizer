@@ -395,6 +395,26 @@ def test_dashboard_placement_refused_row(tmp_path):
     assert not any("All clear" in v for v in vals)
 
 
+def test_refresh_from_run_forwards_placement_refused(tmp_path):
+    # The CLI path reaches the Dashboard through refresh_from_run: a refused
+    # run must light the action row (previously the flag was dropped here,
+    # so the row always read 0 after real runs).
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    xlsx = fx.refresh_from_run(
+        output=str(out), run_mode="DRY-RUN", run_time="2026-10-08T12:00:00",
+        counters={"scanned": 1, "roots": 1, "copies": 0, "cycles": 0,
+                  "warnings": 0},
+        missing=[], chk=[], orphans=[], report_txt=None,
+        placement_refused=True)
+
+    vals = [str(c.value) for row in load_workbook(xlsx)["Dashboard"].iter_rows()
+            for c in row if c.value is not None]
+    assert "Placement refused" in vals
+    assert any("Action needed" in v for v in vals)
+
+
 def test_no_formula_cells_anywhere_including_used_on_bugs(tmp_path):
     # Fuzz-style: a "=" payload in the USED ON BUGS section (written outside
     # _table) must never be persisted as an Excel formula, and no other sheet

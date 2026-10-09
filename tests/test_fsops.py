@@ -730,6 +730,80 @@ def test_place_files_cap_counts_shared_subtree_at_true_depth(tmp_path,
     assert "placement refused" in "\n".join(logged)
 
 
+def test_fit_roots_within_cap_keeps_all_when_under_cap(monkeypatch):
+    # Nothing over the cap: roots pass through untouched and nothing is
+    # logged (the common path must stay silent).
+    children = {"F10126106": ["F10126107"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 2)
+    logged = []
+
+    kept, skipped = fsops.fit_roots_within_cap(children, ["F10126106"],
+                                               logged.append)
+
+    assert kept == ["F10126106"]
+    assert skipped == []
+    assert logged == []
+
+
+def test_fit_roots_within_cap_drops_only_the_giant(monkeypatch):
+    # A diamond root (shared grandchild copied twice = 5) plus two
+    # singletons: cap 5 drops only the giant, preserving input order.
+    children = {"F10126106": ["F10126107", "F10126108"],
+                "F10126107": ["F10126109"],
+                "F10126108": ["F10126109"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 5)
+    logged = []
+
+    kept, skipped = fsops.fit_roots_within_cap(
+        children, ["F10126110", "F10126106", "F10126111"], logged.append)
+
+    assert kept == ["F10126110", "F10126111"]
+    assert skipped == [("F10126106", 5)]
+    text = "\n".join(logged)
+    assert "placement refused for 1 oversized root(s), placing 2 of 3" in text
+    assert "skipped oversized root F10126106 (5 copies planned)" in text
+
+
+def test_fit_roots_within_cap_drops_largest_first_with_stem_tiebreak(
+        monkeypatch):
+    # Three identical 2-copy roots against a cap of 3: the two smallest
+    # stems drop (tie-break), the last one fits.
+    children = {"F10126106": ["F10126107"],
+                "F10126108": ["F10126109"],
+                "F10126110": ["F10126111"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    kept, skipped = fsops.fit_roots_within_cap(
+        children, ["F10126110", "F10126106", "F10126108"], logged.append)
+
+    assert kept == ["F10126110"]
+    assert skipped == [("F10126106", 2), ("F10126108", 2)]
+
+
+def test_fit_roots_within_cap_boundary_and_empty(monkeypatch):
+    # Exactly at the cap still places (the check is '>'); an empty root list
+    # and a lone over-cap root are handled without raising.
+    children = {"F10126106": ["F10126107", "F10126108"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 3)
+
+    kept, skipped = fsops.fit_roots_within_cap(children, ["F10126106"],
+                                               lambda msg: None)
+    assert (kept, skipped) == (["F10126106"], [])
+
+    kept, skipped = fsops.fit_roots_within_cap(children, [],
+                                               lambda msg: None)
+    assert (kept, skipped) == ([], [])
+
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 2)
+    logged = []
+    kept, skipped = fsops.fit_roots_within_cap(children, ["F10126106"],
+                                               logged.append)
+    assert kept == []
+    assert skipped == [("F10126106", 3)]
+    assert "placing 0 of 1" in "\n".join(logged)
+
+
 def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     src = tmp_path / "in"
     src.mkdir()
