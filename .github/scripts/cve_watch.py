@@ -32,6 +32,10 @@ def _gh(*args):
                           check=False)
 
 
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
 def _open_watch_titles():
     res = _gh("issue", "list", "--label", LABEL, "--state", "open",
               "--json", "title")
@@ -54,10 +58,6 @@ def _track(title, body):
               f"{(res.stderr or '').strip()[:200]}")
         sys.exit(1)
     print(f"tracking issue created: {title}")
-
-
-def _ver_tuple(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
 def check_pymupdf(open_titles):

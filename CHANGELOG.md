@@ -7,22 +7,24 @@ All notable changes to the Fermi PDF organizer are recorded here.
 ### Concurrency & process safety
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
-  racing the sweep/supersede machinery. Locks older than 24 h are stolen with
-  a warning; anything younger fails closed with a recovery pointer. Steals
-  retry the create and re-read, so a double-starter race ends with exactly
-  one holder (the loser sees the fresh lock and refuses). The CLI holds the
-  lock through report + workbook writes (`hold_lock`), closing the post-run
-  shared-file window; a failed lock write cleans up instead of leaking a
-  refusing file.
+  racing the sweep/supersede machinery. Locks older than 2 h are stolen with
+  a warning; anything younger fails closed with a recovery pointer. A steal
+  claims the file aside with an atomic rename and deletes the staged copy
+  only if it still matches, so a double-starter race ends with exactly one
+  holder; a heartbeat refreshes a held lock so long runs never look
+  stealable. The CLI holds the lock through report + workbook writes
+  (`hold_lock`), closing the post-run shared-file window; a failed lock
+  write cleans up instead of leaking a refusing file.
 - Tesseract environment is scoped: our CLI children get an explicit env
   (`TESSDATA_PREFIX` only); the process-global export remains solely for
   PyMuPDF's in-process OCR, which offers no env parameter (documented in
   `OCR._export_for_pymupdf`).
 
 ### CI & coverage
-- Weekly `cve-watch` workflow compares the PyMuPDF pin against PyPI latest
-  and opens a tracking issue on change (the CVE-2026-82035 standing action,
-  automated).
+- Weekly `cve-watch` workflow compares the PyMuPDF pin and the Tesseract
+  floor against upstream releases and opens a tracking issue on change
+  (the CVE standing actions, automated; label dedupe, abort on `gh`
+  failure, serialized runs).
 - Coverage ratchet raised 80 -> 83 (measured ~84%).
 
 ### Concurrency hardening (post-merge review)

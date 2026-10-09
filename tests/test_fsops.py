@@ -91,6 +91,25 @@ def test_run_lock_missing_output_dir_skips_silently(tmp_path):
     assert not (tmp_path / "nope").exists()
 
 
+def test_run_lock_heartbeat_refreshes_while_held(tmp_path, monkeypatch):
+    # A live holder re-touches its lock so a long run never looks stealable;
+    # release stops the heartbeat.
+    import time
+
+    monkeypatch.setattr(fsops, "RUN_LOCK_HEARTBEAT_SECS", 0.05)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    lock = acquire_run_lock(out, False, lambda m: None)
+    first = os.path.getmtime(lock)
+    time.sleep(0.25)
+    assert os.path.getmtime(lock) > first
+    assert str(lock) in fsops._heartbeats
+    release_run_lock(lock)
+    assert str(lock) not in fsops._heartbeats
+    assert not lock.exists()
+
+
 def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
     # Review finding: a failed lock write must not leak the O_EXCL-created
     # file (no lock path exists to clean it up) and refuse later runs.
