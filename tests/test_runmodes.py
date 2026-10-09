@@ -11,6 +11,28 @@ from fermi_organizer import extraction, fsops
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
+from fermi_organizer.fsops import RunLockedError, release_run_lock
+
+
+def test_run_full_hold_lock_spans_caller_post_work(tmp_path, make_pdf):
+    # FIX-203: with hold_lock the run returns (ctx, lock) and keeps the tree
+    # locked past return, so the caller's report/workbook writes cannot
+    # interleave with a second run; default behavior is unchanged.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", ["NAME", "Part"])
+    out = tmp_path / "out"
+    out.mkdir()
+
+    ctx, lock = run_full(in_dir, out, True, lambda m: None, jobs=1,
+                         hold_lock=True)
+
+    assert isinstance(ctx, dict) and lock is not None and lock.is_file()
+    with pytest.raises(RunLockedError):
+        run_full(in_dir, out, True, lambda m: None, jobs=1)
+    release_run_lock(lock)
+    ctx2 = run_full(in_dir, out, True, lambda m: None, jobs=1)
+    assert isinstance(ctx2, dict)
 
 
 def _write_parent(make_pdf, folder, name="Test Parent"):

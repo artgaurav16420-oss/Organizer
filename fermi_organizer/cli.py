@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .extraction import (OCR, resolve_jobs)
 from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
-from .fsops import RunLockedError
+from .fsops import RunLockedError, release_run_lock
 from .report_glue import names_from_tree
 
 
@@ -130,40 +130,47 @@ def main():
 
     try:
         if args.incremental:
-            ctx = run_incremental(folder, output, args.dry_run, log, jobs,
-                                  rekey=args.rekey_titleblock)
+            ctx, held = run_incremental(folder, output, args.dry_run, log, jobs,
+                                        rekey=args.rekey_titleblock,
+                                        hold_lock=True)
         else:
-            ctx = run_full(folder, output, args.dry_run, log, jobs,
-                           rekey=args.rekey_titleblock)
+            ctx, held = run_full(folder, output, args.dry_run, log, jobs,
+                                 rekey=args.rekey_titleblock, hold_lock=True)
     except NoPDFsFoundError:
         sys.exit(1)
     except RunLockedError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
 
-    if ctx.get("placement_refused"):
-        log("  WARNING: placement refused - folder placement skipped (bounded "
-            "orphan/archive copies still ran); review the "
-            "BOM graph (report + workbook still written)")
+    try:
+        if ctx.get("placement_refused"):
+            log("  WARNING: placement refused - folder placement skipped (bounded "
+                "orphan/archive copies still ran); review the "
+                "BOM graph (report + workbook still written)")
 
-    if OCR.enabled and OCR.events:
-        log("")
-        log("--- OCR (scanned pages) ---")
-        for line in OCR.report_lines():
-            log(line)
+        if OCR.enabled and OCR.events:
+            log("")
+            log("--- OCR (scanned pages) ---")
+            for line in OCR.report_lines():
+                log(line)
 
-    if output.is_dir():
-        try:
-            report_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
-            log(f"  Report saved to:     {report_path}")
-        except OSError as e:
-            log(f"  WARNING: report not saved ({report_path}): {e}")
-    else:
-        log(f"  Report NOT saved (output folder missing): {output}")
+        if output.is_dir():
+            try:
+                report_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+                log(f"  Report saved to:     {report_path}")
+            except OSError as e:
+                log(f"  WARNING: report not saved ({report_path}): {e}")
+        else:
+            log(f"  Report NOT saved (output folder missing): {output}")
 
-    # Live Excel workbook (after every run, dry-run included)
-    _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
-                      args.incremental, log)
+        # Live Excel workbook (after every run, dry-run included)
+        _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
+                          args.incremental, log)
+    finally:
+        # The lock spans the shared-file post-work too: report + workbook are
+        # read-modify-write files, so a second run must not enter until they
+        # are done. run_* acquired it; only the CLI holder releases it here.
+        release_run_lock(held)
 
     # Refusal is a non-success outcome: distinct exit code so scripts notice
     # without reading the log. Report + workbook are already written above.

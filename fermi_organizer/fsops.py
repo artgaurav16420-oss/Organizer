@@ -358,7 +358,9 @@ def acquire_run_lock(output, dry_run, log):
     younger is honored unconditionally — PIDs cannot be checked reliably
     across hosts or platforms, so the lock fails closed with a recovery
     pointer instead of guessing. Creation uses O_EXCL so two starters cannot
-    both win. The file is a dotfile with JSON {pid, host, created}; scans
+    both win; a steal retries the create and re-reads, so the loser of a
+    double-steal race observes the winner's fresh lock and refuses instead of
+    deleting it. The file is a dotfile with JSON {pid, host, created}; scans
     only collect PDFs, so it is invisible to every tree walk.
     """
     # NOTE: dry_run is intentionally not exempted — a dry-run's sweep report
@@ -368,40 +370,54 @@ def acquire_run_lock(output, dry_run, log):
         # No tree yet (typical for a first dry-run): nothing to protect, and
         # dry-run must not create the folder — skip silently.
         return None
-    try:
-        fd = os.open(_native(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        pass  # held or stale - adjudicated below.
-    except OSError as e:
-        log(f"  WARNING: could not create run lock ({lock.name}): {e} - "
-            "continuing unlocked (do not run two processes against one output)")
-        return None
-    else:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"pid": os.getpid(),
-                                "host": socket.gethostname(),
-                                "created": time.time()}))
-        return lock
-    try:
-        age = time.time() - os.path.getmtime(_native(lock))
-    except OSError:
-        age = 0.0
-    if age > RUN_LOCK_STALE_SECS:
+    for _ in range(3):
+        try:
+            fd = os.open(_native(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            pass  # held or stale - adjudicated below.
+        except OSError as e:
+            log(f"  WARNING: could not create run lock ({lock.name}): {e} - "
+                "continuing unlocked (do not run two processes against one output)")
+            return None
+        else:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps({"pid": os.getpid(),
+                                        "host": socket.gethostname(),
+                                        "created": time.time()}))
+            except OSError as e:
+                # The O_EXCL-created file would otherwise linger (no lock path
+                # to clean up) and refuse later runs until stale: remove it
+                # and run unlocked like a creation failure.
+                try:
+                    os.unlink(_native(lock))
+                except OSError:
+                    pass
+                log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
+                    "continuing unlocked (do not run two processes against one output)")
+                return None
+            return lock
+        try:
+            age = time.time() - os.path.getmtime(_native(lock))
+        except OSError:
+            age = 0.0
+        if age <= RUN_LOCK_STALE_SECS:
+            raise RunLockedError(
+                f"output tree is locked ({lock.name} present); refusing a concurrent "
+                "run against one output - wait for it to finish, or delete the lock "
+                "file if no run is active")
         log(f"  WARNING: stealing stale run lock ({age / 3600:.1f} h old)")
         try:
             os.unlink(_native(lock))
-        except OSError as e:
-            raise RunLockedError(f"stale run lock cannot be removed: {e}") from e
-        return acquire_run_lock(output, dry_run, log)
-    raise RunLockedError(
-        f"output tree is locked ({lock.name} present); refusing a concurrent "
-        "run against one output - wait for it to finish, or delete the lock "
-        "file if no run is active")
+        except OSError:
+            pass  # lost the race (or it vanished): re-read on next attempt.
+    raise RunLockedError(f"could not acquire run lock ({lock.name}) after "
+                         "contended steals - wait for the other run to finish")
 
 
 def release_run_lock(lock):
-    """Remove our lock file; best-effort (a leftover only warns the next run,
-    which steals it after proving the holder dead)."""
+    """Remove our lock file; best-effort (a leftover only blocks the next run
+    until it goes stale, then it is stolen with a warning)."""
     if lock is None:
         return
     try:

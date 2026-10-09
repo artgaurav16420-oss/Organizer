@@ -8,7 +8,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
   racing the sweep/supersede machinery. Locks older than 24 h are stolen with
-  a warning; anything younger fails closed with a recovery pointer.
+  a warning; anything younger fails closed with a recovery pointer. Steals
+  retry the create and re-read, so a double-starter race ends with exactly
+  one holder (the loser sees the fresh lock and refuses). The CLI holds the
+  lock through report + workbook writes (`hold_lock`), closing the post-run
+  shared-file window; a failed lock write cleans up instead of leaking a
+  refusing file.
 - Tesseract environment is scoped: our CLI children get an explicit env
   (`TESSDATA_PREFIX` only); the process-global export remains solely for
   PyMuPDF's in-process OCR, which offers no env parameter (documented in

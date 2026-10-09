@@ -91,6 +91,28 @@ def test_run_lock_missing_output_dir_skips_silently(tmp_path):
     assert not (tmp_path / "nope").exists()
 
 
+def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
+    # Review finding: a failed lock write must not leak the O_EXCL-created
+    # file (no lock path exists to clean it up) and refuse later runs.
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fsops.json, "dumps", boom)
+    logged = []
+
+    assert acquire_run_lock(out, False, logged.append) is None
+    assert not (out / RUN_LOCK_NAME).exists()
+    assert any("could not write run lock" in m for m in logged)
+    # A later run is not refused by the leaked file.
+    monkeypatch.undo()
+    lock = acquire_run_lock(out, False, logged.append)
+    assert lock is not None
+    release_run_lock(lock)
+
+
 def test_is_system_dir_convention():
     # System directories start with '_'
     assert is_system_dir("_superseded")

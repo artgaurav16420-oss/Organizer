@@ -1017,12 +1017,16 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     }
 
 
-def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
+             *, hold_lock=False):
     """Full run: index all of `folder` and place the whole tree under `output`.
 
     Holds the exclusive output-tree lock for the whole run (refuses with
     RunLockedError when another live run holds it); see
-    fsops.acquire_run_lock. Returns the structured run context consumed by
+    fsops.acquire_run_lock. With hold_lock=True the lock is NOT released on
+    return: the caller receives (ctx, lock_path) and must release_run_lock it
+    once its own post-work (report + workbook writes) finishes, so a second
+    run cannot interleave those shared-file updates. Returns the structured run context consumed by
     the Excel workbook: counters {scanned, roots, copies, cycles, warnings},
     missing [(referencing stem, missing ref)], chk [stem], orphans [stem],
     roots [(stem, [used_on])], used_on_mismatches [(parent, child, actual)],
@@ -1033,9 +1037,14 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
     """
     lock = acquire_run_lock(output, dry_run, log)
     try:
-        return _run_full_inner(folder, output, dry_run, log, jobs, rekey)
-    finally:
+        ctx = _run_full_inner(folder, output, dry_run, log, jobs, rekey)
+    except BaseException:
         release_run_lock(lock)
+        raise
+    if hold_lock:
+        return ctx, lock
+    release_run_lock(lock)
+    return ctx
 
 
 def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
@@ -1443,11 +1452,13 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
     }
 
 
-def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
+                    *, hold_lock=False):
     """Incremental run: process only stems not already in the output tree plus stored orphans.
 
     Holds the exclusive output-tree lock like run_full (see
-    fsops.acquire_run_lock). The input scan is recursive; already-organized
+    fsops.acquire_run_lock); with hold_lock=True returns (ctx, lock_path) and
+    the caller must release_run_lock it after its post-work. The input scan is recursive; already-organized
     subfolders are never re-sorted (supersede swaps and parent-adoption moves
     still touch them).
 
@@ -1463,9 +1474,14 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     """
     lock = acquire_run_lock(output, dry_run, log)
     try:
-        return _run_incremental_inner(folder, output, dry_run, log, jobs, rekey)
-    finally:
+        ctx = _run_incremental_inner(folder, output, dry_run, log, jobs, rekey)
+    except BaseException:
         release_run_lock(lock)
+        raise
+    if hold_lock:
+        return ctx, lock
+    release_run_lock(lock)
+    return ctx
 
 
 def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:

@@ -624,3 +624,24 @@ def test_subprocess_env_scoped_not_global(monkeypatch, tmp_path):
     monkeypatch.setattr(extraction.OCR, "install_dir", str(tmp_path))
     extraction._tesseract_run(["tesseract", "x.png", "stdout"], 60)
     assert captured["env"]["TESSDATA_PREFIX"] == str(tmp_path / "tessdata")
+
+
+def test_export_for_pymupdf_switch_drops_stale_prefix(monkeypatch, tmp_path):
+    # FIX: switching installs mid-process must not leave the old dir first on
+    # PATH (later OCR would resolve the wrong tessdata through it).
+    import os
+
+    a = tmp_path / "A"
+    b = tmp_path / "B"
+    monkeypatch.setenv("PATH", "C:\\x")
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    ocr = extraction._OcrContext()
+
+    ocr._export_for_pymupdf(str(a))
+    ocr._export_for_pymupdf(str(a))
+    assert os.environ["PATH"].split(os.pathsep).count(str(a)) == 1
+
+    ocr._export_for_pymupdf(str(b))
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(a) not in parts and parts[0] == str(b)
+    assert os.environ["TESSDATA_PREFIX"] == str(b / "tessdata")

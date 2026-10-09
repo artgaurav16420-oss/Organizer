@@ -95,6 +95,7 @@ class _OcrContext:
         self.reason = None
         self.tesseract_path = None
         self.install_dir = None
+        self._exported_dir = None
         self.version = None
         self.events = {}
         self.page_memo = {}
@@ -127,6 +128,18 @@ class _OcrContext:
         idempotent: repeated detection/reset cycles must not grow PATH with
         the same directory again.
         """
+        exported = getattr(self, "_exported_dir", None)
+        if exported and exported != install_dir:
+            # Install switched mid-process (e.g. TESSERACT_EXE changed between
+            # runs): drop the stale prefix, or later OCR would resolve the
+            # old tessdata through the leftover PATH/TESSDATA_PREFIX.
+            parts = [p for p in os.environ.get("PATH", "").split(os.pathsep)
+                     if p != exported]
+            os.environ["PATH"] = os.pathsep.join(parts)
+            if os.environ.get("TESSDATA_PREFIX") == os.path.join(
+                    exported, "tessdata"):
+                del os.environ["TESSDATA_PREFIX"]
+        self._exported_dir = install_dir
         if install_dir not in os.environ.get("PATH", "").split(os.pathsep):
             os.environ["PATH"] = (install_dir + os.pathsep
                                   + os.environ.get("PATH", ""))

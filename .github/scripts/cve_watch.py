@@ -1,13 +1,15 @@
 """Weekly CVE-watch helper: compare the PyMuPDF pin against PyPI latest.
 
-Stdlib only (runs on a bare runner python). Exits 0 in all cases; prints
-`pinned=`/`latest=` lines for the log. Opens a GitHub issue (via `gh`,
-GH_TOKEN from the workflow) when a newer release exists and no open issue
-already tracks it, per the standing re-check action in THIRD_PARTY_NOTICES.md.
+Stdlib only (runs on a bare runner python). Prints `pinned=`/`latest=` lines
+for the log. Opens a GitHub issue (via `gh`, GH_TOKEN from the workflow) when
+a newer release exists and no open issue already tracks it, per the standing
+re-check action in THIRD_PARTY_NOTICES.md. A failed issue search aborts
+nonzero (loud red workflow) instead of risking duplicate tracking issues.
 """
 import json
 import re
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -30,10 +32,15 @@ def main():
         ["gh", "issue", "list", "--state", "open", "--search", title,
          "--json", "number"],
         capture_output=True, text=True, check=False)
+    if search.returncode != 0:
+        print(f"issue search failed ({search.returncode}): "
+              f"{(search.stderr or '').strip()[:200]}")
+        sys.exit(1)
     try:
         already = bool(json.loads(search.stdout or "[]"))
     except ValueError:
-        already = False
+        print("issue search returned invalid JSON; aborting")
+        sys.exit(1)
     if already:
         print("tracking issue already open; nothing to do")
         return
