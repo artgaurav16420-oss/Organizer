@@ -347,6 +347,17 @@ class RunLockedError(Exception):
     """Another run holds the output-tree lock; this run is refused."""
 
 
+class LockLostError(RunLockedError):
+    """This run's lock was stolen mid-run; the run must stop mutating.
+
+    Raised by runmodes._ensure_lock when the heartbeat observed foreign
+    content in our lock file (a paused run — sleep, SIGSTOP, VM pause — that
+    slept past the stale window and was stolen). Subclasses RunLockedError so
+    generic handlers still refuse, but the CLI catches it separately (exit 2)
+    since the tree may already hold this run's partial writes.
+    """
+
+
 RUN_LOCK_STALE_SECS = 2 * 3600
 # Heartbeat: a live holder re-touches its lock this often, so a run longer
 # than the stale window never looks stealable. Daemon thread, parent process
@@ -370,9 +381,15 @@ def acquire_run_lock(output, dry_run, log):
     then retries the create — so the loser of a double-steal race observes
     the winner's fresh lock and refuses instead of deleting it. Residual risk
     is a 3-party microsecond interleave (file locks cannot do better
-    portably; NFS ignores even fcntl). The file is a dotfile with JSON {pid, host, created}; scans
-    only collect PDFs, so it is invisible to every tree walk.
-    only collect PDFs, so it is invisible to every tree walk.
+    portably; NFS ignores even fcntl). A held lock is refreshed by a
+    heartbeat thread that verifies our own token before every touch: if the
+    file no longer holds our bytes (stolen while paused past the stale
+    window) the heartbeat stops without touching the stealer's file and flags
+    the loss — runmodes checks the flag before each mutating step and aborts
+    with LockLostError instead of writing into another run's tree. The file
+    is a dotfile with JSON {pid, host, created}; scans only collect PDFs, so
+    it is invisible to every tree walk. (On Windows dotfiles are not hidden —
+    Explorer shows it; harmless, leave it alone.)
     """
     # NOTE: dry_run is intentionally not exempted — a dry-run's sweep report
     # and workbook write must not interleave with a live run's staging either.
@@ -392,11 +409,19 @@ def acquire_run_lock(output, dry_run, log):
             return None
         else:
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps({"pid": os.getpid(),
-                                        "host": socket.gethostname(),
-                                        "created": time.time()}))
+                token = json.dumps({"pid": os.getpid(),
+                                    "host": socket.gethostname(),
+                                    "created": time.time()}).encode("utf-8")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(token)
             except OSError as e:
+                # fdopen may never have taken ownership (dumps failed first):
+                # close the raw fd or the cleanup unlink fails on Windows
+                # (double-close after a failed write is swallowed below).
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
                 # The O_EXCL-created file would otherwise linger (no lock path
                 # to clean up) and refuse later runs until stale: remove it
                 # and run unlocked like a creation failure.
@@ -407,7 +432,7 @@ def acquire_run_lock(output, dry_run, log):
                 log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
                     "continuing unlocked (do not run two processes against one output)")
                 return None
-            _heartbeat_start(lock)
+            _heartbeat_start(lock, token)
             return lock
         try:
             raw = lock.read_bytes()
@@ -475,20 +500,68 @@ def release_run_lock(lock):
         pass
 
 
-def _heartbeat_start(lock):
-    """Refresh the lock mtime periodically while we hold it."""
+def abandon_run_lock(lock):
+    """Stop the heartbeat without unlinking: the lock file is no longer ours.
+
+    Used on the LockLostError path (our lock was stolen mid-run) — unlinking
+    there would delete the stealer's live lock and hand the tree to a third
+    run. Never raises.
+    """
+    if lock is None:
+        return
+    _heartbeat_stop(lock)
+
+
+def run_lock_lost(lock):
+    """True when the heartbeat observed our lock replaced while held.
+
+    False for unlocked runs (None) and while our token still matches. Cheap
+    flag read — call before each mutating step (see runmodes._ensure_lock).
+    """
+    if lock is None:
+        return False
+    item = _heartbeats.get(str(lock))
+    return bool(item is not None and item[2].is_set())
+
+
+def _heartbeat_beat(lock, token):
+    """One ownership-checked refresh; True when still ours and re-touched.
+
+    Reads our token first and again after the touch: a steal racing the beat
+    can cost at most one stray refresh, then the loss is flagged and the
+    thread stops. Never raises (OSError means vanished/unreadable — assume
+    stolen and stop without touching anything).
+    """
+    try:
+        if lock.read_bytes() != token:
+            return False
+        os.utime(_native(lock), None)
+        if lock.read_bytes() != token:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _heartbeat_start(lock, token):
+    """Refresh the lock mtime periodically while we hold it.
+
+    `token` is the exact bytes written at creation; the beat re-touches the
+    file only while it still holds them (see _heartbeat_beat), so a lock
+    stolen while this process was paused is never refreshed for the stealer.
+    """
     stop = threading.Event()
+    lost = threading.Event()
 
     def beat():
         while not stop.wait(RUN_LOCK_HEARTBEAT_SECS):
-            try:
-                os.utime(_native(lock), None)
-            except OSError:
+            if not _heartbeat_beat(lock, token):
+                lost.set()
                 return
 
     t = threading.Thread(target=beat, daemon=True,
                          name="fermi-lock-heartbeat")
-    _heartbeats[str(lock)] = (stop, t)
+    _heartbeats[str(lock)] = (stop, t, lost)
     t.start()
 
 
@@ -496,7 +569,7 @@ def _heartbeat_stop(lock):
     """Stop the refresh thread; join briefly so release is ordered."""
     item = _heartbeats.pop(str(lock), None)
     if item is not None:
-        stop, t = item
+        stop, t, _lost = item
         stop.set()
         t.join(timeout=5)
 
@@ -561,6 +634,41 @@ def sweep_supersede_staging(output, dry_run, log):
                 log(f"  WARNING: could not remove leftover supersede staging {rel}: {e}")
                 continue
             log(f"  WARNING: removed leftover supersede staging from an interrupted run: {rel}")
+
+
+def sweep_stale_claims(output, dry_run, log):
+    """Remove leftover `<lock>.claim.<pid>` files older than the stale window.
+
+    A run killed between the steal-rename and the claim-unlink leaves its
+    staged claim behind (a dotfile next to the lock, invisible to scans like
+    the lock itself). Only the exact claim shape at the output root is swept,
+    and only when older than RUN_LOCK_STALE_SECS — a fresh claim may be a
+    concurrent stealer mid-protocol and is never touched. Dry-run reports
+    without touching the tree.
+    """
+    output = Path(output)
+    if not output.is_dir():
+        return
+    claim_re = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.\d+$")
+    now = time.time()
+    for p in sorted(output.glob(RUN_LOCK_NAME + ".claim.*")):
+        if not claim_re.fullmatch(p.name):
+            continue
+        try:
+            age = now - os.path.getmtime(_native(p))
+        except OSError:
+            continue
+        if age <= RUN_LOCK_STALE_SECS:
+            continue
+        if dry_run:
+            log(f"  [DRY-RUN] remove leftover lock claim: {p.name}")
+            continue
+        try:
+            p.unlink()
+        except OSError as e:
+            log(f"  WARNING: could not remove leftover lock claim {p.name}: {e}")
+            continue
+        log(f"  WARNING: removed leftover lock claim from an interrupted run: {p.name}")
 
 
 def find_organized_pdfs(folder, scan_res=None):

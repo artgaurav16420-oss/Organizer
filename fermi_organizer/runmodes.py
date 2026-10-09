@@ -19,9 +19,10 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans, sweep_supersede_staging,
-                    resolve_archive_target, folder_foreign_pdfs,
+                    sweep_stale_claims, resolve_archive_target, folder_foreign_pdfs,
                     ensure_placement_allowed, PlacementRefusedError,
-                    acquire_run_lock, release_run_lock,
+                    acquire_run_lock, release_run_lock, abandon_run_lock,
+                    run_lock_lost, LockLostError,
                     _native, _exists, _islink)
 
 
@@ -1017,6 +1018,22 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     }
 
 
+def _ensure_lock(lock, log):
+    """Abort when the heartbeat observed our lock stolen mid-run.
+
+    A run paused past the stale window (sleep, SIGSTOP, VM pause) may wake to
+    find another run holding the tree; writing on would interleave two live
+    writers. Raises LockLostError (the CLI exits 2 — the tree may already
+    hold this run's partial writes). No-op for unlocked runs (None).
+    """
+    if run_lock_lost(lock):
+        log("  ERROR: run lock lost mid-run (stolen while paused?) - "
+            "stopping before further tree changes")
+        raise LockLostError(
+            "run lock lost mid-run (stolen while paused?) - stopped before "
+            "further tree changes; inspect the output tree before rerunning")
+
+
 def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
              *, hold_lock=False):
     """Full run: index all of `folder` and place the whole tree under `output`.
@@ -1034,10 +1051,18 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
     titleblock_mismatches [(stem, field, filename value, title-block value)],
     scanned [(stem, [pages])], watermarks [(stem, evidence)],
     names {stem/ref: NAME}. Raises NoPDFsFoundError on an empty input.
+    Raises LockLostError (without unlinking the stealer's lock) when the
+    heartbeat observed our lock stolen mid-run.
     """
     lock = acquire_run_lock(output, dry_run, log)
     try:
-        ctx = _run_full_inner(folder, output, dry_run, log, jobs, rekey)
+        ctx = _run_full_inner(folder, output, dry_run, log, jobs, rekey,
+                              lock=lock)
+    except LockLostError:
+        # Our lock now belongs to the stealer: stop the heartbeat but never
+        # unlink (release would delete the live holder's lock).
+        abandon_run_lock(lock)
+        raise
     except BaseException:
         release_run_lock(lock)
         raise
@@ -1047,10 +1072,13 @@ def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
     return ctx
 
 
-def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
+                    lock=None) -> RunContext:
     """run_full body (see run_full); split out so the lock spans all returns."""
     jobs = resolve_jobs(jobs)
+    _ensure_lock(lock, log)
     sweep_supersede_staging(output, dry_run, log)
+    sweep_stale_claims(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, jobs, log)
     index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems, \
         warning_count = _full_scan_boms(index, jobs, log, rekey, chk_stems)
@@ -1065,6 +1093,7 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
 
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
+    _ensure_lock(lock, log)
     total_copies, refused = _full_place(children, roots, orphans, old,
                                         watermarked_dupes, index, names_of,
                                         output, dry_run, log, rekeyed)
@@ -1471,10 +1500,18 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
     scanned [(stem, [pages])], watermarks [(stem, evidence)],
     names {stem/ref: NAME}.
     Raises NoPDFsFoundError when the input has no indexable PDFs.
+    Raises LockLostError (without unlinking the stealer's lock) when the
+    heartbeat observed our lock stolen mid-run.
     """
     lock = acquire_run_lock(output, dry_run, log)
     try:
-        ctx = _run_incremental_inner(folder, output, dry_run, log, jobs, rekey)
+        ctx = _run_incremental_inner(folder, output, dry_run, log, jobs,
+                                     rekey, lock=lock)
+    except LockLostError:
+        # Our lock now belongs to the stealer: stop the heartbeat but never
+        # unlink (release would delete the live holder's lock).
+        abandon_run_lock(lock)
+        raise
     except BaseException:
         release_run_lock(lock)
         raise
@@ -1484,16 +1521,20 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
     return ctx
 
 
-def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) -> RunContext:
+def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
+                           lock=None) -> RunContext:
     """run_incremental body (see run_incremental); split out so the lock spans all returns."""
     jobs = resolve_jobs(jobs)
+    _ensure_lock(lock, log)
     sweep_supersede_staging(output, dry_run, log)
+    sweep_stale_claims(output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
         supersede_pairs, new_duplicates, total_copies, archived_new, scan_res = \
         _incremental_prepare(folder, output, dry_run, log)
 
     if not new_index:
         # No scan ran on this path, so there are no extraction warnings.
+        _ensure_lock(lock, log)
         return _incremental_no_new_ctx(organized, chk_stems, output,
                                        total_copies, 0, log,
                                        stored_orphans=stored_orphans,
@@ -1505,6 +1546,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) ->
         all_stems, chk_stems, warning_count = _incremental_scan_new_boms(
             new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
     # Archive the watermarked duplicates that lost the pre-scan resolution.
+    _ensure_lock(lock, log)
     if watermarked_dupes:
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
@@ -1523,6 +1565,9 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) ->
     # mutate the tree. Uses the pre-merge new graph plus organized-parent
     # relations (invariant for roots) and excludes roots that would be parked;
     # `_incremental_place` re-checks its exact placement set as a backstop.
+    # The lock is re-checked first: swaps/moves/placements are the run's
+    # heaviest mutations and must not start under a stolen lock.
+    _ensure_lock(lock, log)
     pre_children, pre_parents = _graph_edges(new_boms, new_stems)
     _, pre_org_par = _graph_edges(org_boms, new_stems)
     pre_org_ch, _ = _graph_edges(new_boms, org_stems)
@@ -1577,6 +1622,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False) ->
                 planned.add(_s)
                 _stack.extend(new_children.get(_s, ()))
     reused_scan_res = scan_res if (dry_run or (total_copies == 0 and total_moves == 0)) else None
+    # Finalize retires adopted orphans (deletes), so the lock is re-checked.
+    _ensure_lock(lock, log)
     return _incremental_finalize(stored_orphans, output, dry_run, log,
                                  scanned_new, organized, new_roots,
                                  new_children, removed, total_copies,

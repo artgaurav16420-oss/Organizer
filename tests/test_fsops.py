@@ -11,7 +11,9 @@ from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_supersede
                                    find_organized_pdfs, is_system_dir,
                                    place_files, retire_adopted_orphans,
                                    scan_output_tree, sweep_supersede_staging,
+                                   sweep_stale_claims,
                                    acquire_run_lock, release_run_lock,
+                                   abandon_run_lock, run_lock_lost,
                                    RunLockedError, RUN_LOCK_NAME)
 
 
@@ -130,6 +132,93 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     lock = acquire_run_lock(out, False, logged.append)
     assert lock is not None
     release_run_lock(lock)
+
+
+def test_heartbeat_beat_refreshes_only_own_token(tmp_path):
+    # Ownership-checked refresh: our token is re-touched; foreign content is
+    # never touched (a steal racing the beat must not get a fresh mtime).
+    import time
+
+    from fermi_organizer.fsops import _heartbeat_beat
+
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = acquire_run_lock(out, False, lambda m: None)
+    try:
+        token = lock.read_bytes()
+        old = time.time() - 100
+        os.utime(lock, (old, old))
+        assert _heartbeat_beat(lock, token) is True
+        assert os.path.getmtime(lock) > old
+        # Simulate a steal: foreign bytes with an old mtime.
+        lock.write_bytes(b'{"pid": 999999, "host": "stealer"}')
+        os.utime(lock, (old, old))
+        assert _heartbeat_beat(lock, token) is False
+        assert os.path.getmtime(lock) == old
+        # Vanished file: assume stolen, never touch.
+        lock.unlink()
+        assert _heartbeat_beat(lock, token) is False
+        assert not lock.exists()
+    finally:
+        abandon_run_lock(lock)
+    assert not run_lock_lost(lock)
+
+
+def test_heartbeat_flags_loss_on_steal(tmp_path, monkeypatch):
+    # End to end: replacing the lock content trips the flag on the next beat.
+    import time
+
+    monkeypatch.setattr(fsops, "RUN_LOCK_HEARTBEAT_SECS", 0.05)
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = acquire_run_lock(out, False, lambda m: None)
+    try:
+        assert run_lock_lost(lock) is False
+        assert run_lock_lost(None) is False
+        lock.write_bytes(b'{"pid": 999999, "host": "stealer"}')
+        deadline = time.time() + 5
+        while not run_lock_lost(lock) and time.time() < deadline:
+            time.sleep(0.05)
+        assert run_lock_lost(lock) is True
+    finally:
+        # Abandon, not release: the file is the stealer's now.
+        abandon_run_lock(lock)
+    assert lock.read_bytes() == b'{"pid": 999999, "host": "stealer"}'
+
+
+def test_sweep_stale_claims(tmp_path):
+    import time
+
+    from fermi_organizer.fsops import RUN_LOCK_STALE_SECS
+
+    out = tmp_path / "out"
+    out.mkdir()
+    old_claim = out / f"{RUN_LOCK_NAME}.claim.1234"
+    old_claim.write_text("stale", encoding="utf-8")
+    old = time.time() - RUN_LOCK_STALE_SECS - 60
+    os.utime(old_claim, (old, old))
+    fresh_claim = out / f"{RUN_LOCK_NAME}.claim.5678"
+    fresh_claim.write_text("live-steal?", encoding="utf-8")
+    decoy = out / f"{RUN_LOCK_NAME}.claim.abc"
+    decoy.write_text("not-a-claim", encoding="utf-8")
+
+    logged = []
+    sweep_stale_claims(out, False, logged.append)
+    assert not old_claim.exists()
+    assert fresh_claim.is_file()  # fresh: may be a live stealer, never touch
+    assert decoy.is_file()  # wrong shape: not ours
+    assert any("lock claim" in m for m in logged)
+
+    # Dry-run reports without touching.
+    old_claim.write_text("stale", encoding="utf-8")
+    os.utime(old_claim, (old, old))
+    logged = []
+    sweep_stale_claims(out, True, logged.append)
+    assert old_claim.is_file()
+    assert any("DRY-RUN" in m and "lock claim" in m for m in logged)
+
+    # Missing dir: silent no-op.
+    sweep_stale_claims(tmp_path / "nope", False, logged.append)
 
 
 def test_is_system_dir_convention():

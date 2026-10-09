@@ -9,7 +9,8 @@ from pathlib import Path
 
 from .extraction import (OCR, resolve_jobs)
 from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
-from .fsops import RunLockedError, release_run_lock
+from .fsops import (RunLockedError, LockLostError, release_run_lock,
+                    abandon_run_lock, run_lock_lost)
 from .report_glue import names_from_tree
 
 
@@ -127,7 +128,8 @@ def main():
     if os.name == "nt" and str(output).startswith("\\\\"):
         log("WARNING: output is on a network share (UNC path): the run lock "
             "is not reliable there - coordinate runs manually, never run two "
-            "against this output")
+            "against this output (mapped drive letters to a share are no "
+            "safer, they just cannot be detected - see Known limits)")
     log(f"Mode: {run_mode_label(args.dry_run, args.incremental)}")
     jobs = resolve_jobs(args.jobs)
     log(f"  Extraction workers: {jobs} (override with --jobs N)")
@@ -143,9 +145,23 @@ def main():
                                  rekey=args.rekey_titleblock, hold_lock=True)
     except NoPDFsFoundError:
         sys.exit(1)
+    except LockLostError as e:
+        # Stolen mid-run: the tree may hold partial writes, hence exit 2
+        # (same as placement-refused) rather than the clean-refusal exit 1.
+        print(f"ERROR: {e}")
+        sys.exit(2)
     except RunLockedError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
+
+    # The lock spans the shared-file post-work too — but re-verify it first:
+    # a steal during the run leaves the report/workbook writes to the other
+    # run. Discard post-work (never clobber) and exit 2 like a mid-run loss.
+    if run_lock_lost(held):
+        log("  ERROR: run lock lost during the run (stolen while paused?) - "
+            "discarding report/workbook writes to avoid clobbering the other run")
+        abandon_run_lock(held)
+        sys.exit(2)
 
     try:
         if ctx.get("placement_refused"):

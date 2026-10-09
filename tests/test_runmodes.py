@@ -9,9 +9,10 @@ from unittest.mock import patch
 
 from fermi_organizer import extraction, fsops
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
-                                      _swap_revision_files, _log_summary,
+                                      _ensure_lock, _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
-from fermi_organizer.fsops import RunLockedError, release_run_lock
+from fermi_organizer.fsops import (RunLockedError, LockLostError, release_run_lock,
+                                   abandon_run_lock, acquire_run_lock)
 
 
 def test_run_full_hold_lock_spans_caller_post_work(tmp_path, make_pdf):
@@ -33,6 +34,60 @@ def test_run_full_hold_lock_spans_caller_post_work(tmp_path, make_pdf):
     release_run_lock(lock)
     ctx2 = run_full(in_dir, out, True, lambda m: None, jobs=1)
     assert isinstance(ctx2, dict)
+
+
+def test_ensure_lock_passes_when_held_or_unlocked(tmp_path):
+    # No loss flagged: silent pass, including the unlocked (None) run.
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+    lock = acquire_run_lock(out, False, logged.append)
+    try:
+        assert _ensure_lock(lock, logged.append) is None
+        assert _ensure_lock(None, logged.append) is None
+        assert logged == []
+    finally:
+        release_run_lock(lock)
+
+
+def test_ensure_lock_aborts_lost_run(tmp_path):
+    # Flagged loss: LockLostError (a RunLockedError) with an ERROR line.
+    out = tmp_path / "out"
+    out.mkdir()
+    logged = []
+    lock = acquire_run_lock(out, False, logged.append)
+    try:
+        fsops._heartbeats[str(lock)][2].set()  # heartbeat observed a steal
+        with pytest.raises(LockLostError):
+            _ensure_lock(lock, logged.append)
+        assert any("ERROR" in m and "lock lost" in m for m in logged)
+    finally:
+        abandon_run_lock(lock)
+
+
+def test_run_wrappers_abandon_stealer_lock_on_loss(tmp_path, monkeypatch):
+    # A mid-run LockLostError must stop the heartbeat WITHOUT unlinking:
+    # the lock file belongs to the stealer now.
+    import fermi_organizer.runmodes as runmodes
+
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def fake_inner(*a, **k):
+        lock = k.get("lock")
+        fsops._heartbeats[str(lock)][2].set()
+        from fermi_organizer.runmodes import _ensure_lock as ensure
+        ensure(lock, lambda m: None)
+
+    for runner, inner_name in ((run_full, "_run_full_inner"),
+                               (run_incremental, "_run_incremental_inner")):
+        monkeypatch.setattr(runmodes, inner_name, fake_inner)
+        with pytest.raises(LockLostError):
+            runner(tmp_path, out, True, lambda m: None, jobs=1)
+        assert (out / ".fermi_organizer.lock").is_file()
+        assert str(out / ".fermi_organizer.lock") not in fsops._heartbeats
+        # Reset for the next iteration (content is still ours here).
+        release_run_lock(out / ".fermi_organizer.lock")
 
 
 def _write_parent(make_pdf, folder, name="Test Parent"):
