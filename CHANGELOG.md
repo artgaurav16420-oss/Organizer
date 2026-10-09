@@ -25,6 +25,16 @@ All notable changes to the Fermi PDF organizer are recorded here.
   automated).
 - Coverage ratchet raised 80 -> 83 (measured ~84%).
 
+### Concurrency hardening (post-merge review)
+- Lock steal verifies content before unlinking (re-read must match), closing
+  the double-starter race; the loser observes the winner's fresh lock and
+  refuses. Stale window shortened 24 h -> 2 h; refusal names the holder host.
+  No PID probing by design (unreliable signal semantics across platforms).
+- The CLI holds the lock through report + workbook writes (`hold_lock`), so a
+  second run cannot interleave those shared-file updates.
+- Network-share output documented as not lock-safe (README Known limits);
+  the CLI warns on Windows UNC paths.
+
 ### Robustness (hostile/corrupt inputs can no longer abort a run)
 - Drawing-derived folder names are stripped of C0/C1 control characters and
   bidi override codepoints; a PDF whose NAME (or BOM description) contains a

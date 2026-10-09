@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """CLI entry point for the Fermi PDF organizer (split-layout version)."""
 import argparse
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -123,6 +124,10 @@ def main():
         log("WARNING: in-place run - organized folders inside the input "
             "are re-scanned by later full runs; use --output to keep the "
             "tree separate")
+    if os.name == "nt" and str(output).startswith("\\\\"):
+        log("WARNING: output is on a network share (UNC path): the run lock "
+            "is not reliable there - coordinate runs manually, never run two "
+            "against this output")
     log(f"Mode: {run_mode_label(args.dry_run, args.incremental)}")
     jobs = resolve_jobs(args.jobs)
     log(f"  Extraction workers: {jobs} (override with --jobs N)")

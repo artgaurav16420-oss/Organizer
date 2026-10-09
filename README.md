@@ -157,11 +157,12 @@ directory once installed editable).
   the tree; adopted files remain available under `_orphans/` until they are placed.
 - An interrupted run is safe to re-run: incremental mode leaves existing folders
   alone, and a full re-run rebuilds the tree from the input PDFs.
-- One run per output folder at a time: a run killed mid-supersede leaves
-  `*.supersede_tmp.*` staging files behind (the PDF scans never match them), and the
-  next run's startup sweep removes **all** of them — including the live staging file
-  of a second run writing to the same output. The sweep has no PID or age check by
-  design; do not run two processes against one output tree.
+- One run per output folder at a time, enforced by `<output>/.fermi_organizer.lock`:
+  a second concurrent run refuses with an error instead of racing the first
+  (locks older than 2 h are stolen with a warning — a crashed run leaks its
+  lock). A run killed mid-supersede leaves `*.supersede_tmp.*` staging files
+  behind (the PDF scans never match them), and the next run's startup sweep
+  removes them.
 - A failing filesystem operation (copy, move, `mkdir`) logs a warning and the run
   continues rather than aborting.
 
@@ -188,6 +189,11 @@ directory once installed editable).
   before acting.
 - Losing copies of a same-revision duplicate stay in the input folder; only watermarked
   losers are archived in `_superseded/`.
+- Network-share output (SMB/NFS, lab drives) is not lock-safe: those filesystems
+  do not reliably honor the exclusive-create the run lock depends on, so two
+  runs against one shared output can both proceed. Prefer local output; if the
+  tree must live on a share, coordinate runs manually (the CLI warns on Windows
+  UNC paths).
 
 ## Project layout
 

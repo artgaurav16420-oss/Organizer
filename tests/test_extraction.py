@@ -626,6 +626,34 @@ def test_subprocess_env_scoped_not_global(monkeypatch, tmp_path):
     assert captured["env"]["TESSDATA_PREFIX"] == str(tmp_path / "tessdata")
 
 
+def test_ensure_tesseract_probe_uses_explicit_env(tmp_path, monkeypatch):
+    # LOW: the --version probe takes the same explicit-env path as the OCR
+    # calls (it must not depend on the process-global export either).
+    fake = tmp_path / "tesseract.exe"
+    fake.write_bytes(b"fake tesseract binary")
+    monkeypatch.setenv("TESSERACT_EXE", str(fake))
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    captured = {}
+
+    class _Proc:
+        stdout = b"tesseract 5.5.3"
+        stderr = b""
+        returncode = 0
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        return _Proc()
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    ocr = extraction._OcrContext()
+    ocr.reset(enabled=True)
+    ocr.install_dir = str(tmp_path)
+
+    assert ocr.ensure_tesseract() is not None
+    assert captured["env"]["TESSDATA_PREFIX"] == str(tmp_path / "tessdata")
+    assert "TESSDATA_PREFIX" not in os.environ
+
+
 def test_export_for_pymupdf_switch_drops_stale_prefix(monkeypatch, tmp_path):
     # FIX: switching installs mid-process must not leave the old dir first on
     # PATH (later OCR would resolve the wrong tessdata through it).

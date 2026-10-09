@@ -335,17 +335,18 @@ def is_system_dir(name):
 
 RUN_LOCK_NAME = ".fermi_organizer.lock"
 # A lock older than this is presumed left by a crashed run and stolen with a
-# warning. 24 h is far beyond any healthy run (thousands of PDFs take
-# minutes); the check is mtime-only on purpose — PID-liveness probing via
-# os.kill has fatally inconsistent signal semantics across platforms, so the
-# lock fails closed (refuse + tell the operator how to recover) instead.
+# warning. 2 h is far beyond any healthy run (thousands of PDFs take
+# minutes), so a crashed run blocks the next one only briefly; the check is
+# mtime-only on purpose — PID-liveness probing via os.kill has fatally
+# inconsistent signal semantics across platforms, so the lock fails closed
+# (refuse + tell the operator how to recover) instead of guessing.
 
 
 class RunLockedError(Exception):
     """Another run holds the output-tree lock; this run is refused."""
 
 
-RUN_LOCK_STALE_SECS = 24 * 3600
+RUN_LOCK_STALE_SECS = 2 * 3600
 
 
 def acquire_run_lock(output, dry_run, log):
@@ -358,9 +359,10 @@ def acquire_run_lock(output, dry_run, log):
     younger is honored unconditionally — PIDs cannot be checked reliably
     across hosts or platforms, so the lock fails closed with a recovery
     pointer instead of guessing. Creation uses O_EXCL so two starters cannot
-    both win; a steal retries the create and re-reads, so the loser of a
-    double-steal race observes the winner's fresh lock and refuses instead of
-    deleting it. The file is a dotfile with JSON {pid, host, created}; scans
+    both win; a steal re-reads the file and only unlinks it when the content
+    still matches what was examined as stale, then retries the create — so
+    the loser of a double-steal race observes the winner's fresh lock and
+    refuses instead of deleting it. The file is a dotfile with JSON {pid, host, created}; scans
     only collect PDFs, so it is invisible to every tree walk.
     """
     # NOTE: dry_run is intentionally not exempted — a dry-run's sweep report
@@ -398,14 +400,24 @@ def acquire_run_lock(output, dry_run, log):
                 return None
             return lock
         try:
+            raw = lock.read_bytes()
             age = time.time() - os.path.getmtime(_native(lock))
         except OSError:
-            age = 0.0
+            raw, age = None, 0.0
         if age <= RUN_LOCK_STALE_SECS:
             raise RunLockedError(
-                f"output tree is locked ({lock.name} present); refusing a concurrent "
+                f"output tree is locked ({lock.name} present"
+                f"{_holder_note(raw)}); refusing a concurrent "
                 "run against one output - wait for it to finish, or delete the lock "
                 "file if no run is active")
+        try:
+            # Re-verify before unlinking: a competitor may have replaced the
+            # stale file since we examined it - deleting that would hand both
+            # runs the tree. Mismatch restarts the loop (fresh → refuse).
+            if raw is None or lock.read_bytes() != raw:
+                continue
+        except OSError:
+            continue
         log(f"  WARNING: stealing stale run lock ({age / 3600:.1f} h old)")
         try:
             os.unlink(_native(lock))
@@ -413,6 +425,15 @@ def acquire_run_lock(output, dry_run, log):
             pass  # lost the race (or it vanished): re-read on next attempt.
     raise RunLockedError(f"could not acquire run lock ({lock.name}) after "
                          "contended steals - wait for the other run to finish")
+
+
+def _holder_note(raw):
+    """Best-effort 'held by host …' suffix for the refusal message."""
+    try:
+        host = (json.loads(raw.decode("utf-8")) or {}).get("host") if raw else None
+    except (ValueError, AttributeError):
+        host = None
+    return f", held by host {host}" if host else ""
 
 
 def release_run_lock(lock):
