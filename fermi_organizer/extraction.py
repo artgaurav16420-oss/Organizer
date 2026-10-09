@@ -897,9 +897,9 @@ def _desc_is_cross_reference(desc):
     and conjunctions, so rejecting these can only drop bogus edges (the part
     then surfaces as an orphan/missing reference, visibly)."""
     text = FERMI_RE_SEARCH.sub(" ", desc.upper())
-    text = re.sub(r"[.,;:()\\/-]", " ", text)
-    words = [w for w in text.split() if w not in _CROSS_REF_WORDS]
-    return not words
+    words = [w.strip(".,;:()") for w in text.split()]
+    words = [w for w in words if w]
+    return bool(words) and all(w in _CROSS_REF_WORDS for w in words)
 
 
 def _line_bom_entries(lines, page_num):
@@ -911,8 +911,15 @@ def _line_bom_entries(lines, page_num):
         # Format 1: Multi-line (item number on the line above; FERMI# and description below)
         if FERMI_RE.match(line) and i > 0 and ITEM_RE.match(lines[i - 1]):
             desc_candidate = lines[i + 1] if i + 1 < len(lines) else ""
-            if desc_candidate and not BAD_DESC_RE.match(desc_candidate) \
-                    and not _desc_is_cross_reference(desc_candidate):
+            if desc_candidate and not BAD_DESC_RE.match(desc_candidate):
+                if _desc_is_cross_reference(desc_candidate):
+                    # Cross-reference, not a part: skip the row entirely.
+                    # Without this the FERMI line falls through to Format 3
+                    # below, whose context check the ITEM line above
+                    # satisfies - emitting the rejected drawing anyway.
+                    # (BAD_DESC rejections keep the old fallthrough.)
+                    i += 1
+                    continue
                 val = normalize(line)
                 entries.append((val, page_num, "text-fallback", desc_candidate.strip()))
                 i += 2
@@ -1040,6 +1047,14 @@ def _positional_row_entries(page, page_num, entries, issues):
             for _, t in rows[y]:
                 t_stripped = t.strip()
                 if FERMI_RE.match(t_stripped):
+                    # A bare FERMI token takes its description from the row
+                    # below (Format-1 stack shape): a pure cross-reference
+                    # there ("AND F10126108.") rejects the row, mirroring the
+                    # line parser - otherwise the positional path re-adds
+                    # what the line path just rejected.
+                    if y_idx + 1 < len(sorted_ys) and _desc_is_cross_reference(
+                            _dict_row_text(rows, sorted_ys[y_idx + 1])):
+                        continue
                     val = normalize(t_stripped)
                     if val not in existing:
                         entries.append((val, page_num, "text-positional"))
@@ -1051,20 +1066,26 @@ def _positional_row_entries(page, page_num, entries, issues):
 
 def _doc_has_parts_header(doc):
     """Whether any page prints a parts-list header: a standalone caption
-    ("PARTS LIST", "BOM", ...) or the column combo ("ITEM ... FERMI ...").
-    Gates the line-based BOM fallback (see extract_bom_from_text): without a
-    header anywhere, F-numbered text lines are notes/title-block content.
-    Table and positional parsers carry their own structural gates and are
-    unaffected."""
+    ("PARTS LIST", "BOM", ...), the column combo on one line ("ITEM ...
+    FERMI ..."), or the column labels on adjacent lines (PDF text extraction
+    often emits one label per line). Gates the line-based BOM fallback (see
+    extract_bom_from_text): without a header anywhere, F-numbered text lines
+    are notes/title-block content. Table and positional parsers carry their
+    own structural gates and are unaffected."""
     try:
         texts = [page.get_text() for page in doc]
     except (RuntimeError, ValueError):
         return False
     for text in texts:
-        for raw in text.splitlines():
-            line = raw.strip()
+        lines = [raw.strip() for raw in text.splitlines()]
+        for i, line in enumerate(lines):
             if PARTS_HEADER_RE.match(line) or PARTS_HEADER_COMBO_RE.search(line):
                 return True
+            if ITEM_RE.match(line):
+                for dy in (-2, -1, 1, 2):
+                    j = i + dy
+                    if 0 <= j < len(lines) and FERMI_HEADER_RE.match(lines[j]):
+                        return True
     return False
 
 

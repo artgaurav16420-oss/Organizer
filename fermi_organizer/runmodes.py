@@ -686,9 +686,16 @@ def _shared_folder_blocks_move(c, child_folder, output, log):
 
 
 def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
-                                     output, dry_run, moved_dirs, log):
+                                   output, dry_run, moved_dirs, log):
     """Move organized parts referenced by a superseding revision under its
     folder. Mutates moved_dirs; returns the number of moves."""
+    # NOTE: unlike _place_above_organized_children (which copies nested
+    # children), this still moves: the old revision's folder is being
+    # archived away, so its children must re-home under the new revision.
+    # Residual risk, same class: a child shared under another LIVE parent is
+    # relocated rather than duplicated. Untouched for now - no observed
+    # damage (zero moves on real corpora so far) and this path is entangled
+    # with the swap/archive safety invariants; revisit with a failing case.
     moves = 0
     for s2 in swapped:
         s_paths = organized.get(s2, [])
