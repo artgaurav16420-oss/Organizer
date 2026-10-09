@@ -256,8 +256,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     disk; oversized paths/subtrees are skipped with a warning. Raises
     PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (nothing is created).
-    `lock` is this run's lock path (None = unlocked): the heartbeat loss flag
-    is re-checked once per folder, so a run stolen mid-placement stops with
+    `lock` is this run's lock path (None = unlocked): our token is re-read
+    from the file once per folder, so a run stolen mid-placement stops with
     LockLostError instead of writing into another run's tree.
 
     Iterative pre-order traversal (explicit stack, children pushed in reverse
@@ -530,24 +530,43 @@ def abandon_run_lock(lock):
 
 
 def run_lock_lost(lock):
-    """True when the heartbeat observed our lock replaced while held.
+    """True when our lock file no longer holds our token.
 
-    False for unlocked runs (None) and while our token still matches. Cheap
-    flag read — call before each mutating step (see _ensure_lock).
+    Re-reads the file on every call (a few thousand small reads per run is
+    negligible next to the copies), so a steal is observed at the next check
+    without waiting for the heartbeat tick — the flag is only a fast path.
+    A detection latches the flag. Unreadable/missing reads as lost (fail
+    closed: mid-steal the path briefly holds nothing of ours). False for
+    unlocked runs (None) and locks with no live heartbeat entry (no token to
+    compare). Call before each mutating step (see _ensure_lock).
     """
     if lock is None:
         return False
     item = _heartbeats.get(str(lock))
-    return bool(item is not None and item[2].is_set())
+    if item is None:
+        return False
+    _stop, _t, lost, token = item
+    if lost.is_set():
+        return True
+    try:
+        if lock.read_bytes() != token:
+            lost.set()
+            return True
+    except OSError:
+        lost.set()
+        return True
+    return False
 
 
 def _ensure_lock(lock, log):
-    """Abort when the heartbeat observed our lock stolen mid-run.
+    """Abort when our lock file no longer holds our token (stolen mid-run).
 
     A run paused past the stale window (sleep, SIGSTOP, VM pause) may wake to
     find another run holding the tree; writing on would interleave two live
-    writers. Raises LockLostError (the CLI exits 2 — the tree may already
-    hold this run's partial writes). No-op for unlocked runs (None).
+    writers. The check re-reads the file (see run_lock_lost), so it holds at
+    every mutating step short of the read-then-write race inherent to file
+    locks. Raises LockLostError (the CLI exits 2 — the tree may already hold
+    this run's partial writes). No-op for unlocked runs (None).
     """
     if run_lock_lost(lock):
         log("  ERROR: run lock lost mid-run (stolen while paused?) - "
@@ -594,7 +613,7 @@ def _heartbeat_start(lock, token):
 
     t = threading.Thread(target=beat, daemon=True,
                          name="fermi-lock-heartbeat")
-    _heartbeats[str(lock)] = (stop, t, lost)
+    _heartbeats[str(lock)] = (stop, t, lost, token)
     try:
         t.start()
     except BaseException:
@@ -606,7 +625,7 @@ def _heartbeat_stop(lock):
     """Stop the refresh thread; join briefly so release is ordered."""
     item = _heartbeats.pop(str(lock), None)
     if item is not None:
-        stop, t, _lost = item
+        stop, t, _lost, _token = item
         stop.set()
         t.join(timeout=5)
 

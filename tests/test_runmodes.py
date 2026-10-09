@@ -120,6 +120,36 @@ def test_swap_revision_files_aborts_on_lost_lock(tmp_path):
     assert list(tree.glob("*.supersede_tmp.*")) == []
 
 
+def test_swap_revision_files_sees_file_steal(tmp_path):
+    # Synchronous detection on the swap path: replaced lock content (no tick,
+    # no flag) aborts before os.replace with the tree untouched.
+    from fermi_organizer.runmodes import _swap_revision_files
+
+    out = tmp_path / "out"
+    tree = out / "F10126106 Assembly"
+    tree.mkdir(parents=True)
+    old = tree / "F10126106.pdf"
+    old.write_bytes(b"old-rev")
+    new = tmp_path / "F10126106_B.pdf"
+    new.write_bytes(b"new-rev")
+    sup = out / "_superseded"
+    sup.mkdir()
+
+    logged = []
+    lock = acquire_run_lock(out, False, logged.append)
+    try:
+        lock.write_bytes(b'{"pid": 999999, "host": "stealer"}')
+        with pytest.raises(LockLostError):
+            _swap_revision_files([old], new, sup, out, False, logged.append,
+                                 lock=lock)
+        assert any("lock lost" in m for m in logged)
+    finally:
+        abandon_run_lock(lock)
+    assert old.read_bytes() == b"old-rev"
+    assert list(sup.glob("*.pdf")) == []
+    assert list(tree.glob("*.supersede_tmp.*")) == []
+
+
 def _write_parent(make_pdf, folder, name="Test Parent"):
     return make_pdf(folder / "F10126106.pdf", [
         "FERMI PART LIST",
