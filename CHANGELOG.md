@@ -11,8 +11,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   reports every skipped root with its planned count (`skipped_roots` in the
   run context, `Roots skipped (oversized)` summary line, CLI exit still 2).
   Skipped roots are never placed; their shared children still land under
-  their other parents. A fully over-cap run places and parks nothing, as
-  before. Both run modes share the helper; the incremental pre-check and the
+  their other parents, and a child exclusive to a skipped root is listed
+  under Unplaced PDFs instead of vanishing from the report. A fully
+  over-cap run places no folders (full mode still parks BOM-less orphans;
+  bounded archive copies still run in both modes). Both run modes share the helper; the incremental pre-check and the
   placement backstop both fit, so the backstop (on the final graph) is
   authoritative.
 - The incremental pre-check now fits the cycle-broken new graph (placement

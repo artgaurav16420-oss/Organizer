@@ -994,7 +994,9 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
                     bom_names, log, refused=False, skipped=()) -> RunContext:
     """Unplaced log + summary + structured RunContext for the workbook."""
-    _log_unplaced(roots, children, index, orphans, log)
+    skipped_set = {r for r, _ in skipped}
+    _log_unplaced([r for r in roots if r not in skipped_set], children,
+                  index, orphans, log)
     summary = [
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",

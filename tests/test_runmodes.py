@@ -596,6 +596,34 @@ def test_run_full_cap_skips_only_oversized_roots(tmp_path, make_pdf,
     assert "Roots skipped (oversized): 1" in text
 
 
+def test_run_full_skipped_root_exclusive_child_reported_unplaced(
+        tmp_path, make_pdf, monkeypatch):
+    # Reachability for the unplaced report uses kept roots only: a child
+    # exclusive to a skipped root is never copied, so it must surface in
+    # "Unplaced PDFs" instead of vanishing from the report.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    logged = []
+
+    run_full(in_dir, out, True, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    # The skipped root itself plus its exclusive child: both PDFs are
+    # missing from the tree, while the kept subtree is placed.
+    assert "--- Unplaced PDFs (2) ---" in text
+    block = text.split("--- Unplaced PDFs (2) ---")[1]
+    assert "\n  F10126106\n" in block
+    assert "\n  F10126107\n" in block
+    assert "F10126110" not in block
+
+
 def test_run_incremental_partial_dry_run_credits_kept_placements(
         tmp_path, make_pdf, monkeypatch):
     # Partial refusal still reports adoptions under kept roots: the adopter

@@ -169,10 +169,12 @@ def main():
         if skipped:
             names = ", ".join(r for r, _ in skipped[:5])
             more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+            verb = "would be placed" if args.dry_run else "was placed"
             log("  WARNING: placement partially refused - "
                 f"{len(skipped)} oversized root(s) skipped ({names}{more}); "
-                "the rest was placed (bounded orphan/archive copies still "
-                "ran); review the BOM graph (report + workbook still written)")
+                f"the rest {verb} (bounded orphan/archive copies are still "
+                "handled); review the BOM graph (report + workbook still "
+                "written)")
         elif ctx.get("placement_refused"):
             log("  WARNING: placement refused - folder placement skipped (bounded "
                 "orphan/archive copies still ran); review the "

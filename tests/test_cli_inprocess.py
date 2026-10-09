@@ -131,6 +131,38 @@ def test_cli_main_placement_refused_exits_2(monkeypatch, tmp_path, make_pdf):
     assert "partially refused - 1 oversized root(s) skipped (F10126106)" in text
 
 
+def test_cli_main_partial_refusal_dry_run_says_would_be_placed(
+        monkeypatch, tmp_path, make_pdf):
+    # Dry-run copies nothing: the partial-refusal warning must not claim the
+    # rest "was placed".
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126110 SECOND CHILD", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126110.pdf", ["NAME", "Second child"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 3)
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr", "--jobs", "1",
+                         "--dry-run"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+
+    assert exc.value.code == 2
+    reports = list(out.glob("organize_fermi_pdfs_report_*.txt"))
+    assert reports
+    text = reports[0].read_text(encoding="utf-8")
+    assert "the rest would be placed" in text
+    assert "was placed" not in text
+    assert not any(out.rglob("*.pdf"))
+
+
 def test_cli_main_refused_without_skips_logs_generic_warning(
         monkeypatch, tmp_path, capsys):
     # Defensive branch: refused with an empty skip list (a pre-check drop the

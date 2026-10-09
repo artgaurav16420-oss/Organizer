@@ -97,14 +97,18 @@ oversized root STEM (NNNN copies planned)` lines in the log, a `Roots skipped
 the largest roots are skipped (never placed - their shared children still land
 under their other parents) and **the rest is placed normally**; supersede
 swaps/moves are skipped while over cap, but the bounded orphan-parking and
-supersede-archive copies still run. Only a fully over-cap run places/parks
-nothing. Report + workbook are still written. Do **not** retry and do **not**
+supersede-archive copies still run. A fully over-cap run places no folders
+(full mode still parks orphans; incremental parks nothing new). Report + workbook are still written. Do **not** retry and do **not**
 treat it as a crash — inspect the BOM graph (a diamond/cycle explosion; the
 skipped roots are usually "bag" drawings like procurement-kit lists, not real
 assemblies) and ask the user before re-running. (The pre-check fits the
 cycle-broken graph, so phantom refusals from unbroken cycles are gone; if exit
 2 ever shows no skipped roots, the conservative pre-check tripped and a re-run
 converges.)
+Note: exit `2` is shared with run-lock loss (`ERROR: ...lock...`, mid-run
+steal) — but that path prints an ERROR and writes **no** report/workbook, so a
+refusal (both artifacts written) is unmistakable. Never read lock-loss as a
+completed placement.
 ## Report to the user
 
 From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles
