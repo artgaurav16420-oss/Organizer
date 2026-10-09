@@ -1,4 +1,4 @@
-"""Golden-log regression (T-021): fixed dry-run scenario byte-for-byte.
+"""Golden-log regression: fixed dry-run scenario byte-for-byte.
 
 NOTE: intentional user-facing message changes must update EXPECTED below;
 this test fails deliberately on any log-text drift so reports stay diffable.

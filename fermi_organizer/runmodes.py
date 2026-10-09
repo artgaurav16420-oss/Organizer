@@ -1299,6 +1299,18 @@ def _incremental_graph(new_boms, org_boms, new_used_on, org_used_on,
             used_on_bugs, incr_mism, removed)
 
 
+def _incremental_placeable(R, new_boms, new_children, org_parents_of,
+                           org_children_of):
+    """Shared placeable-root predicate: a new root counts against the fan-out
+    cap (and reaches placement) only with a BOM, new children, or an
+    organized-graph relation on either side; BOM-less standalone roots stay
+    parked in _orphans/ and are never counted. One definition so the pre-cap
+    check and the placement backstop cannot diverge (a root only matched as an
+    organized child still counts against the cap)."""
+    return bool(new_boms.get(R) or new_children.get(R)
+                or org_parents_of.get(R) or org_children_of.get(R))
+
+
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
@@ -1316,8 +1328,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     # Parked roots (no BOM, no children, no organized relation) never reach
     # place_files, so they must not be charged against the cap.
     placeable = [R for R in new_roots
-                 if new_boms.get(R) or new_children.get(R)
-                 or org_parents_of.get(R) or org_children_of.get(R)]
+                 if _incremental_placeable(R, new_boms, new_children,
+                                           org_parents_of, org_children_of)]
     try:
         ensure_placement_allowed(new_children, placeable, log)
     except PlacementRefusedError:
@@ -1474,10 +1486,11 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     # `_incremental_place` re-checks its exact placement set as a backstop.
     pre_children, pre_parents = _graph_edges(new_boms, new_stems)
     _, pre_org_par = _graph_edges(org_boms, new_stems)
+    pre_org_ch, _ = _graph_edges(new_boms, org_stems)
     pre_placeable = [r for r in sorted(s for s in new_stems
                                        if not pre_parents.get(s))
-                     if new_boms.get(r) or pre_children.get(r)
-                     or pre_org_par.get(r)]
+                     if _incremental_placeable(r, new_boms, pre_children,
+                                               pre_org_par, pre_org_ch)]
     refused = False
     try:
         ensure_placement_allowed(pre_children, pre_placeable, log)
@@ -1514,8 +1527,8 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False) -> RunCon
     planned = set()
     if not refused:
         for _r in new_roots:
-            if not (org_parents_of.get(_r) or org_children_of.get(_r)
-                    or new_boms.get(_r) or new_children.get(_r)):
+            if not _incremental_placeable(_r, new_boms, new_children,
+                                          org_parents_of, org_children_of):
                 continue
             _stack = [_r]
             while _stack:

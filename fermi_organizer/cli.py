@@ -21,7 +21,9 @@ def build_parser():
                         help="Print the plan without copying drawings; report + .xlsx are still "
                              "written (a missing --output folder is created for the workbook only)")
     parser.add_argument("--incremental", action="store_true",
-                        help="Process only stems not already in the output tree plus stored _orphans/ (input scan is recursive); existing subfolders stay put except supersede swaps and parent-adoption moves")
+                        help="Process only stems not already in the output tree plus stored "
+                             "_orphans/ (input scan is recursive); existing subfolders stay put "
+                             "except supersede swaps and parent-adoption moves")
     parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
     parser.add_argument("--jobs", type=int, default=0,
                         help="Parallel extraction workers (0=auto = CPU count, 1=serial)")
@@ -117,7 +119,9 @@ def main():
     if args.incremental and not args.output and (folder / "Output").is_dir():
         log(f"WARNING: {folder / 'Output'} exists. Use --output to target it.")
     if not args.incremental and output == folder:
-        log("WARNING: in-place run - organized folders inside the input are re-scanned by later full runs; use --output to keep the tree separate")
+        log("WARNING: in-place run - organized folders inside the input "
+            "are re-scanned by later full runs; use --output to keep the "
+            "tree separate")
     log(f"Mode: {run_mode_label(args.dry_run, args.incremental)}")
     jobs = resolve_jobs(args.jobs)
     log(f"  Extraction workers: {jobs} (override with --jobs N)")

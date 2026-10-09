@@ -1,4 +1,4 @@
-"""Resource-exhaustion skip guards (T-014a): behavior, not Tesseract.
+"""Resource-exhaustion skip guards: behavior, not Tesseract.
 
 Tesseract is absent in this environment, so these tests pin the documented
 skip shapes for oversized / page-capped PDFs using generated PDFs plus
@@ -70,7 +70,7 @@ def test_page_cap_tasks_return_skip_shape(tmp_path, make_pdf, monkeypatch,
 
 
 def test_multipage_bom_on_page_two(tmp_path, make_pdf_pages):
-    # T-020 multi-page fixture variant: BOM lives on page 2 only (page_num 2
+    # Multi-page fixture variant: BOM lives on page 2 only (page_num 2
     # in the entry proves the second page was scanned).
     pdf = make_pdf_pages(tmp_path / "F10126106.pdf", [
         ["NAME", "Parent"],

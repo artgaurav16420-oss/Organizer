@@ -926,6 +926,33 @@ def test_run_full_rekey_titleblock_places_under_real_number(tmp_path, make_pdf):
     assert not any(m[0] == "F10126106_A_DWG1" for m in ctx["titleblock_mismatches"])
 
 
+def test_run_incremental_rekey_titleblock_places_under_real_number(tmp_path, make_pdf):
+    # The incremental path must wire rekey=True the same way: a NEW misnamed
+    # text PDF arriving into an existing tree is re-keyed before extraction
+    # and placed (renamed) under its title-block number.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126109_A_DWG1.pdf", [
+        "UNLESS OTHERWISE SPECIFIED",
+        "REV",
+        "B",
+        "NUMBER",
+        "F10126110",
+        "SHEET 1 OF 1",
+    ])
+
+    logged = []
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1, rekey=True)
+
+    text = "\n".join(logged)
+    assert "misnamed - re-keyed to F10126110_B_DWG1" in text
+    assert any("F10126110_B_DWG1" in p.name for p in out.rglob("*.pdf"))
+    assert not any("F10126109" in p.name for p in out.rglob("*.pdf"))
+    assert not any(m[0] == "F10126109_A_DWG1" for m in ctx["titleblock_mismatches"])
+
+
 def test_log_summary():
     logged = []
     rows = [

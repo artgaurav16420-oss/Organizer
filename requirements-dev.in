@@ -1,0 +1,8 @@
+# Developer/test tooling only (runtime deps live in requirements.txt/.lock).
+# CI installs the hashed lock for reproducibility; keep this source file and
+# requirements-dev.txt in sync (regenerate with the command in the lock header).
+pytest==9.1.1
+pytest-cov==7.1.0
+build==1.6.1
+setuptools==84.0.0
+ruff==0.16.10

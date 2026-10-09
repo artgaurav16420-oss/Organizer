@@ -299,15 +299,17 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             else:
                 # mkdir failure: the subtree's paths cannot exist - skip it;
                 # copy2 failure: only this file is lost, children are still tried.
+                # ValueError catches embedded-NUL style hostile names that
+                # raise before the syscall (guards must stay "not fatal").
                 try:
                     current_folder.mkdir(parents=True, exist_ok=True)
-                except OSError as e:
+                except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += count_copies(stem)
                     continue
                 try:
                     shutil.copy2(_native(pdf), _native(target))
-                except OSError as e:
+                except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
                 else:
@@ -519,16 +521,21 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
                 log(f"  {stem}: archive already exists with different content "
                     f"({target.name}) - source kept, not archived")
             continue
-        target, _ = resolve_archive_target(sf, pdf)
+        target, already = resolve_archive_target(sf, pdf)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {pdf.name} -> {target}")
-        else:
+        elif not already:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(pdf), _native(target))
             except OSError as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
+        # already=True means the destination was proven byte-identical by the
+        # cache-free compare inside resolve_archive_target: re-writing the same
+        # bytes on every repeat full run is pure I/O waste (archive mtime is
+        # not a managed property), so the copy is skipped but the stem still
+        # counts as archived and retirement stays honest.
         n += 1
         archived.add(stem)
     return n, archived
@@ -551,17 +558,19 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         if _islink(p) or _islink(target):
             log(f"  WARNING: {p.name}: copy skipped (symlink refused): {p} -> {target}")
             continue
-        target, _ = resolve_archive_target(sf, p, planned)
+        target, already = resolve_archive_target(sf, p, planned)
         if dry_run:
             log(f"  [DRY-RUN] mkdir+copy {p.name} -> {target}")
             planned.add(target)
-        else:
+        elif not already:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
                 shutil.copy2(_native(p), _native(target))
             except OSError as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
                 continue
+        # already=True: proven byte-identical archive exists - skip the
+        # rewrite (same rule as copy_superseded); the count still includes it.
         n += 1
     return n
 

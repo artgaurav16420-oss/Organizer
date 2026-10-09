@@ -4,7 +4,23 @@ from pathlib import Path
 
 from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
 from fermi_organizer.naming import (_collect_placements, _placement_len,
-                                    build_folder_names)
+                                    build_folder_names, sanitize_folder_name)
+
+
+def test_sanitize_folder_name_drops_control_and_bidi_chars():
+    # NUL previously survived sanitize and crashed mkdir/copy2 with ValueError
+    # (outside the OSError-only placement guards); bidi overrides enable
+    # display spoofing of folder names.
+    assert sanitize_folder_name("BRACKET\x00ASSY") == "BRACKETASSY"
+    assert sanitize_folder_name("A\x1b[0m B") == "A[0m B"
+    assert sanitize_folder_name("C1\x85NEXT") == "C1NEXT"
+    assert sanitize_folder_name("X\u202eREV\tno.") == "XREV no"
+    assert sanitize_folder_name("ok\u2066name\u2069") == "okname"
+
+
+def test_sanitize_folder_name_keeps_legacy_substitutions():
+    assert sanitize_folder_name('a"b/c<d>\\e|f?g*') == "ab-c-d--e-f-g-"
+    assert sanitize_folder_name("  many   spaces ") == "many spaces"
 
 
 def test_shared_stem_deep_path_shortened_for_every_root():

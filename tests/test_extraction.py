@@ -406,6 +406,7 @@ def test_ensure_tesseract_unparseable_version_is_none(tmp_path, monkeypatch):
     class _Proc:
         stdout = b"tesseract (no numeric version)"
         stderr = b""
+        returncode = 0
 
     monkeypatch.setattr(extraction.subprocess, "run", lambda *a, **k: _Proc())
     ocr = extraction._OcrContext()
@@ -433,6 +434,7 @@ def test_ensure_tesseract_path_prepend_idempotent(monkeypatch):
     class _Proc:
         stdout = b"tesseract v5.3.0"
         stderr = b""
+        returncode = 0
 
     monkeypatch.delenv("TESSERACT_EXE", raising=False)
     monkeypatch.setattr(extraction.shutil, "which", lambda name: None)
@@ -485,3 +487,36 @@ def test_ocr_strip_tokens_utf8_decode_and_none_stdout(monkeypatch, tmp_path, mak
     assert all(k.get("encoding") == "utf-8" and k.get("errors") == "replace"
                for k in calls)
     doc.close()
+
+
+def test_tesseract_run_raises_on_nonzero_exit(monkeypatch):
+    # A failing tesseract leaves stdout empty; callers must not read that as
+    # a genuinely blank strip (silent accuracy loss - review finding S-021).
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 3, stdout="", stderr="E: broken tessdata")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="tesseract exit 3: E: broken tessdata"):
+        extraction._tesseract_run(["tesseract", "x.png", "stdout"], 60)
+
+
+def test_ensure_tesseract_nonzero_version_exit_is_unavailable(tmp_path, monkeypatch):
+    fake = tmp_path / "tesseract.exe"
+    fake.write_bytes(b"fake tesseract binary")
+    monkeypatch.setenv("TESSERACT_EXE", str(fake))
+
+    class _Proc:
+        stdout = b""
+        stderr = b"Error opening data file"
+        returncode = 1
+
+    monkeypatch.setattr(extraction.subprocess, "run", lambda *a, **k: _Proc())
+    ocr = extraction._OcrContext()
+    ocr.reset(enabled=True)
+
+    assert ocr.ensure_tesseract() is None
+    assert not ocr.available
+    assert "--version exit 1" in ocr.reason

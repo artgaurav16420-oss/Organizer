@@ -150,6 +150,49 @@ def test_copy_superseded_skip_vs_overwrite(tmp_path):
     assert (n, archived) == (0, {"F10126106"})
 
 
+def test_copy_superseded_identical_archive_not_recopied_every_run(tmp_path, monkeypatch):
+    # S-041: a repeat full run must not rewrite byte-identical archived PDFs
+    # (multi-hundred-MB scanned sheets); the stem still counts as archived so
+    # orphan retirement stays gated on verified bytes.
+    src = tmp_path / "in"
+    src.mkdir()
+    old_pdf = src / "F10126106.pdf"
+    old_pdf.write_text("v1")
+    out = tmp_path / "out"
+    out.mkdir()
+    copy_superseded({"F10126106": old_pdf}, out, False, lambda m: None,
+                    overwrite=True)
+    calls = []
+    real_copy2 = fsops.shutil.copy2
+    monkeypatch.setattr(fsops.shutil, "copy2",
+                        lambda a, b: calls.append(a) or real_copy2(a, b))
+
+    n, archived = copy_superseded({"F10126106": old_pdf}, out, False,
+                                  lambda m: None, overwrite=True)
+
+    assert (n, archived) == (1, {"F10126106"})
+    assert calls == []
+
+
+def test_copy_watermarked_identical_archive_not_recopied(tmp_path, monkeypatch):
+    src = tmp_path / "in"
+    src.mkdir()
+    w1 = src / "F10126106.pdf"
+    w1.write_text("wm")
+    out = tmp_path / "out"
+    out.mkdir()
+    copy_watermarked_duplicates([w1], out, False, lambda m: None)
+    calls = []
+    real_copy2 = fsops.shutil.copy2
+    monkeypatch.setattr(fsops.shutil, "copy2",
+                        lambda a, b: calls.append(a) or real_copy2(a, b))
+
+    n = copy_watermarked_duplicates([w1], out, False, lambda m: None)
+
+    assert n == 1
+    assert calls == []
+
+
 def test_copy_superseded_symlink_target_not_archived(tmp_path):
     # A live symlink at the archive destination marks nothing as archived:
     # retiring a parked orphan on it could delete the only copy.
@@ -227,6 +270,51 @@ def test_place_files_copy_failure_skips_file_continues_children(tmp_path, monkey
     text = "\n".join(logged)
     assert "WARNING: F10126106: copy failed" in text
     assert "FAILED 1 copy(ies) - see warnings above" in text
+
+
+def test_place_files_valueerror_copy_failure_not_fatal(tmp_path, monkeypatch):
+    # Embedded-NUL style hostile names raise ValueError before the syscall;
+    # placement guards must degrade to a logged failure, not abort the run.
+    folder = tmp_path / "out"
+    parent_pdf = tmp_path / "F10126106.pdf"
+    child_pdf = tmp_path / "F10126107.pdf"
+    parent_pdf.write_bytes(b"%PDF")
+    child_pdf.write_bytes(b"%PDF")
+    index = {"F10126106": parent_pdf, "F10126107": child_pdf}
+    children = {"F10126106": ["F10126107"]}
+    real_copy2 = fsops.shutil.copy2
+
+    def fake_copy2(src, dst):
+        if Path(dst).name == "F10126106.pdf":
+            raise ValueError("embedded null character")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    logged = []
+
+    total = place_files(children, ["F10126106"], index, folder, False, logged.append)
+
+    assert total == 1
+    assert (folder / "F10126106" / "F10126107" / "F10126107.pdf").is_file()
+    assert any("copy failed" in m for m in logged)
+    assert "FAILED 1 copy(ies) - see warnings above" in "\n".join(logged)
+
+
+def test_place_files_sanitizes_nul_name_to_safe_folder(tmp_path):
+    # A PDF-extracted NAME containing NUL must not reach mkdir/copy2 at all:
+    # sanitize_folder_name strips control chars, placement succeeds.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    logged = []
+
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, False, logged.append,
+                        names_of={"F10126106": "BRACKET\x00ASSY"})
+
+    assert total == 1
+    assert (folder / "F10126106 BRACKETASSY" / "F10126106.pdf").is_file()
+    assert not any("copy failed" in m for m in logged)
 
 
 def test_place_files_mkdir_failure_skips_whole_subtree(tmp_path, monkeypatch):

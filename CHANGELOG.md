@@ -4,6 +4,65 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Robustness (hostile/corrupt inputs can no longer abort a run)
+- Drawing-derived folder names are stripped of C0/C1 control characters and
+  bidi override codepoints; a PDF whose NAME (or BOM description) contains a
+  NUL byte no longer crashes placement with an uncaught `ValueError` mid-run.
+  The mkdir/copy guards now also catch `ValueError` ("tree mutations are
+  guarded, not fatal" restored).
+- A failing or hung Tesseract is now loud, not silent: a non-zero
+  `tesseract --version` marks OCR unavailable, non-zero OCR runs raise
+  (surfaced as that PDF's extraction error) instead of reading as a blank
+  strip, and `subprocess` timeouts at the strip-OCR call sites no longer
+  escape the extraction task boundaries.
+- Incremental pre-cap check, placement backstop, and retirement planning share
+  one placeable-root predicate; a root placeable only as an organized-child is
+  now counted against the fan-out cap on the pre-check too (cap-bypass
+  asymmetry closed).
+
+### Performance
+- Repeat full runs no longer re-copy already byte-identical archived PDFs
+  (`_superseded/`): the verified-identical verdict from the archive resolver is
+  honored, saving a full read+write per archived loser every run. The archive
+  still counts toward orphan-retirement safety.
+
+### Reporting & docs
+- The operator runbook documents exit code `2` (placement refused: nothing
+  mutated, do not retry like a crash) alongside the existing `1` guidance.
+- Third-party notices disclose the eight Tesseract ≤ 5.5.3 model-file
+  advisories (CVE-2026-88047..-88054, no fixed release yet) with the
+  scope argument and a standing re-check action.
+- Retired dead review-ticket markers (`T-0xx`) from code comments.
+
+### Testing & CI
+- CI installs pinned, hash-locked dev tooling (`requirements-dev.in` ->
+  `requirements-dev.txt`) instead of a floating `pip install pytest`;
+  `actions/checkout`/`setup-python` are pinned to commit SHAs.
+- New `packaging` CI job builds the wheel (`--no-isolation`, hashed
+  setuptools), installs it, and smoke-tests `fermi-organize --help` plus
+  `import fermi_report_xlsx` from a foreign cwd - the packaging contract is no
+  longer validated only by the conftest sys.path shim.
+- Coverage measurement added to the Linux test job (`pytest-cov`, ratchet floor
+  80%; measured baseline 83%).
+- New pinned behaviors: incremental `--rekey-titleblock` end-to-end,
+  `_log_ocr_startup` message branches, empty-folder exit 1, NUL/control-char
+  name sanitization, ValueError-tolerant placement, tesseract non-zero-exit
+  handling, identical-archive copy skip.
+
+### Licensing
+- The project is now licensed **AGPL-3.0-only** (`LICENSE` added,
+  `pyproject.toml` license field set), matching the AGPL terms of PyMuPDF;
+  `THIRD_PARTY_NOTICES.md` records the decision and its obligations.
+
+### Previously undocumented (folded in from 0.2.0-era commits)
+- Excel formula-injection neutralization for PDF-derived cell values
+  (`_inert_text`, 141aab5/d776322) with a cross-sheet fuzz test (b82ec61).
+- PR #34 fixes: UTF-8 OCR subprocess decode (88d01aa) and `\\?\` long-path
+  copies; earlier symlink-refusal warnings (c60c2a8, ab20f4c) and
+  shared-stem folder shortening across all root-to-leaf paths (8af2948).
+- Orphan retirement now requires a byte-identical **regular-file** live copy;
+  symlinked live entries keep the parked orphan with a warning (6823f37).
+
 ## 0.2.0 — 2026-10-08
 
 ### Placement safety
