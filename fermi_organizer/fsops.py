@@ -306,22 +306,62 @@ def fit_roots_within_cap(children, roots, log, weights=None):
     return kept, skipped
 
 
+def _staged_copy(src, staging):
+    """Copy `src` into a freshly created staging file, written through the
+    created handle.
+
+    shutil.copy2 opens the destination by path, so a symlink planted (or
+    raced) at the staging name would redirect the write outside the tree.
+    The staging name is PID-predictable, so: refuse a symlink already there,
+    create the file with O_CREAT|O_EXCL (an existing file or valid link
+    fails), re-check the path after the open (Windows follows a dangling
+    link even with O_EXCL), and stream the bytes through the fd - the write
+    can never go through a link. Metadata is copied after. A live attacker
+    replacing staging names inside the tree is out of scope, as documented
+    for shared writable outputs."""
+    if _islink(staging):
+        raise OSError(f"staging path is a symlink, refusing: {staging}")
+    try:
+        os.unlink(_native(staging))
+    except OSError:
+        # No stale leftover (the common case), or it could not be removed:
+        # O_CREAT|O_EXCL below fails safely on anything that still exists.
+        pass
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(_native(staging), flags)
+    if _islink(staging):
+        # The open followed a dangling link swapped in after our check (a
+        # Windows O_EXCL quirk): the fd is not ours to write through.
+        os.close(fd)
+        try:
+            os.unlink(_native(staging))
+        except OSError:
+            pass
+        raise OSError(f"staging path became a symlink during copy, refusing: {staging}")
+    try:
+        with open(_native(src), "rb") as fsrc, os.fdopen(fd, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+    except BaseException:
+        try:
+            os.unlink(_native(staging))
+        except OSError:
+            pass
+        raise
+    shutil.copystat(_native(src), _native(staging))
+
+
 def _copy_atomic(src, dst):
-    """Copy `src` to `dst` via a temp name in the target folder.
+    """Copy `src` to `dst` via a staging name in the target folder.
 
     shutil.copy2 writes the destination in place, so a failure mid-write
     leaves a truncated PDF at `dst` that later runs treat as placed and never
     retry. Stage next to the target and os.replace, so the target is either
-    absent or complete; a failed attempt removes its own temp file. The
-    staging name is PID-predictable, and copy2 follows a link on write: a
-    planted or raced symlink there would redirect the copy outside the tree,
-    so a symlinked staging path is refused like every other copy path.
+    absent or complete; a failed attempt removes its own staging file. See
+    _staged_copy for the symlink/race handling of the staging path.
     """
     tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
-    if _islink(tmp):
-        raise OSError(f"copy staging path is a symlink, refusing: {tmp}")
     try:
-        shutil.copy2(_native(src), _native(tmp))
+        _staged_copy(src, tmp)
         os.replace(_native(tmp), _native(dst))
     except (OSError, ValueError):
         try:

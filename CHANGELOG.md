@@ -54,8 +54,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
   summary used to underreport it).
 - Staging paths are PID-predictable and `shutil.copy2` follows a symlink on
   write: a symlink planted at a `.copy_tmp.<pid>` or
-  `.supersede_tmp.<pid>` staging path is now refused, so it can never
-  redirect a copy outside the tree.
+  `.supersede_tmp.<pid>` staging path is refused, and the bytes are written
+  through an `O_CREAT|O_EXCL`-created handle that is re-checked after the
+  open (Windows follows a dangling link even with `O_EXCL`) instead of
+  re-opening the path, so no data is written through a swapped-in link. An
+  attacker with live write access to the output tree remains out of scope,
+  as for every path check (see Known limits).
 - BOM table cells are read token-wise: a quantity stacked under the value
   (`F10112345\n2`, which used to normalize to the wrong number
   `F101123452`) or an item number before it (`1 F10126108`, dropped) no

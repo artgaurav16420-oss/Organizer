@@ -23,7 +23,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                      fit_roots_within_cap,
                      acquire_run_lock, release_run_lock, abandon_run_lock,
                     LockLostError, _ensure_lock,
-                    _native, _exists, _islink)
+                    _native, _exists, _islink, _staged_copy)
 
 
 class RunCounters(TypedDict):
@@ -662,15 +662,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
             # then archive the old revision, then replace, then drop the old file.
             try:
                 os.makedirs(_native(sup_dir), exist_ok=True)
-                if _islink(staging):
-                    # The staging name is PID-predictable and copy2 follows a
-                    # link on write: a planted/raced symlink would redirect
-                    # the copy outside the tree, so refuse it like every
-                    # other copy path.
-                    log(f"  WARNING: supersede skipped for {rel_old}: "
-                        f"staging path is a symlink: {staging}")
-                    continue
-                shutil.copy2(_native(new_pdf), _native(staging))
+                _staged_copy(new_pdf, staging)
                 if archived:
                     shutil.copy2(_native(p), _native(archive_target))
                 os.replace(_native(staging), _native(target_new))
