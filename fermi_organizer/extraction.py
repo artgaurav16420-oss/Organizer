@@ -1174,15 +1174,22 @@ def _word_row_has_item_before(row_words, x):
     return False
 
 
-_CAPTION_VALUE_RE = re.compile(r"(?:\d+(?::\d+)?|A\d|F[C]?\d+[A-Za-z]?|OF|[A-Z])")
+_CAPTION_VALUE_RE = re.compile(r"(?:\d+(?::\d+)?|A\d|OF|[A-Z])")
+_CAPTION_FERMI_VALUE_RE = re.compile(r"F[C]?\d+[A-Za-z]?")
+# Fields whose caption value is an F-number by design. Other keywords must not
+# let an F-number pass as their value: 'ITEM 1 F10126107' is a BOM row (item
+# number + part), not a caption, and skipping it would drop a real child.
+_CAPTION_FERMI_FIELDS = frozenset(
+    {"USED ON", "DRAWING NUMBER", "NUMBER", "NEXT ASSY"})
 _CAPTION_PHRASES = sorted(TITLE_BLOCK_KEYWORDS, key=len, reverse=True)
 
 
 def _is_caption_row(text):
     """True when a row reads as a title-block caption: one of the configured
     keywords (multi-word phrases included) followed only by value tokens -
-    'SCALE 1:1', 'SHEET 1 OF 2', 'USED ON F10126107', bare 'REV'. A row that
-    merely starts with or contains a keyword word as ordinary text
+    'SCALE 1:1', 'SHEET 1 OF 2', 'USED ON F10126107', bare 'REV'. An F-number
+    is a value only for the fields that hold one (see _CAPTION_FERMI_FIELDS).
+    A row that merely starts with or contains a keyword word as ordinary text
     ('SHEET METAL BRACKET', 'BRACKET USED ON ASSY') is BOM content, not a
     caption."""
     text = " ".join((text or "").upper().split())
@@ -1193,7 +1200,11 @@ def _is_caption_row(text):
             return True
         if text.startswith(kw + " "):
             rest = text[len(kw) + 1:].split()
-            if rest and all(_CAPTION_VALUE_RE.fullmatch(t) for t in rest):
+            fermi_ok = kw in _CAPTION_FERMI_FIELDS
+            if rest and all(
+                    _CAPTION_VALUE_RE.fullmatch(t)
+                    or (fermi_ok and _CAPTION_FERMI_VALUE_RE.fullmatch(t))
+                    for t in rest):
                 return True
     return False
 

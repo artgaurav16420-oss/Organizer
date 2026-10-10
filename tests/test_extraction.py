@@ -811,13 +811,14 @@ def test_used_on_wide_window_requires_horizontal_association():
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
-                 "  sheet  1  of  2 "):
+                 "NEXT ASSY F10126107", "  sheet  1  of  2 "):
         assert extraction._is_caption_row(text), text
 
 
 def test_caption_row_rejects_bom_text():
     for text in ("SHEET METAL BRACKET", "BRACKET USED ON ASSY",
-                 "NAME PLATE", "SCALE BAR", "1 F10126107 BRACKET"):
+                 "NAME PLATE", "SCALE BAR", "1 F10126107 BRACKET",
+                 "ITEM 1 F10126107", "ITEM F10126107"):
         assert not extraction._is_caption_row(text), text
 
 
@@ -855,6 +856,18 @@ def test_positional_row_with_used_on_words_is_kept():
         _cword(130, 100, "BRACKET"), _cword(180, 100, "USED"),
         _cword(210, 100, "ON"),
         _cword(50, 140, "2"), _cword(70, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]
+
+
+def test_positional_item_row_with_fermi_number_kept():
+    # A row 'ITEM 1 F10126107' is a BOM row (item label, item number, part),
+    # not a caption: the child must be emitted, not skipped.
+    page = _CaptionPage([
+        _cword(40, 100, "ITEM"), _cword(70, 100, "1"),
+        _cword(90, 100, "F10126107"),
+        _cword(70, 140, "2"), _cword(90, 140, "F10126108"),
     ])
     found = extraction._extract_bom_positional(page, 1)
     assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]

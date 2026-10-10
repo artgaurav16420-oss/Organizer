@@ -29,6 +29,9 @@ All notable changes to the Fermi PDF organizer are recorded here.
   by value tokens - `SCALE 1:1`, `SHEET 1 OF 2`, `USED ON F10126107`, bare
   `REV` - so value-bearing captions stay effective while BOM text containing a
   keyword word (`BRACKET USED ON ASSY`) no longer disables the rows below it.
+  An F-number counts as a value only for the fields that hold one (USED ON,
+  DRAWING NUMBER, NUMBER, NEXT ASSY): `ITEM 1 F10126107` is a BOM row, not a
+  caption, and its child is kept.
   The same rule now gates the row's own skip test and the positional parser's
   USED ON checks (own row via the full caption test, nearby rows via a
   USED-ON-only caption test, as is the line parser's two-lines-above check):
