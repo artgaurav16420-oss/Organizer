@@ -117,6 +117,28 @@ def test_revision_rank_chk_below_all_dwg():
             < revision_rank("F10126106_B"))
 
 
+def test_revision_rank_two_letter_bijective_base26():
+    # A=1 .. Z=26, AA=27, AB=28 (bijective base-26): two-letter revisions
+    # outrank every single letter instead of tying with no revision.
+    assert revision_letter_rank("F10038961_AA") == 27
+    assert revision_letter_rank("F10038961_AB") == 28
+    assert revision_letter_rank("F10038961_ZZ") == 702
+    assert revision_rank("F10038961_AA") == 27
+    assert revision_rank("F10038961_aa") == 27
+    assert revision_rank("F10038961_AA") > revision_rank("F10038961_Z")
+    assert revision_rank("F10038961_AA") > revision_rank("F10038961_A")
+    # Single-letter behavior is unchanged.
+    assert revision_rank("F10038961_A") == 1
+    assert revision_rank("F10038961_Z") == 26
+    # CHK floor: even the highest two-letter rank stays below no-revision.
+    assert revision_rank("F10038961_ZZ_CHK") == -1000 + 702
+    assert revision_rank("F10038961_ZZ_CHK") < revision_rank("F10038961")
+    # Sheet tokens and other non-letter tokens are not revisions.
+    assert revision_letter_rank("F10038961___DWG2") == 0
+    assert revision_letter_rank("F10038961_DWG2") == 0
+    assert revision_letter_rank("F10038961_CHK") == 0
+
+
 def test_split_superseded_keeps_highest_revision_per_base(tmp_path):
     dummy = tmp_path / "dummy.pdf"
     index = {
@@ -152,12 +174,32 @@ def test_split_superseded_keeps_sibling_sheets(tmp_path):
 
 
 def test_split_superseded_tie_without_sheet_token_keeps_one_stem(tmp_path):
-    """A tie that is not a sheet pair (no sheet token) stays single-winner."""
+    """A tie that is not a sheet pair (no sheet token) stays single-winner:
+    the sorted first-seen stem wins, independent of insertion order."""
     dummy = tmp_path / "dummy.pdf"
     index = {"F10126106___DWG1": dummy, "F10126106": dummy}
     active, old = split_superseded(index)
-    assert set(active) == {"F10126106___DWG1"}
-    assert set(old) == {"F10126106"}
+    assert set(active) == {"F10126106"}
+    assert set(old) == {"F10126106___DWG1"}
+
+
+def test_split_superseded_order_independent(tmp_path):
+    """Tie resolution uses the sorted first-seen stem, so the result must be
+    identical for both dict insertion orders (insertion order used to pick
+    the winner)."""
+    dummy = tmp_path / "dummy.pdf"
+    forward = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy})
+    reverse = split_superseded({"F1_A_DWG1": dummy, "F1_A": dummy})
+    assert set(forward[0]) == set(reverse[0]) == {"F1_A"}
+    assert set(forward[1]) == set(reverse[1]) == {"F1_A_DWG1"}
+
+    # Same-token duplicates keep the lexicographically first export in both
+    # insertion orders.
+    a = split_superseded({"F10126107___DWG1_XML2348": dummy,
+                          "F10126107___DWG1_XML2347": dummy})
+    b = split_superseded({"F10126107___DWG1_XML2347": dummy,
+                          "F10126107___DWG1_XML2348": dummy})
+    assert set(a[0]) == set(b[0]) == {"F10126107___DWG1_XML2347"}
 
 
 def test_split_superseded_dedupes_duplicate_sheet_variants(tmp_path):
