@@ -4,6 +4,16 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Sheet-set tie fixes
+- Mixed ties of a plain stem and its sheeted exports (e.g. `F10038961` /
+  `F10038961___DWG1`) now keep every sheet active instead of archiving the
+  sheeted stems: the dropped sheet's BOM used to be lost, surfacing its
+  children as orphans. Exact duplicate exports of one sheet still collapse
+  to the sorted-first stem.
+- `match_pdfs` applies the same rule to an exact reference hit (same base
+  and revision rank only - never across revisions), so a plain reference
+  now also places the sibling sheets instead of dropping them.
+
 ### Logic-audit fixes (round 2)
 - `BAD_DESC_RE` no longer rejects part names starting with `ENERGY`
   (`ENERGY ABSORBER`); the boilerplate title-block line is still caught via
