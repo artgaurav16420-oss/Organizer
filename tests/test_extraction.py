@@ -882,6 +882,53 @@ def test_fermi_line_title_block_used_on_caption_only():
         ["BRACKET USED ON ASSY", "SPEC", "F10126107"], 2)
 
 
+def test_line_bom_stacked_used_on_values_all_title_block():
+    # Every value in a USED ON stack is title block, not just the values two
+    # lines below the label: the third+ values used to become BOM children.
+    lines = ["USED ON", "F10200001", "F10200002", "F10200003"]
+    assert extraction._line_bom_entries(lines, 1) == []
+    # A bare F-number run away from a USED ON label still parses.
+    lines = ["FERMI PART LIST", "F10200001", "F10200002"]
+    assert [e[0] for e in extraction._line_bom_entries(lines, 1)] == \
+        ["F10200001", "F10200002"]
+
+
+def test_bad_desc_rejects_labels_not_word_prefixes():
+    for text in ("REV A BRACKET", "PART NUMBER", "PARTS LIST", "NOTES:",
+                 "FIGURE 3", "TABLE 1", "USED ON", "ITEM 1 BRACKET",
+                 "UNLESS OTHERWISE SPECIFIED", "ASSEMBLY", "MATERIALS:",
+                 "SUBASSEMBLY DETAIL"):
+        assert extraction.BAD_DESC_RE.match(text), text
+    for text in ("REVERSE SHAFT", "PARTITION PLATE", "TABLETOP BRACKET",
+                 "VIEWPORT COVER", "CODER WHEEL", "PARTICLE BOARD"):
+        assert not extraction.BAD_DESC_RE.match(text), text
+
+
+def test_table_rows_take_whole_fermi_token():
+    # A cell can stack the value and its quantity ('F10112345\n2' used to
+    # normalize to the wrong number) or carry an item number before the value
+    # ('1 F10126108', dropped): the whole FERMI token wins.
+    data = [["ITEM", "FERMI NO.", "PART NAME"],
+            ["1", "F10126107", "BRACKET"],
+            ["2", "F10112345\n2", "SHIM"],
+            ["3", "1 F10126108", "WASHER"]]
+    entries = extraction._table_rows_to_entries(data, 0, 1, 1)
+    assert [e[0] for e in entries] == ["F10126107", "F10112345", "F10126108"]
+
+
+def test_drawing_name_skips_parts_list_header_pair(tmp_path, make_pdf):
+    # 'PART' above 'NAME' is a parts-list column header; the cell below it is
+    # not the drawing name.
+    pdf = make_pdf(tmp_path / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "ITEM", "PART", "NAME", "1",
+        "BRACKET",
+        "NAME", "ACTUAL BRACKET NAME"])
+    doc = fitz.open(pdf)
+    assert extraction.extract_drawing_name(doc) == "ACTUAL BRACKET NAME"
+    doc.close()
+
+
 def test_positional_row_own_used_on_text_kept():
     # The row's own text mentioning USED ON must not mark it as title block.
     rows = {100: [(50, "1"), (70, "F10126107"), (130, "BRACKET"),

@@ -4,6 +4,45 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Logic-audit fixes (round 2)
+- `BAD_DESC_RE` now matches whole words: a single-line BOM row whose part
+  name starts like a label (`REVERSE SHAFT`, `PARTITION PLATE`, `TABLETOP`)
+  is no longer rejected as `REV`/`PART`/`TABLE` text. Plural and
+  `FIGURE`/`ASSEMBLY` forms still match.
+- A stacked USED ON block (`USED ON` followed by several F-number lines) is
+  now entirely title block: the line parser walks up the whole run of
+  F-number lines to the label, so the third+ values no longer become phantom
+  BOM children.
+- In-place `--incremental` (output == input) keeps only tree-shaped copies
+  as organized: a PDF whose parent folder does not start with its own base
+  number (a file dropped at the root or in an input subfolder) counts as a
+  new arrival instead of being silently skipped - or worse, having its
+  input subfolder adopted/moved by parent adoption.
+- `_shorten_names` no longer stops at the first over-length placement it
+  cannot shrink (bare base-number stems sit at their floor): every
+  over-length path is attempted, so later shrinkable paths fit `MAX_PATH`
+  instead of being skipped at placement time.
+- Incremental supersede re-homing copies a child that also lives under
+  another parent (the other parent keeps its copy, like place_files) and
+  moves only a sole copy; previously the move hollowed out the other
+  parent's subtree.
+- A new child referenced by several organized parents is placed under every
+  claimant, not just the alphabetically first one (full-mode parity).
+- A failed supersede swap leaves the new revision as a new arrival (placed
+  and retried next run) instead of marking it organized with no tree copy -
+  which used to strand its children at the output root.
+- `place_files` and `copy_orphans` stage each copy next to its target and
+  `os.replace` into place: a failure mid-write leaves no truncated PDF in
+  the tree, so the next run retries instead of treating it as placed. The
+  staging sweep also removes `.copy_tmp.<pid>` leftovers.
+- BOM table cells are read token-wise: a quantity stacked under the value
+  (`F10112345\n2`, which used to normalize to the wrong number
+  `F101123452`) or an item number before it (`1 F10126108`, dropped) no
+  longer corrupts the extracted value.
+- The text-path NAME extraction skips a parts-list header pair (`PART`
+  directly above `NAME`): the cell below it is no longer taken as the
+  drawing name.
+
 ### Placement correctness fixes
 - Sibling sheets of one drawing (e.g. `F10038961___DWG1` / `___DWG2`) are no
   longer treated as rival revisions: the lower-ranked sheet was dropped with

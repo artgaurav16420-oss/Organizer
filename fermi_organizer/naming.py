@@ -69,43 +69,43 @@ def _placement_len(comps, base_folder, index, get_name):
 
 
 def _shorten_names(placements, names, get_name, total_len):
-    """Trim folder names in place until every path fits MAX_PATH or no progress."""
+    """Trim folder names in place until every path fits MAX_PATH or no progress.
+
+    Every over-length placement is attempted each pass: the first one may be
+    irreducible (bare base-number stems sit at their floor), and stopping
+    there would leave later, shrinkable paths over the limit and skipped at
+    placement time."""
     cache = {}
     for _ in range(NAME_SHORTEN_MAX_PASSES):
-        over = None
+        changed = False
         for comps in placements:
             tl = cache.get(comps)
             if tl is None:
                 tl = total_len(comps)
                 cache[comps] = tl
-            if tl > MAX_PATH:
-                over = (comps, tl)
-                break
-        if over is None:
-            break
-        comps, tl = over
-        excess = tl - MAX_PATH
-        changed = False
-        renamed = set()
-        for c in reversed(comps):
-            cur = get_name(c)
-            floor = len(c.split("_")[0])  # base part number, e.g. F10126106
-            if len(cur) > floor:
-                new_len = max(floor, len(cur) - excess)
-                new_name = cur[:new_len].rstrip(" ,-._")
-                if len(new_name) < floor:
-                    new_name = cur[:floor]
-                if new_name != cur:
-                    names[c] = new_name
-                    renamed.add(c)
-                    excess -= len(cur) - len(new_name)
-                    changed = True
-                    if excess <= 0:
-                        break
-        if renamed:
-            for key in list(cache):
-                if any(c in renamed for c in key):
-                    cache.pop(key, None)
+            if tl <= MAX_PATH:
+                continue
+            excess = tl - MAX_PATH
+            renamed = set()
+            for c in reversed(comps):
+                cur = get_name(c)
+                floor = len(c.split("_")[0])  # base part number, e.g. F10126106
+                if len(cur) > floor:
+                    new_len = max(floor, len(cur) - excess)
+                    new_name = cur[:new_len].rstrip(" ,-._")
+                    if len(new_name) < floor:
+                        new_name = cur[:floor]
+                    if new_name != cur:
+                        names[c] = new_name
+                        renamed.add(c)
+                        excess -= len(cur) - len(new_name)
+                        if excess <= 0:
+                            break
+            if renamed:
+                changed = True
+                for key in list(cache):
+                    if any(c in renamed for c in key):
+                        cache.pop(key, None)
         if not changed:
             break
 

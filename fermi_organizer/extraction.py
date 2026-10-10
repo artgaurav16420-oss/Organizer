@@ -23,7 +23,7 @@ from .config import (canonical_stem,
                      TB_REV_DX_LEFT, TB_REV_DX_RIGHT, TB_REV_DY_BOTTOM,
                      TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT, TB_NUM_DY_BOTTOM,
                      TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM,
-                     FERMI_ANY_RE, FERMI_RE, FERMI_RE_SEARCH,
+                     FERMI_RE, FERMI_RE_SEARCH,
                      FERMI_HEADER_RE, OCR_MIN_CHARS, OCR_MAIN_DPI, OCR_STRIP_DPI,
                      OCR_VAL_RE, OCR_CORR, ITEM_RE, BAD_DESC_RE, SIZE_RE,
                      SINGLE_LINE_RE, TOKEN_RE, USED_RE, STOP_RE,
@@ -811,9 +811,15 @@ def _table_rows_to_entries(data, hdr_idx, fermi_col, page_num):
     for row in data[hdr_idx + 1:]:
         if fermi_col >= len(row):
             continue
-        val = normalize(row[fermi_col])
-        if FERMI_ANY_RE.match(val):
-            entries.append((val, page_num, "table"))
+        # A cell can carry more than the value: a quantity stacked under it
+        # ('F10126145\n2' used to normalize to 'F101261452' - a wrong part
+        # number) or an item number before it ('1 F10126108', dropped). Take
+        # the first whitespace-separated token that is a whole FERMI value.
+        for token in re.split(r"\s+", str(row[fermi_col] or "")):
+            val = normalize(token)
+            if FERMI_RE.match(val):
+                entries.append((val, page_num, "table"))
+                break
     return entries
 
 
@@ -869,6 +875,16 @@ def _fermi_line_is_title_block(lines, i):
             is_title_block = True
     if not is_title_block and i > 1:
         if _is_used_on_caption(lines[i - 2]):
+            is_title_block = True
+    if not is_title_block:
+        # A stack of USED ON values ('USED ON' then several F-number lines)
+        # is all title block: walk up over the consecutive run of F-number
+        # lines to its label, so every value in the stack is skipped, not
+        # just the two nearest the label.
+        j = i - 1
+        while j >= 0 and FERMI_RE.match(lines[j].strip()):
+            j -= 1
+        if j >= 0 and _is_used_on_caption(lines[j]):
             is_title_block = True
     return is_title_block
 
@@ -1357,6 +1373,11 @@ def extract_drawing_name(doc):
                   "DRAWING NUMBER", "MATERIAL", "N/A", "USED ON", "1 OF 1"}
     for i, line in enumerate(lines):
         if line.upper() == "NAME" and i + 1 < len(lines):
+            # A parts-list header pair ('PART' line directly above 'NAME')
+            # labels a BOM column: the line below is a cell, not the name.
+            prev = lines[i - 1].upper() if i > 0 else ""
+            if prev == "PART" or prev.startswith("PART "):
+                continue
             candidate = lines[i + 1]
             if candidate.upper() not in skip_words:
                 return candidate

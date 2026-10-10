@@ -303,6 +303,26 @@ def fit_roots_within_cap(children, roots, log):
     return kept, skipped
 
 
+def _copy_atomic(src, dst):
+    """Copy `src` to `dst` via a temp name in the target folder.
+
+    shutil.copy2 writes the destination in place, so a failure mid-write
+    leaves a truncated PDF at `dst` that later runs treat as placed and never
+    retry. Stage next to the target and os.replace, so the target is either
+    absent or complete; a failed attempt removes its own temp file.
+    """
+    tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
+    try:
+        shutil.copy2(_native(src), _native(tmp))
+        os.replace(_native(tmp), _native(dst))
+    except (OSError, ValueError):
+        try:
+            os.unlink(_native(tmp))
+        except OSError:
+            pass
+        raise
+
+
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
                 lock=None):
     """Copy every root's subtree into nested folders; returns the copy count.
@@ -374,7 +394,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     failed_count += count_copies(stem)
                     continue
                 try:
-                    shutil.copy2(_native(pdf), _native(target))
+                    _copy_atomic(pdf, target)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
@@ -711,21 +731,23 @@ def scan_output_tree(output):
 
 
 def sweep_supersede_staging(output, dry_run, log):
-    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` staging files.
+    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` and
+    `<name>.pdf.copy_tmp.<pid>` staging files.
 
     _swap_revision_files stages the new revision next to its target before
-    os.replace; a run killed mid-swap leaves the staging file behind. It
-    never ends in .pdf, so scans ignore it - only this sweep cleans it up.
-    Only the exact staging shape is swept (a PDF target name plus
-    `.supersede_tmp.<digits>`), and "_"-prefixed system dirs are pruned from
-    the walk: staging only ever happens next to targets in the organized
-    tree, so matching lookalikes elsewhere are not ours to delete.
-    Dry-run reports without touching the tree.
+    os.replace, and _copy_atomic stages every copy the same way; a run killed
+    mid-operation leaves the staging file behind. It never ends in .pdf, so
+    scans ignore it - only this sweep cleans it up. Only the exact staging
+    shapes are swept (a PDF target name plus `.supersede_tmp.<digits>` or
+    `.copy_tmp.<digits>`), and "_"-prefixed system dirs are pruned from the
+    walk: staging only ever happens next to targets in the organized tree, so
+    matching lookalikes elsewhere are not ours to delete. Dry-run reports
+    without touching the tree.
     """
     output = Path(output)
     if not output.is_dir():
         return
-    staging_re = re.compile(r"\.pdf\.supersede_tmp\.\d+$", re.IGNORECASE)
+    staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
     for dirpath, dirnames, filenames in os.walk(output):
         if Path(dirpath) == output:
             # Only top-level "_" dirs are system dirs; nested ones are not
@@ -1007,8 +1029,8 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
         else:
             try:
                 os.makedirs(_native(orphans_dir), exist_ok=True)
-                shutil.copy2(_native(pdf), _native(target))
-            except OSError as e:
+                _copy_atomic(pdf, target)
+            except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
         n += 1

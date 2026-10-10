@@ -635,7 +635,8 @@ def test_place_files_valueerror_copy_failure_not_fatal(tmp_path, monkeypatch):
     real_copy2 = fsops.shutil.copy2
 
     def fake_copy2(src, dst):
-        if Path(dst).name == "F10126106.pdf":
+        # Copies stage through a temp name next to the target: match both.
+        if Path(dst).name.startswith("F10126106.pdf"):
             raise ValueError("embedded null character")
         return real_copy2(src, dst)
 
@@ -1405,6 +1406,80 @@ def test_sweep_supersede_staging_missing_output_is_noop(tmp_path):
     logged = []
     sweep_supersede_staging(tmp_path / "nope", False, logged.append)
     assert logged == []
+
+
+def test_sweep_removes_copy_tmp_staging(tmp_path):
+    d = tmp_path / "F10126106 Assembly"
+    d.mkdir()
+    leftover = d / "F10126107.pdf.copy_tmp.12345"
+    leftover.write_bytes(b"partial")
+    lookalike = d / "F10126107.pdf.copy_tmp.notdigits"
+    lookalike.write_bytes(b"x")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, False, logged.append)
+
+    assert not leftover.exists()
+    assert lookalike.is_file()
+
+
+def test_place_files_failed_copy_leaves_no_partial_target(tmp_path, monkeypatch):
+    # A failure mid-write must not leave a truncated PDF at the target:
+    # later runs treat any tree PDF as placed and would never retry it.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real-bytes")
+    calls = {"n": 0}
+    real = fsops.shutil.copy2
+
+    def flaky(src, dst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            Path(dst).write_bytes(b"partial")
+            raise OSError("disk full")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", flaky)
+    target = folder / "F10126106" / "F10126106.pdf"
+
+    place_files({"F10126106": ["F10126106"]}, ["F10126106"],
+                {"F10126106": pdf}, folder, False, lambda m: None)
+    assert not target.exists()
+    assert not [p for p in folder.rglob("*") if "copy_tmp" in p.name]
+
+    # The next run retries and completes.
+    place_files({"F10126106": ["F10126106"]}, ["F10126106"],
+                {"F10126106": pdf}, folder, False, lambda m: None)
+    assert target.read_bytes() == b"%PDF-real-bytes"
+
+
+def test_copy_orphans_failed_copy_leaves_no_partial(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    out.mkdir()
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real")
+    calls = {"n": 0}
+    real = fsops.shutil.copy2
+
+    def flaky(src, dst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            Path(dst).write_bytes(b"partial")
+            raise OSError("boom")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(fsops.shutil, "copy2", flaky)
+    target = out / "_orphans" / "F10126106.pdf"
+
+    n1 = copy_orphans(["F10126106"], {"F10126106": pdf}, out, False,
+                      lambda m: None)
+    assert n1 == 0
+    assert not target.exists()
+
+    n2 = copy_orphans(["F10126106"], {"F10126106": pdf}, out, False,
+                      lambda m: None)
+    assert n2 == 1
+    assert target.read_bytes() == b"%PDF-real"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")
