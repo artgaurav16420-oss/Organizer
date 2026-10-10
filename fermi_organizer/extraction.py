@@ -1189,11 +1189,15 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         if prev_y < y_key - 30:
             break
         prev_text = " ".join(w for _, w in sorted(rows[prev_y], key=lambda t: t[0]))
-        if "USED ON" in prev_text.upper():
+        prev_up = prev_text.upper()
+        if "USED ON" in prev_up:
+            return True
+        # Whole-row match only: a keyword word inside a BOM row's text (e.g.
+        # 'SHEET METAL BRACKET') must not disable the rows below it, but the
+        # row must be a title-block caption - 'REV', 'SCALE 1:1', 'USED ON'.
+        if prev_up in TITLE_BLOCK_KEYWORDS:
             return True
         for _, w in rows[prev_y]:
-            if w.upper() in TITLE_BLOCK_KEYWORDS:
-                return True
             if SIZE_RE.match(w):
                 return True
     return False

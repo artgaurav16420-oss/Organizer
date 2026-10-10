@@ -767,6 +767,36 @@ def _wide_window_rows(label_x):
     return rows
 
 
+def test_word_path_row_with_keyword_words_not_title_block():
+    """A BOM row's own text may contain a title-block keyword word
+    ('SHEET METAL BRACKET'); only whole-row keyword captions (or a USED ON /
+    drawing-size cell) mark the title block, so such a row must not disable
+    the F-number rows below it."""
+    rows = {100: [(50, "SHEET"), (74, "METAL"), (98, "BRACKET"), (122, "ITEM")],
+            110: [(50, "1"), (60, "F10126107")],
+            120: [(50, "2"), (60, "F10126108")]}
+    ys = sorted(rows)
+    y_index = {y: i for i, y in enumerate(ys)}
+    row_words = sorted(rows[110], key=lambda t: t[0])
+
+    assert not extraction._word_row_is_title_block(rows, ys, 110, row_words,
+                                                   y_index)
+
+
+def test_word_path_keyword_caption_row_is_title_block():
+    # Whole-row title-block captions still disable the rows below them.
+    rows = {100: [(50, "USED"), (74, "ON")],
+            110: [(50, "F10126109")],
+            120: [(50, "SIZE"), (74, "A0")],
+            130: [(50, "1"), (60, "F10126107")]}
+    ys = sorted(rows)
+    y_index = {y: i for i, y in enumerate(ys)}
+    assert extraction._word_row_is_title_block(rows, ys, 110,
+                                               sorted(rows[110]), y_index)
+    assert extraction._word_row_is_title_block(rows, ys, 130,
+                                               sorted(rows[130]), y_index)
+
+
 def test_used_on_wide_window_requires_horizontal_association():
     ys = sorted(_wide_window_rows(50))
     y_idx = ys.index(150)

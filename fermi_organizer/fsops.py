@@ -1024,10 +1024,12 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                            planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    A live same-stem copy only counts when its bytes match the parked copy:
-    a differing copy may be the only copy of those bytes (e.g. the input was
-    updated after the parked copy was made), so the parked copy is kept with
-    a warning instead. `superseded` must list only stems whose archive copy
+    Only a byte-identical copy retires the parked copy: a differing copy may
+    be the only copy of those bytes (e.g. the input was updated after the
+    parked copy was made), so the parked copy is kept with a warning instead.
+    A superseded stem therefore also needs its bytes somewhere - in the tree
+    or in the archive - and a live same-stem copy only counts when its bytes
+    match the parked copy. `superseded` must list only stems whose archive copy
     was verified written (e.g. copy_superseded's archived set) - a failed
     archive must never delete the parked copy. In dry-run only, stems in
     planned (placed by this run but not yet on disk) also count as live.
@@ -1035,10 +1037,9 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     `scan_output_tree` result) to avoid redundant filesystem scans when the
     tree on disk has not changed.
     """
+    scan = scan_res if scan_res is not None else scan_output_tree(folder)
     live_pdfs = defaultdict(list)
-    tree_pdfs = (scan_res["tree"] if scan_res is not None
-                 else scan_output_tree(folder)["tree"])
-    for p in tree_pdfs:
+    for p in scan["tree"]:
         stem = canonical_stem(p.stem)
         if stem:
             live_pdfs[stem].append(p)
@@ -1056,7 +1057,19 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
             if live or o in sup or o in planned_set:
                 log(f"  WARNING: could not retire orphan copy {o}: symlink refused: {opath}")
             continue
-        if o not in sup and o not in planned_set:
+        if o in sup and o not in planned_set:
+            # The superseding archive only justifies retirement when it (or a
+            # live tree copy) holds the parked bytes: otherwise the parked copy
+            # is the sole holder of those bytes and must survive.
+            copies = live + [p for p in scan["sup"]
+                            if canonical_stem(p.stem) == o]
+            retireable = any(not _islink(p) and _same_bytes(p, opath)
+                             for p in copies)
+            if not retireable:
+                log(f"  WARNING: orphan copy {o} not retired: no "
+                     f"byte-identical copy in tree or _superseded/; kept: {opath}")
+                continue
+        elif o not in planned_set:
             # Only a byte-identical regular live copy retires the parked
             # copy; a symlinked live entry never counts (same rule as the
             # archive byte-verify: a link is not a managed copy).
@@ -1065,7 +1078,7 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
             if not retireable:
                 if live:
                     log(f"  WARNING: orphan copy {o} not retired: no "
-                        f"byte-identical regular live copy; kept: {opath}")
+                         f"byte-identical regular live copy; kept: {opath}")
                 continue
         if dry_run:
             log(f"  [DRY-RUN] retire orphan copy: {opath.relative_to(folder)} (now placed in tree)")

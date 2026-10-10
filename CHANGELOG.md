@@ -4,6 +4,28 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Placement correctness fixes
+- Sibling sheets of one drawing (e.g. `F10038961___DWG1` / `___DWG2`) are no
+  longer treated as rival revisions: the lower-ranked sheet was dropped with
+  its BOM, so its children surfaced as orphans and were never placed under
+  the drawing. `split_superseded` now keeps every top-ranked stem per base
+  when all tied stems carry a sheet token; any other tie keeps the previous
+  first-seen winner. `match_pdfs` likewise returns every sibling sheet as a
+  child of a drawing reference, so a parent that lists the drawing gets all
+  sheets (a full run places each sheet with its own subtree, and nests every
+  sheet under such a parent).
+- `retire_adopted_orphans` no longer deletes a parked `_orphans/` copy on the
+  superseded stem alone: the parked copy is retired only when its exact bytes
+  survive somewhere else - in the tree or in the archive (`_superseded/`).
+  Otherwise the parked copy is the only holder of those bytes and is kept
+  with a warning. Affects the deletion path only; dry-run reporting is
+  unchanged.
+- The word-path title-block check no longer treats a title-block keyword word
+  inside a BOM row (`SHEET METAL BRACKET`) as a title-block caption: that
+  silently dropped the F-number rows below it. Only whole-row keyword
+  captions, `USED ON`, and drawing-size cells mark the title block (the
+  positional parser already compared whole cells).
+
 ### Placement fan-out guard
 - Over-cap runs now degrade gracefully instead of refusing the whole batch:
   `fit_roots_within_cap` drops the largest roots (deterministic stem-order

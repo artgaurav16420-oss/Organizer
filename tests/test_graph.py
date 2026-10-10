@@ -133,6 +133,33 @@ def test_split_superseded_keeps_highest_revision_per_base(tmp_path):
     assert set(active) | set(old) == set(index)
 
 
+def test_split_superseded_keeps_sibling_sheets(tmp_path):
+    """Sibling sheets of one drawing are not rival revisions: dropping a
+    sheet would drop its BOM (its children would surface as orphans)."""
+    dummy = tmp_path / "dummy.pdf"
+    index = {
+        "F10038961___DWG1": dummy,
+        "F10038961___DWG2": dummy,
+        "F10038961_B___DWG1": dummy,
+        "F10038961_B___DWG2": dummy,
+        "F10038961_B_CHK": dummy,
+    }
+    active, old = split_superseded(index)
+    assert set(active) == {"F10038961_B___DWG1", "F10038961_B___DWG2"}
+    assert set(old) == {"F10038961___DWG1", "F10038961___DWG2",
+                        "F10038961_B_CHK"}
+    assert set(active) | set(old) == set(index)
+
+
+def test_split_superseded_tie_without_sheet_token_keeps_one_stem(tmp_path):
+    """A tie that is not a sheet pair (no sheet token) stays single-winner."""
+    dummy = tmp_path / "dummy.pdf"
+    index = {"F10126106___DWG1": dummy, "F10126106": dummy}
+    active, old = split_superseded(index)
+    assert set(active) == {"F10126106___DWG1"}
+    assert set(old) == {"F10126106"}
+
+
 def test_match_pdfs_exact_and_revision_pick():
     stems = {"F10126107", "F10126107_A", "F10126107_B", "F10126108"}
     assert match_pdfs("F10126107", stems) == ["F10126107"]
@@ -140,6 +167,16 @@ def test_match_pdfs_exact_and_revision_pick():
     assert match_pdfs("F10126107", {"F10126107_C"}) == ["F10126107_C"]
     assert match_pdfs("F10126107_A", stems) == ["F10126107_A"]
     assert match_pdfs("F10126109", stems) == []
+
+
+def test_match_pdfs_sibling_sheets_all_children():
+    # A reference lists the drawing, not one sheet: both sibling sheets are
+    # children (each keeps its own BOM).
+    stems = {"F10126106_A___DWG1", "F10126106_A___DWG2", "F10126107"}
+    assert match_pdfs("F10126106_A", stems) == \
+        ["F10126106_A___DWG1", "F10126106_A___DWG2"]
+    assert match_pdfs("F10126106", {"F10126106___DWG1", "F10126106___DWG2"}) == \
+        ["F10126106___DWG1", "F10126106___DWG2"]
 
 
 def test_match_pdfs_negative_lookahead_blocks_loose_prefix():
