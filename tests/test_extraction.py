@@ -756,3 +756,23 @@ def test_export_for_pymupdf_switch_drops_stale_prefix(monkeypatch, tmp_path):
     parts = os.environ["PATH"].split(os.pathsep)
     assert str(a) not in parts and parts[0] == str(b)
     assert os.environ["TESSDATA_PREFIX"] == str(b / "tessdata")
+
+
+def _wide_window_rows(label_x):
+    """USED ON label 4 rows above a data row (y=150), with spec text between."""
+    rows = {110: [(label_x, "USED"), (label_x + 20, "ON")]}
+    for y in (120, 130, 140):
+        rows[y] = [(50, "SPEC")]
+    rows[150] = [(50, "12"), (200, "X")]
+    return rows
+
+
+def test_used_on_wide_window_requires_horizontal_association():
+    ys = sorted(_wide_window_rows(50))
+    y_idx = ys.index(150)
+    # Label in the row's own column: rejected as title-block content.
+    aligned = _wide_window_rows(50)
+    assert extraction._positional_row_is_title_block(aligned, ys, y_idx, 150)
+    # Same vertical gap, label in a different column: the row is kept.
+    far = _wide_window_rows(600)
+    assert not extraction._positional_row_is_title_block(far, ys, y_idx, 150)

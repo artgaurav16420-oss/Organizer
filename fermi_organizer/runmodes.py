@@ -800,7 +800,10 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
             if current == old or current.is_relative_to(old):
                 current = new / current.relative_to(old)
                 break
-        if not _exists(current):
+        # A dry run never moves anything, so a folder it "moved" is simulated
+        # at its destination: accept that as present for later claimants.
+        simulated = dry_run and current in moved_dirs.values()
+        if not simulated and not _exists(current):
             log(f"  {c}: already moved, skipping")
             continue
         if _shared_folder_blocks_move(c, current, output, log):
@@ -844,10 +847,15 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
         if dry_run:
             log(f"  [DRY-RUN] copy {current.relative_to(output)} -> {target_path.relative_to(output)}")
         else:
+            # symlinks=True copies links as links; the default would copy the
+            # link targets' contents, which may live outside the tree.
             try:
-                shutil.copytree(str(current), str(target_path))
+                shutil.copytree(str(current), str(target_path), symlinks=True)
             except OSError as e:
                 log(f"  WARNING: copy failed for {c}: {e}")
+                # The target did not exist before this call, so a partial copy
+                # is ours to remove; leaving it would make later runs skip c.
+                shutil.rmtree(str(target_path), ignore_errors=True)
                 continue
         copies += sum(1 for paths in organized.values() for p in paths
                       if p.is_relative_to(current))

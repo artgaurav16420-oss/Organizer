@@ -984,6 +984,11 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     # by design, i.e. a certain false BOM edge. Only USED ON gets the wide
     # window; other keywords stay tight so genuine rows near spec text keep
     # working.
+    # The wide window must also be horizontally associated with this row: a
+    # USED ON label in another column (or a neighbouring drawing's block) is
+    # not this row's title-block cell.
+    row_xs = [x for x, _ in rows[y]]
+    lo, hi = min(row_xs) - 60, max(row_xs) + 60
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break
@@ -991,7 +996,10 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         if prev_y < y - 100:
             break
         if "USED ON" in _dict_row_text(rows, prev_y).upper():
-            return True
+            label_xs = [x for x, t in rows[prev_y]
+                        if "USED" in t.upper() or t.upper() == "ON"]
+            if any(lo <= x <= hi for x in label_xs):
+                return True
     return False
 
 

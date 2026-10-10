@@ -264,6 +264,33 @@ def test_place_above_organized_children_shared_folder_skips(tmp_path, dry_run,
         assert (out / "F10126109 Higher assembly" / "F10126109.pdf").is_file()
 
 
+def test_nested_child_copy_failure_leaves_no_partial_target(tmp_path, make_pdf,
+                                                            monkeypatch):
+    out = tmp_path / "out"
+    parent = out / "F10126106 Parent"  # live parent: child is nested, so copied
+    child_folder = parent / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    new_pdf = make_pdf(tmp_path / "F10126109.pdf", ["NAME", "Higher assembly"])
+
+    def partial_then_fail(src, dst, *a, **k):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "partial.pdf").write_bytes(b"")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copytree", partial_then_fail)
+    logged = []
+    _place_above_organized_children(
+        "F10126109", ["F10126107"], {"F10126109": set()},
+        {"F10126109": new_pdf}, {"F10126109": "Higher assembly"},
+        {"F10126107": [child_folder / "F10126107.pdf"]}, {}, out,
+        False, logged.append)
+
+    target = out / "F10126109 Higher assembly" / "F10126107 Child"
+    assert not target.exists()
+    assert any("copy failed for F10126107" in m for m in logged)
+
+
 def test_copy_orphans_then_retire_adopted(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
