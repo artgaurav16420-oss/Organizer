@@ -13,23 +13,31 @@ def is_chk_stem(stem):
 
 
 def revision_letter_rank(stem):
-    """Letter rank of the revision token: ___ (no rev) = 0, A = 1, B = 2, etc."""
+    """Letter rank of the revision token: ___ (no rev) = 0, A = 1 .. Z = 26,
+    AA = 27, AB = 28 (bijective base-26). A token that is not one or two
+    letters (CHK, DWG2, ...) counts as no revision."""
     parts = stem.split("_")
     if len(parts) < 2 or not parts[1]:
         return 0
     rev = parts[1]
-    if len(rev) == 1 and rev.isalpha():
-        return ord(rev.upper()) - ord("A") + 1
+    if rev.isalpha() and len(rev) <= 2:
+        rank = 0
+        for ch in rev.upper():
+            rank = rank * 26 + (ord(ch) - ord("A") + 1)
+        return rank
     return 0
 
 
 def revision_rank(stem):
-    """Rank revisions: CHK = -1000+letter (unapproved, loses to any DWG but still
-    ordered by its own letter), ___ (no rev) = 0, A = 1, B = 2, etc."""
+    """Rank revisions: CHK = -1000+letter (unapproved, loses to any DWG but
+    still ordered by its own letter), ___ (no rev) = 0, A = 1, B = 2, ...,
+    Z = 26, AA = 27 (bijective base-26, so a two-letter rev beats any single
+    letter)."""
     if is_chk_stem(stem):
         # CHK drawings are unapproved: rank below ALL DWG ranks but still order
         # CHK revisions among themselves (A_CHK < B_CHK).  -1000 floor + letter
-        # rank (max 26) keeps them ordered and below the lowest DWG rank (0).
+        # rank (max 702 for ZZ) keeps them ordered and below the lowest DWG
+        # rank (0).
         return -1000 + revision_letter_rank(stem)
     return revision_letter_rank(stem)
 
@@ -67,10 +75,11 @@ def split_superseded(index):
     token when every tied stem carries one: sibling sheets are all kept (a
     dropped sheet would drop its BOM, surfacing its children as orphans),
     while duplicate exports of one sheet collapse. Any other tie keeps the
-    first-seen stem, as before.
+    first-seen stem. Stems are collected in sorted order, so tie resolution
+    is deterministic and independent of dict insertion order.
     """
     by_base = defaultdict(list)
-    for s in index:
+    for s in sorted(index):
         by_base[s.split("_")[0]].append(s)
     active_stems = set()
     for stems in by_base.values():

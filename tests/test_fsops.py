@@ -379,17 +379,20 @@ def test_build_pdf_index_classification_warnings_and_order(tmp_path):
                 os.path.join("sub2", "F10126106.pdf"), "notes.pdf",
                 os.path.join("Output", "F10126108.pdf"),
                 os.path.join("_orphans", "F10126109.pdf"),
-                "F10126110_AB.pdf", "F10126111__CHK.pdf"):
+                "F10126110_ABC.pdf", "F10126111__CHK.pdf",
+                "F10126112_AA.pdf"):
         (tmp_path / rel).write_bytes(b"%PDF")
 
     lines = []
     index, duplicates = build_pdf_index(tmp_path, lines.append)
 
-    assert sorted(index) == ["F10126106", "F10126107", "F10126110_AB",
-                             "F10126111__CHK"]
+    assert sorted(index) == ["F10126106", "F10126107", "F10126110_ABC",
+                             "F10126111__CHK", "F10126112_AA"]
     assert index["F10126106"] == tmp_path / "F10126106.pdf"
     assert index["F10126107"] == tmp_path / "sub" / "F10126107.pdf"
     assert duplicates["F10126106"] == [tmp_path / "sub2" / "F10126106.pdf"]
+    # Two-letter revisions (AA) are ranked now, so they are not "unusual";
+    # a three-letter token still is.
     assert lines == [
         "Skipped 1 PDF(s) under the output tree (organized copies are never input)",
         "Skipped 1 PDF(s) under _-prefixed folders (system dirs are never input)",
@@ -398,7 +401,7 @@ def test_build_pdf_index_classification_warnings_and_order(tmp_path):
         "Ignored 1 PDF(s) with non-part filenames:",
         "  notes.pdf",
         "WARNING: 1 stem(s) with unrecognized revision token (rank treated as 0):",
-        "  F10126110_AB",
+        "  F10126110_ABC",
     ]
 
 
