@@ -261,17 +261,17 @@ def test_place_files_aborts_when_lock_stolen_mid_run(tmp_path, monkeypatch):
     folder_names = {"P": "P Parent", "A": "A Child", "B": "B Child"}
 
     lock = acquire_run_lock(out, False, lambda m: None)
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
     calls = []
 
-    def stealing_copy2(s, d, *a, **k):
-        out_ = real_copy2(s, d, *a, **k)
-        calls.append(d)
+    def stealing_copyfileobj(fsrc, fdst, *a, **k):
+        out_ = real_copyfileobj(fsrc, fdst, *a, **k)
+        calls.append(fdst)
         if len(calls) == 1:
             fsops._heartbeats[str(lock)][2].set()  # stealer strikes mid-run
         return out_
 
-    monkeypatch.setattr(fsops.shutil, "copy2", stealing_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", stealing_copyfileobj)
     logged = []
     try:
         with pytest.raises(LockLostError):
@@ -602,14 +602,14 @@ def test_place_files_copy_failure_skips_file_continues_children(tmp_path, monkey
     child_pdf.write_bytes(b"%PDF")
     index = {"F10126106": parent_pdf, "F10126107": child_pdf}
     children = {"F10126106": ["F10126107"]}
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(src, dst):
-        if Path(src).name == "F10126106.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        if Path(fsrc.name).name == "F10126106.pdf":
             raise OSError("disk full")
-        return real_copy2(src, dst)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
 
     total = place_files(children, ["F10126106"], index, folder, False, logged.append)
@@ -632,14 +632,16 @@ def test_place_files_valueerror_copy_failure_not_fatal(tmp_path, monkeypatch):
     child_pdf.write_bytes(b"%PDF")
     index = {"F10126106": parent_pdf, "F10126107": child_pdf}
     children = {"F10126106": ["F10126107"]}
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(src, dst):
-        if Path(dst).name == "F10126106.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        # The staged write of the hostile drawing raises ValueError; the
+        # guard must catch it like OSError.
+        if Path(fsrc.name).name == "F10126106.pdf":
             raise ValueError("embedded null character")
-        return real_copy2(src, dst)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
 
     total = place_files(children, ["F10126106"], index, folder, False, logged.append)
@@ -1024,14 +1026,14 @@ def test_copy_orphans_failure_warns_and_continues(tmp_path, monkeypatch):
     good_pdf.write_text("v2")
     out = tmp_path / "out"
     out.mkdir()
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(s, d):
-        if Path(s).name == "F10126106.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        if Path(fsrc.name).name == "F10126106.pdf":
             raise OSError("permission denied")
-        return real_copy2(s, d)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
     index = {"F10126106": bad_pdf, "F10126107": good_pdf}
     n = copy_orphans(["F10126106", "F10126107"], index, out, False, logged.append)
@@ -1405,6 +1407,163 @@ def test_sweep_supersede_staging_missing_output_is_noop(tmp_path):
     logged = []
     sweep_supersede_staging(tmp_path / "nope", False, logged.append)
     assert logged == []
+
+
+def test_sweep_removes_copy_tmp_staging(tmp_path):
+    d = tmp_path / "F10126106 Assembly"
+    d.mkdir()
+    leftover = d / "F10126107.pdf.copy_tmp.12345"
+    leftover.write_bytes(b"partial")
+    lookalike = d / "F10126107.pdf.copy_tmp.notdigits"
+    lookalike.write_bytes(b"x")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, False, logged.append)
+
+    assert not leftover.exists()
+    assert lookalike.is_file()
+
+
+def test_sweep_copy_tmp_in_system_dirs(tmp_path):
+    # _copy_atomic stages orphan copies inside _orphans/, so copy_tmp
+    # leftovers are swept there too; supersede staging under a system dir is
+    # still left alone (it only ever happens in the tree).
+    orphans = tmp_path / "_orphans"
+    orphans.mkdir()
+    orphan_tmp = orphans / "F10126107.pdf.copy_tmp.12345"
+    orphan_tmp.write_bytes(b"partial")
+    sup = tmp_path / "_superseded"
+    sup.mkdir()
+    sup_tmp = sup / "F10126106.pdf.supersede_tmp.99999"
+    sup_tmp.write_bytes(b"partial")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, False, logged.append)
+
+    assert not orphan_tmp.exists()
+    assert sup_tmp.is_file()
+
+
+def test_place_files_failed_copy_leaves_no_partial_target(tmp_path, monkeypatch):
+    # A failure mid-write must not leave a truncated PDF at the target:
+    # later runs treat any tree PDF as placed and would never retry it.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real-bytes")
+    calls = {"n": 0}
+    real = fsops.shutil.copyfileobj
+
+    def flaky(fsrc, fdst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            fdst.write(b"partial")
+            raise OSError("disk full")
+        return real(fsrc, fdst, *a, **k)
+
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", flaky)
+    target = folder / "F10126106" / "F10126106.pdf"
+
+    place_files({}, ["F10126106"], {"F10126106": pdf}, folder, False,
+                lambda m: None)
+    assert not target.exists()
+    assert not [p for p in folder.rglob("*") if "copy_tmp" in p.name]
+
+    # The next run retries and completes.
+    place_files({}, ["F10126106"], {"F10126106": pdf}, folder, False,
+                lambda m: None)
+    assert target.read_bytes() == b"%PDF-real-bytes"
+
+
+def test_copy_atomic_refuses_symlinked_staging(tmp_path):
+    # The staging name is PID-predictable and copy2 follows a symlink on
+    # write: a link planted at the staging path must not redirect the copy
+    # outside the tree.
+    out = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real")
+    target = out / "F10126106" / "F10126106.pdf"
+    target.parent.mkdir(parents=True)
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"untouched")
+    staging = target.with_name(f"{target.name}.copy_tmp.{os.getpid()}")
+    try:
+        os.symlink(str(victim), str(staging))
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+
+    n = place_files({}, ["F10126106"], {"F10126106": pdf}, out, False,
+                    lambda m: None)
+
+    assert n == 0
+    assert victim.read_bytes() == b"untouched"
+    assert not target.exists()
+
+
+def test_copy_atomic_replaces_stale_staging_leftover(tmp_path):
+    # A crashed run can leave a regular staging file behind: it is replaced
+    # (O_EXCL alone would block the copy forever).
+    out = tmp_path / "out"
+    target = out / "F10126106" / "F10126106.pdf"
+    target.parent.mkdir(parents=True)
+    staging = target.with_name(f"{target.name}.copy_tmp.{os.getpid()}")
+    staging.write_bytes(b"crashed leftover")
+    src = tmp_path / "src.pdf"
+    src.write_bytes(b"%PDF-real")
+
+    fsops._copy_atomic(src, target)
+
+    assert target.read_bytes() == b"%PDF-real"
+    assert not staging.exists()
+
+
+def test_staged_copy_rechecks_symlink_after_open(tmp_path, monkeypatch):
+    # Windows follows a dangling link even with O_EXCL: a link swapped in
+    # between the pre-check and the open must be caught by the post-open
+    # re-check, with nothing written through it.
+    src = tmp_path / "src.pdf"
+    src.write_bytes(b"data")
+    staging = tmp_path / "x.pdf.copy_tmp.1"
+    state = {"n": 0}
+
+    def fake_islink(p):
+        state["n"] += 1
+        return state["n"] > 1  # planted only for the re-check
+
+    monkeypatch.setattr(fsops, "_islink", fake_islink)
+
+    with pytest.raises(OSError, match="became a symlink"):
+        fsops._staged_copy(src, staging)
+
+    assert not staging.exists()
+
+
+def test_copy_orphans_failed_copy_leaves_no_partial(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    out.mkdir()
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real")
+    calls = {"n": 0}
+    real = fsops.shutil.copyfileobj
+
+    def flaky(fsrc, fdst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            fdst.write(b"partial")
+            raise OSError("boom")
+        return real(fsrc, fdst, *a, **k)
+
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", flaky)
+    target = out / "_orphans" / "F10126106.pdf"
+
+    n1 = copy_orphans(["F10126106"], {"F10126106": pdf}, out, False,
+                      lambda m: None)
+    assert n1 == 0
+    assert not target.exists()
+
+    n2 = copy_orphans(["F10126106"], {"F10126106": pdf}, out, False,
+                      lambda m: None)
+    assert n2 == 1
+    assert target.read_bytes() == b"%PDF-real"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH semantics")

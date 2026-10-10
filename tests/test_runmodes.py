@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from fermi_organizer import extraction, fsops
+from fermi_organizer import extraction, fsops, runmodes
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _ensure_lock, _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
@@ -1188,6 +1188,171 @@ def test_run_full_sibling_sheets_nest_under_parent(tmp_path, make_pdf):
     assert (parent / "F10126109 Parent two" / "F10126109_A___DWG2.pdf").is_file()
     assert (parent / "F10126109 Parent two"
             / "F10126108 Child two" / "F10126108.pdf").is_file()
+
+
+def test_run_incremental_in_place_picks_up_new_arrivals(tmp_path, make_pdf):
+    # Output IS the input: the tree folders live among the originals. New
+    # PDFs dropped at the root or in an input subfolder must still be
+    # processed (they used to read as "already organized" and were skipped).
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    _write_parent(make_pdf, folder)
+    _write_child(make_pdf, folder)
+    run_full(folder, folder, False, lambda m: None, jobs=1)
+    child_folder = folder / "F10126106 Test Parent" / "F10126107 Child part"
+    assert child_folder.is_dir()
+
+    make_pdf(folder / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126107 SUB PART", "NAME", "New assembly"])
+    sub = folder / "New batch"
+    sub.mkdir()
+    make_pdf(sub / "F10126150.pdf", ["NAME", "Loose part"])
+
+    run_incremental(folder, folder, False, lambda m: None, jobs=1)
+
+    # The new assembly (its BOM references the organized child) lands at the
+    # top level with its own copy of the child; the tree's copy stays.
+    new_root = folder / "F10126109 New assembly"
+    assert (new_root / "F10126109.pdf").is_file()
+    assert (new_root / "F10126107 Child part" / "F10126107.pdf").is_file()
+    assert (child_folder / "F10126107.pdf").is_file()
+    # The input subfolder was not mistaken for an organized folder.
+    assert (sub / "F10126150.pdf").is_file()
+    assert (folder / "_orphans" / "F10126150.pdf").is_file()
+
+
+def test_in_place_tree_copy_shape(tmp_path):
+    # Only place_files' own shapes count as organized: the bare stem/base
+    # folder or '{base} NAME'. A user folder that merely starts with the base
+    # ('F10126107_backup') must not swallow a new PDF as "already organized".
+    out = tmp_path / "out"
+    (out / "F10126107 Child part").mkdir(parents=True)
+    (out / "F10126107").mkdir()
+    (out / "F10126107_A___DWG1").mkdir()
+    (out / "F10126107_backup").mkdir()
+    pdf = out / "x.pdf"
+
+    assert runmodes._in_place_tree_copy(out / "F10126107 Child part" / "x.pdf",
+                                        "F10126107", out)
+    assert runmodes._in_place_tree_copy(out / "F10126107" / "x.pdf",
+                                        "F10126107", out)
+    assert runmodes._in_place_tree_copy(out / "F10126107_A___DWG1" / "x.pdf",
+                                        "F10126107_A___DWG1", out)
+    assert not runmodes._in_place_tree_copy(out / "F10126107_backup" / "x.pdf",
+                                            "F10126107", out)
+    assert not runmodes._in_place_tree_copy(pdf, "F10126107", out)
+    del pdf
+
+
+def test_run_incremental_cap_charges_multi_claimant_root_per_parent(
+        tmp_path, make_pdf, monkeypatch):
+    # F10126109 is copied under two organized parents; the fan-out cap must
+    # charge its subtree twice, so a cap of 1 refuses it (it used to be
+    # charged once and placed).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126109 FUTURE PART", "NAME", "Parent A"])
+    make_pdf(in_dir / "F10126108.pdf", [
+        "FERMI PART LIST", "F10126109 FUTURE PART", "NAME", "Parent B"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Future part"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 1)
+    ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["skipped_roots"] and ctx["skipped_roots"][0][0] == "F10126109"
+    assert not (out / "F10126106 Parent A" / "F10126109 Future part").exists()
+    assert not (out / "F10126108 Parent B" / "F10126109 Future part").exists()
+
+
+def test_run_incremental_new_child_under_every_organized_parent(tmp_path, make_pdf):
+    # Two organized parents both list F10126109 in their BOMs; when the
+    # drawing arrives, each claimant's subtree gets its own copy (placing
+    # under only the first leaves the other parent's BOM pointing at a
+    # missing child).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "F10126109 FUTURE PART",
+        "NAME", "Parent A"])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(in_dir / "F10126108.pdf", [
+        "FERMI PART LIST", "F10126109 FUTURE PART", "NAME", "Parent B"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Future part"])
+    run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert (out / "F10126106 Parent A" / "F10126109 Future part"
+            / "F10126109.pdf").is_file()
+    assert (out / "F10126108 Parent B" / "F10126109 Future part"
+            / "F10126109.pdf").is_file()
+
+
+def test_run_incremental_failed_swap_places_revision_as_new(tmp_path, make_pdf,
+                                                            monkeypatch):
+    # A failed supersede swap must not mark the new revision organized: its
+    # children used to be placed at the output root and the revision itself
+    # was never placed anywhere.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    old_folder = out / "F10126106_A Old assembly"
+    old_folder.mkdir(parents=True)
+    make_pdf(old_folder / "F10126106_A.pdf", ["NAME", "Old assembly"])
+    make_pdf(in_dir / "F10126106_B.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Rev B assembly"])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+
+    def fail_swap(*a, **k):
+        return [], 0
+
+    monkeypatch.setattr("fermi_organizer.runmodes._swap_revision_files", fail_swap)
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    new_folder = out / "F10126106 Rev B assembly"
+    assert (new_folder / "F10126106_B.pdf").is_file()
+    assert (new_folder / "F10126107 Child part" / "F10126107.pdf").is_file()
+    assert not (out / "F10126107 Child part").exists()
+    assert any("supersede swap failed" in m for m in logged)
+
+
+def test_run_incremental_supersede_copies_shared_child(tmp_path, make_pdf):
+    # F10126150 lives under two live parents (A and B). The superseding
+    # revision C_B lists it; re-homing must copy it under C, not move one
+    # of the other parents' copies away.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent A"])
+    make_pdf(in_dir / "F10126107.pdf", [
+        "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent B"])
+    make_pdf(in_dir / "F10126108_A.pdf", [
+        "FERMI PART LIST", "F10126160 OTHER PART", "NAME", "Parent C"])
+    make_pdf(in_dir / "F10126150.pdf", ["NAME", "Shared part"])
+    make_pdf(in_dir / "F10126160.pdf", ["NAME", "Other part"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    a_copy = out / "F10126106 Parent A" / "F10126150 Shared part" / "F10126150.pdf"
+    b_copy = out / "F10126107 Parent B" / "F10126150 Shared part" / "F10126150.pdf"
+    assert a_copy.is_file() and b_copy.is_file()
+
+    make_pdf(in_dir / "F10126108_B.pdf", [
+        "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent C rev B"])
+    ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    c_copy = (out / "F10126108 Parent C" / "F10126150 Shared part"
+              / "F10126150.pdf")
+    assert c_copy.is_file()
+    assert a_copy.is_file()
+    assert b_copy.is_file()
+    # Swap (2 copies) + the shared-child copy (1): the summary must count it.
+    assert ctx["counters"]["copies"] == 3
 
 
 def test_run_full_reports_titleblock_mismatches(tmp_path, make_pdf):

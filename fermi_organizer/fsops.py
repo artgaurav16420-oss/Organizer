@@ -268,7 +268,7 @@ def ensure_placement_allowed(children, roots, log):
         log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
 
 
-def fit_roots_within_cap(children, roots, log):
+def fit_roots_within_cap(children, roots, log, weights=None):
     """Drop the largest roots until the planned fan-out fits MAX_PLANNED_COPIES.
 
     Returns (kept, skipped): kept preserves the input root order; skipped is
@@ -277,10 +277,13 @@ def fit_roots_within_cap(children, roots, log):
     treats it like a full refusal. A single shared _copy_counter memoizes
     across roots, so the per-root breakdown costs one traversal, not one per
     root. Dropped roots are reported, never placed: their shared children are
-    still placed under their other parents.
+    still placed under their other parents. `weights` multiplies a root's
+    count (incremental copies a multi-claimant root under every organized
+    parent, so its subtree must be charged once per claimant).
     """
     count = _copy_counter(children)
-    counts = {r: count(r) for r in roots}
+    weights = weights or {}
+    counts = {r: count(r) * weights.get(r, 1) for r in roots}
     planned = sum(counts.values())
     if planned <= MAX_PLANNED_COPIES:
         return list(roots), []
@@ -301,6 +304,71 @@ def fit_roots_within_cap(children, roots, log):
         log(f"  skipped oversized root {r} ({c} copies planned): not placed - "
             "shared children are still placed under their other parents")
     return kept, skipped
+
+
+def _staged_copy(src, staging):
+    """Copy `src` into a freshly created staging file, written through the
+    created handle.
+
+    shutil.copy2 opens the destination by path, so a symlink planted (or
+    raced) at the staging name would redirect the write outside the tree.
+    The staging name is PID-predictable, so: refuse a symlink already there,
+    create the file with O_CREAT|O_EXCL (an existing file or valid link
+    fails), re-check the path after the open (Windows follows a dangling
+    link even with O_EXCL), and stream the bytes through the fd - the write
+    can never go through a link. Metadata is copied after. A live attacker
+    replacing staging names inside the tree is out of scope, as documented
+    for shared writable outputs."""
+    if _islink(staging):
+        raise OSError(f"staging path is a symlink, refusing: {staging}")
+    try:
+        os.unlink(_native(staging))
+    except OSError:
+        # No stale leftover (the common case), or it could not be removed:
+        # O_CREAT|O_EXCL below fails safely on anything that still exists.
+        pass
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(_native(staging), flags)
+    if _islink(staging):
+        # The open followed a dangling link swapped in after our check (a
+        # Windows O_EXCL quirk): the fd is not ours to write through.
+        os.close(fd)
+        try:
+            os.unlink(_native(staging))
+        except OSError:
+            pass
+        raise OSError(f"staging path became a symlink during copy, refusing: {staging}")
+    try:
+        with open(_native(src), "rb") as fsrc, os.fdopen(fd, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+    except BaseException:
+        try:
+            os.unlink(_native(staging))
+        except OSError:
+            pass
+        raise
+    shutil.copystat(_native(src), _native(staging))
+
+
+def _copy_atomic(src, dst):
+    """Copy `src` to `dst` via a staging name in the target folder.
+
+    shutil.copy2 writes the destination in place, so a failure mid-write
+    leaves a truncated PDF at `dst` that later runs treat as placed and never
+    retry. Stage next to the target and os.replace, so the target is either
+    absent or complete; a failed attempt removes its own staging file. See
+    _staged_copy for the symlink/race handling of the staging path.
+    """
+    tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
+    try:
+        _staged_copy(src, tmp)
+        os.replace(_native(tmp), _native(dst))
+    except (OSError, ValueError):
+        try:
+            os.unlink(_native(tmp))
+        except OSError:
+            pass
+        raise
 
 
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
@@ -374,7 +442,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     failed_count += count_copies(stem)
                     continue
                 try:
-                    shutil.copy2(_native(pdf), _native(target))
+                    _copy_atomic(pdf, target)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
@@ -711,32 +779,31 @@ def scan_output_tree(output):
 
 
 def sweep_supersede_staging(output, dry_run, log):
-    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` staging files.
+    """Remove leftover `<name>.pdf.supersede_tmp.<pid>` and
+    `<name>.pdf.copy_tmp.<pid>` staging files.
 
     _swap_revision_files stages the new revision next to its target before
-    os.replace; a run killed mid-swap leaves the staging file behind. It
-    never ends in .pdf, so scans ignore it - only this sweep cleans it up.
-    Only the exact staging shape is swept (a PDF target name plus
-    `.supersede_tmp.<digits>`), and "_"-prefixed system dirs are pruned from
-    the walk: staging only ever happens next to targets in the organized
-    tree, so matching lookalikes elsewhere are not ours to delete.
-    Dry-run reports without touching the tree.
+    os.replace, and _copy_atomic stages every copy the same way; a run killed
+    mid-operation leaves the staging file behind. It never ends in .pdf, so
+    scans ignore it - only this sweep cleans it up. Only the exact staging
+    shapes are swept (a PDF target name plus `.supersede_tmp.<digits>` or
+    `.copy_tmp.<digits>`). Supersede staging only ever happens next to tree
+    targets, so a matching name under a top-level "_" system dir is not ours
+    to delete; copy staging also happens in _orphans/, so copy_tmp leftovers
+    are swept anywhere. Dry-run reports without touching the tree.
     """
     output = Path(output)
     if not output.is_dir():
         return
-    staging_re = re.compile(r"\.pdf\.supersede_tmp\.\d+$", re.IGNORECASE)
-    for dirpath, dirnames, filenames in os.walk(output):
-        if Path(dirpath) == output:
-            # Only top-level "_" dirs are system dirs; nested ones are not
-            # pruned (is_system_dir's convention covers the top level only).
-            dirnames[:] = [d for d in dirnames if not is_system_dir(d)]
+    staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
+    copy_re = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
+    for dirpath, _dirnames, filenames in os.walk(output):
         for name in sorted(filenames):
             if not staging_re.search(name):
                 continue
             p = Path(dirpath) / name
             rel = p.relative_to(output)
-            if is_system_dir(rel.parts[0]):
+            if is_system_dir(rel.parts[0]) and not copy_re.search(name):
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
@@ -1007,8 +1074,8 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
         else:
             try:
                 os.makedirs(_native(orphans_dir), exist_ok=True)
-                shutil.copy2(_native(pdf), _native(target))
-            except OSError as e:
+                _copy_atomic(pdf, target)
+            except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
         n += 1

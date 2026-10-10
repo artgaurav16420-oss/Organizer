@@ -23,7 +23,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                      fit_roots_within_cap,
                      acquire_run_lock, release_run_lock, abandon_run_lock,
                     LockLostError, _ensure_lock,
-                    _native, _exists, _islink)
+                    _native, _exists, _islink, _staged_copy)
 
 
 class RunCounters(TypedDict):
@@ -495,17 +495,38 @@ def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_
 # ---------------------------------------------------------------------------
 # Incremental state: candidate set, revision conflicts, supersede swaps
 # ---------------------------------------------------------------------------
-def _collect_incremental_candidates(scan_index, output, scan_res=None):
+def _in_place_tree_copy(p, stem, output):
+    """(In-place runs) True when a scanned PDF looks like an organized copy:
+    it sits inside the exact stem/base folder or a '{base} NAME' folder, the
+    shapes place_files writes. A PDF at the output root or in an unrelated
+    input subfolder is an input original, not a placed copy. A user folder
+    deliberately named '{base} something' is indistinguishable from the
+    convention and still counts as organized."""
+    base = stem.split("_")[0]
+    if p.parent == output:
+        return False
+    name = p.parent.name.upper()
+    return name == stem or name == base or name.startswith(base + " ")
+
+
+def _collect_incremental_candidates(scan_index, output, scan_res=None,
+                                    in_place=False):
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
     (organized, sup_dir, stored_orphans, new_index, chk_stems).
     Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
-    to avoid redundant filesystem scans.
+    to avoid redundant filesystem scans. `in_place` (output IS the input
+    folder) keeps only tree-shaped copies as organized, so new arrivals at
+    the root or in input subfolders are not silently skipped.
     """
     if scan_res is None:
         scan_res = scan_output_tree(output)
     organized = find_organized_pdfs(output, scan_res=scan_res)
+    if in_place:
+        organized = {s: kept for s, paths in organized.items()
+                     if (kept := [p for p in paths
+                                  if _in_place_tree_copy(p, s, output)])}
     # Stems already archived in _superseded/ are never candidates again.
     sup_dir = output / "_superseded"
     already_sup = {s for p in scan_res["sup"]
@@ -641,7 +662,7 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
             # then archive the old revision, then replace, then drop the old file.
             try:
                 os.makedirs(_native(sup_dir), exist_ok=True)
-                shutil.copy2(_native(new_pdf), _native(staging))
+                _staged_copy(new_pdf, staging)
                 if archived:
                     shutil.copy2(_native(p), _native(archive_target))
                 os.replace(_native(staging), _native(target_new))
@@ -688,15 +709,14 @@ def _shared_folder_blocks_move(c, child_folder, output, log):
 def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                                    output, dry_run, moved_dirs, log):
     """Move organized parts referenced by a superseding revision under its
-    folder. Mutates moved_dirs; returns the number of moves."""
-    # NOTE: unlike _place_above_organized_children (which copies nested
-    # children), this still moves: the old revision's folder is being
-    # archived away, so its children must re-home under the new revision.
-    # Residual risk, same class: a child shared under another LIVE parent is
-    # relocated rather than duplicated. Untouched for now - no observed
-    # damage (zero moves on real corpora so far) and this path is entangled
-    # with the swap/archive safety invariants; revisit with a failing case.
+    folder. Mutates moved_dirs; returns (moves, copies).
+
+    A child that also lives under another parent is shared: it is COPIED
+    (the other parent keeps its copy, matching place_files), and the copy
+    is not recorded in moved_dirs - the original stays the reference for
+    later claimants. Only a child whose sole copy is this folder moves."""
     moves = 0
+    copies = 0
     for s2 in swapped:
         s_paths = organized.get(s2, [])
         if not s_paths:
@@ -721,6 +741,24 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     log(f"  WARNING: {c}: destination exists, skipping move (manual review): "
                         f"{target_path.relative_to(output)}")
                     continue
+                if any(p.parent != child_folder for p in child_paths):
+                    # Shared child: copy so the other parent keeps its copy.
+                    plan_copies = sum(1 for _ in child_folder.rglob("*.pdf"))
+                    if dry_run:
+                        log(f"  [DRY-RUN] copy {child_folder.relative_to(output)} -> "
+                            f"{target_path.relative_to(output)}")
+                    else:
+                        try:
+                            shutil.copytree(str(child_folder), str(target_path),
+                                            symlinks=True)
+                        except OSError as e:
+                            log(f"  WARNING: copy failed for {c}: {e}")
+                            shutil.rmtree(str(target_path), ignore_errors=True)
+                            continue
+                        log(f"  copied: {child_folder.relative_to(output)} -> "
+                            f"{target_path.relative_to(output)}")
+                    copies += plan_copies
+                    continue
                 if dry_run:
                     log(f"  [DRY-RUN] move {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
                 else:
@@ -732,7 +770,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     log(f"  moved: {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
                 moved_dirs[child_folder] = target_path
                 moves += 1
-    return moves
+    return moves, copies
 
 
 def _current_folder_of(stem, organized, output, moved_dirs):
@@ -1155,8 +1193,10 @@ def _incremental_prepare(folder, output, dry_run, log):
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
     scan_res = scan_output_tree(output)
+    in_place = Path(folder).resolve() == Path(output).resolve()
     organized, sup_dir, stored_orphans, new_index, chk_stems = \
-        _collect_incremental_candidates(scan_index, output, scan_res=scan_res)
+        _collect_incremental_candidates(scan_index, output, scan_res=scan_res,
+                                        in_place=in_place)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
     new_duplicates = {stem: paths for stem, paths in top_duplicates.items()
@@ -1338,6 +1378,16 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             moved, copies = _swap_revision_files(old_paths, new_pdf, sup_dir, output,
                                                  dry_run, log, lock=lock)
             total_copies += copies
+            if not moved:
+                # Swap failed (logged inside _swap_revision_files, e.g. a
+                # symlink refusal or OSError): the new revision was neither
+                # archived nor placed. Leave it as a new stem so it is placed
+                # (and retried next run); marking it organized here would
+                # strand its children at the output root. The stale organized
+                # copy stays until the retry succeeds.
+                log(f"  WARNING: {s}: supersede swap failed - placing as a new PDF "
+                    "(retry next run)")
+                continue
             org_boms[s] = new_boms.pop(s, [])
             org_used_on[s] = new_used_on.pop(s, [])
             org_boms.pop(o, None)
@@ -1345,9 +1395,8 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             organized.pop(o, None)
             new_index.pop(s, None)
             new_stems.discard(s)
-            if moved:
-                organized[s] = moved
-                swapped_old.append(o)
+            organized[s] = moved
+            swapped_old.append(o)
             org_stems.discard(o)
             org_stems.add(s)
             swapped.append(s)
@@ -1355,9 +1404,10 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             log(f"  {len(swapped)} organized revision(s) superseded in place")
             all_stems = new_stems | org_stems
             # Move organized parts referenced by a superseding revision under its folder
-            total_moves = _move_children_under_superseding(swapped, organized, org_boms,
-                                                           org_stems, output, dry_run,
-                                                           moved_dirs, log)
+            total_moves, move_copies = _move_children_under_superseding(
+                swapped, organized, org_boms, org_stems, output, dry_run,
+                moved_dirs, log)
+            total_copies += move_copies
     return moved_dirs, total_moves, total_copies, all_stems, swapped_old
 
 
@@ -1422,7 +1472,11 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     placeable = [R for R in new_roots
                  if _incremental_placeable(R, new_boms, new_children,
                                            org_parents_of, org_children_of)]
-    kept, skipped = fit_roots_within_cap(new_children, placeable, log)
+    # A root referenced by several organized parents is copied under each
+    # claimant: charge its subtree once per claimant against the cap.
+    weights = {R: max(1, len(org_parents_of.get(R, ()))) for R in placeable}
+    kept, skipped = fit_roots_within_cap(new_children, placeable, log,
+                                         weights=weights)
     refused = bool(skipped)
     skipped_set = {r for r, _ in skipped}
     if refused and not kept:
@@ -1442,12 +1496,15 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
         if org_par:
             if org_child:
                 log(f"  {R}: WARNING - both referenced by organized part(s) {org_par} and "
-                    f"references organized part(s) {org_child}; treating as sub-assembly of {org_par[0]}")
-            P = org_par[0]
-            base = _current_folder_of(P, organized, output, moved_dirs)
-            total_copies += _place_subassembly_of(R, P, org_par, new_children, new_index,
-                                                  new_names, base, output, dry_run, log,
-                                                  renames=renames, lock=lock)
+                    f"references organized part(s) {org_child}; placing under every claimant")
+            # Every claimant gets its own copy (as in full mode): placing
+            # under only the first would leave the other parents' BOMs
+            # pointing at a child missing from their subtrees.
+            for P in org_par:
+                base = _current_folder_of(P, organized, output, moved_dirs)
+                total_copies += _place_subassembly_of(R, P, org_par, new_children, new_index,
+                                                      new_names, base, output, dry_run, log,
+                                                      renames=renames, lock=lock)
         elif org_child:
             copies, moves = _place_above_organized_children(R, org_child, new_children,
                                                             new_index, new_names, organized,
@@ -1632,10 +1689,14 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                                 pre_org_par, pre_org_ch)]
     # Silent fit: the pre-check only gates the supersede swaps below. The
     # backstop in _incremental_place logs authoritatively, on the final
-    # graph.
+    # graph. Weights match the backstop (multi-claimant roots are copied
+    # once per organized parent).
+    _pre_weights = {r: max(1, len(pre_org_par.get(r, ())))
+                    for r in pre_placeable}
     _pre_kept, _pre_dropped = fit_roots_within_cap(pre_children,
                                                    pre_placeable,
-                                                   lambda msg: None)
+                                                   lambda msg: None,
+                                                   weights=_pre_weights)
     refused = bool(_pre_dropped)
 
     swapped_old: list = []

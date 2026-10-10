@@ -4,6 +4,70 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Logic-audit fixes (round 2)
+- `BAD_DESC_RE` no longer rejects part names starting with `ENERGY`
+  (`ENERGY ABSORBER`); the boilerplate title-block line is still caught via
+  `UNITED`/`DEPARTMENT`.
+- Table cells with a same-line split value (`F101 26145`) re-join the split
+  digits before tokenizing, while a newline-stacked quantity
+  (`F10112345\n2`) still splits.
+- In-place organized detection requires place_files' own shapes (exact
+  stem/base folder or `{base} NAME`): a user folder that merely starts with
+  the base (`F10126107_backup`) no longer counts as organized. A folder
+  deliberately named `{base} something` is indistinguishable from the
+  convention and still counts.
+- The incremental fan-out cap charges a root referenced by several
+  organized parents once per claimant (it is copied once per claimant).
+- `BAD_DESC_RE` now matches whole words: a single-line BOM row whose part
+  name starts like a label (`REVERSE SHAFT`, `PARTITION PLATE`, `TABLETOP`)
+  is no longer rejected as `REV`/`PART`/`TABLE` text. Plural and
+  `FIGURE`/`ASSEMBLY` forms still match.
+- A stacked USED ON block (`USED ON` followed by several F-number lines) is
+  now entirely title block: the line parser walks up the whole run of
+  F-number lines to the label, so the third+ values no longer become phantom
+  BOM children.
+- In-place `--incremental` (output == input) keeps only tree-shaped copies
+  as organized: a PDF whose parent folder does not start with its own base
+  number (a file dropped at the root or in an input subfolder) counts as a
+  new arrival instead of being silently skipped - or worse, having its
+  input subfolder adopted/moved by parent adoption.
+- `_shorten_names` no longer stops at the first over-length placement it
+  cannot shrink (bare base-number stems sit at their floor): every
+  over-length path is attempted, so later shrinkable paths fit `MAX_PATH`
+  instead of being skipped at placement time.
+- Incremental supersede re-homing copies a child that also lives under
+  another parent (the other parent keeps its copy, like place_files) and
+  moves only a sole copy; previously the move hollowed out the other
+  parent's subtree.
+- A new child referenced by several organized parents is placed under every
+  claimant, not just the alphabetically first one (full-mode parity).
+- A failed supersede swap leaves the new revision as a new arrival (placed
+  and retried next run) instead of marking it organized with no tree copy -
+  which used to strand its children at the output root.
+- `place_files` and `copy_orphans` stage each copy next to its target and
+  `os.replace` into place: a failure mid-write leaves no truncated PDF in
+  the tree, so the next run retries instead of treating it as placed. The
+  staging sweep also removes `.copy_tmp.<pid>` leftovers, including inside
+  `_orphans/` where orphan copies are staged (supersede staging under a
+  system dir is still left alone).
+- The supersede re-home copy is counted in the run's copy total (the
+  summary used to underreport it).
+- Staging paths are PID-predictable and `shutil.copy2` follows a symlink on
+  write: a symlink planted at a `.copy_tmp.<pid>` or
+  `.supersede_tmp.<pid>` staging path is refused, and the bytes are written
+  through an `O_CREAT|O_EXCL`-created handle that is re-checked after the
+  open (Windows follows a dangling link even with `O_EXCL`) instead of
+  re-opening the path, so no data is written through a swapped-in link. An
+  attacker with live write access to the output tree remains out of scope,
+  as for every path check (see Known limits).
+- BOM table cells are read token-wise: a quantity stacked under the value
+  (`F10112345\n2`, which used to normalize to the wrong number
+  `F101123452`) or an item number before it (`1 F10126108`, dropped) no
+  longer corrupts the extracted value.
+- The text-path NAME extraction skips a parts-list header pair (`PART`
+  directly above `NAME`): the cell below it is no longer taken as the
+  drawing name.
+
 ### Placement correctness fixes
 - Sibling sheets of one drawing (e.g. `F10038961___DWG1` / `___DWG2`) are no
   longer treated as rival revisions: the lower-ranked sheet was dropped with

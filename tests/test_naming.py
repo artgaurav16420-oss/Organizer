@@ -51,6 +51,28 @@ def test_shared_stem_deep_path_shortened_for_every_root():
     assert not any("still exceed" in m for m in logged)
 
 
+def test_shorten_continues_past_irreducible_placement():
+    # Regression: the old loop stopped at the FIRST over-length placement
+    # when it could not shrink (bare base-number stems sit at their floor),
+    # so later shrinkable paths stayed over the limit and were skipped.
+    base = Path("C:\\" + "d" * 100)
+    chain = [f"F1000{n:04d}" for n in range(30)]
+    children = {}
+    for a, b in zip(chain, chain[1:], strict=False):
+        children[a] = [b]
+    children["F10999999"] = ["F10999998"]
+    index = {s: Path(s + ".pdf") for s in chain + ["F10999999", "F10999998"]}
+    names_of = {"F10999999": "R" * 170, "F10999998": "S" * 170}
+    logged = []
+
+    names = build_folder_names(children, [chain[0], "F10999999"], index,
+                               names_of, base, logged.append)
+
+    get_name = lambda c: names[c]
+    for comps in ((chain[0],), ("F10999999",), ("F10999999", "F10999998")):
+        assert _placement_len(comps, base, index, get_name) <= MAX_PATH, comps
+
+
 def test_collect_placements_terminates_on_cyclic_children():
     # Cycles are broken before placement in production, but the walk must
     # still terminate on its own (the depth cap replaced the stem-visit guard).
