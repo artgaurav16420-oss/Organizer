@@ -319,8 +319,9 @@ def test_run_incremental_archived_superseded_orphan_retires(tmp_path, make_pdf):
     _write_organized_newer_rev(make_pdf, out)
     orphans_dir = out / "_orphans"
     orphans_dir.mkdir(parents=True)
-    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
-    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    arrived = make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    parked = orphans_dir / "F10126109.pdf"
+    parked.write_bytes(arrived.read_bytes())
     make_pdf(in_dir / "F10126150.pdf", ["NAME", "Unrelated new part"])
 
     logged = []
@@ -341,8 +342,9 @@ def test_run_incremental_no_new_pdf_retires_archived_parked_orphan(tmp_path, mak
     _write_organized_newer_rev(make_pdf, out)
     orphans_dir = out / "_orphans"
     orphans_dir.mkdir(parents=True)
-    parked = make_pdf(orphans_dir / "F10126109.pdf", ["NAME", "Old rev"])
-    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    arrived = make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
+    parked = orphans_dir / "F10126109.pdf"
+    parked.write_bytes(arrived.read_bytes())
 
     logged = []
     ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
@@ -1137,6 +1139,55 @@ def test_run_full_processes_hyphen_named_standalone(tmp_path, make_pdf):
 
     assert (out / "_orphans" / "F10126108---DWG1.pdf").is_file()
     assert ctx["orphans"] == ["F10126108___DWG1"]
+
+
+def test_run_full_keeps_sibling_sheets_and_their_boms(tmp_path, make_pdf):
+    # Sibling sheets of one drawing are not rival revisions: the dropped
+    # sheet's BOM children used to surface as orphans and were never placed
+    # under the drawing.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106_A___DWG1.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD ONE", "NAME", "Sheet one"])
+    make_pdf(in_dir / "F10126106_A___DWG2.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD TWO", "NAME", "Sheet two"])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child one"])
+    make_pdf(in_dir / "F10126108.pdf", ["NAME", "Child two"])
+
+    ctx = run_full(in_dir, out, False, lambda msg: None, jobs=1)
+
+    assert ctx["orphans"] == []
+    assert (out / "F10126106 Sheet one" / "F10126106_A___DWG1.pdf").is_file()
+    assert (out / "F10126106 Sheet one"
+            / "F10126107 Child one" / "F10126107.pdf").is_file()
+    assert (out / "F10126106 Sheet two" / "F10126106_A___DWG2.pdf").is_file()
+    assert (out / "F10126106 Sheet two"
+            / "F10126108 Child two" / "F10126108.pdf").is_file()
+
+
+def test_run_full_sibling_sheets_nest_under_parent(tmp_path, make_pdf):
+    # A drawing referenced by a parent's BOM keeps every sibling sheet: the
+    # dropped sheet used to leave the parent missing a child.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126109_A___DWG1.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD ONE", "NAME", "Parent one"])
+    make_pdf(in_dir / "F10126109_A___DWG2.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD TWO", "NAME", "Parent two"])
+    make_pdf(in_dir / "F10126107.pdf",
+             ["FERMI PART LIST", "F10126109 SHEET ASSY", "NAME", "Child one"])
+    make_pdf(in_dir / "F10126108.pdf", ["NAME", "Child two"])
+
+    ctx = run_full(in_dir, out, False, lambda msg: None, jobs=1)
+
+    assert ctx["orphans"] == []
+    parent = out / "F10126107 Child one"
+    assert (parent / "F10126109 Parent one" / "F10126109_A___DWG1.pdf").is_file()
+    assert (parent / "F10126109 Parent two" / "F10126109_A___DWG2.pdf").is_file()
+    assert (parent / "F10126109 Parent two"
+            / "F10126108 Child two" / "F10126108.pdf").is_file()
 
 
 def test_run_full_reports_titleblock_mismatches(tmp_path, make_pdf):

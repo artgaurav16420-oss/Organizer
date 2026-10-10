@@ -1120,14 +1120,24 @@ def test_retire_adopted_orphans_includes_superseded_stems(tmp_path):
     assert sup_orph.is_file()
     assert unrelated_orph.is_file()
 
-    # Superseded stem retires even though not live in the tree.
+    # Superseded stem with no copy of its bytes anywhere: the parked copy may
+    # be the only holder, so it stays (with a warning) even when superseded.
     logged = []
     n = retire_adopted_orphans({"F10126107": sup_orph, "F10126108": unrelated_orph},
                                out, False, logged.append,
                                superseded={"F10126107"})
+    assert n == 0
+    assert sup_orph.is_file()
+    assert unrelated_orph.is_file()
+
+    # Superseded stem whose bytes do survive in the archive: retired.
+    sup_dir = out / "_superseded"
+    sup_dir.mkdir(parents=True)
+    (sup_dir / "F10126107.pdf").write_bytes(b"old rev")
+    n = retire_adopted_orphans({"F10126107": sup_orph}, out, False,
+                               lambda msg: None, superseded={"F10126107"})
     assert n == 1
     assert not sup_orph.exists()
-    assert unrelated_orph.is_file()
 
 
 def test_retire_adopted_orphans_planned_covers_dry_run_placement(tmp_path):
@@ -1154,6 +1164,50 @@ def test_retire_adopted_orphans_planned_covers_dry_run_placement(tmp_path):
     text = "\n".join(logged)
     assert "[DRY-RUN] retire orphan copy:" in text
     assert "F10126108" in text
+
+
+def test_retire_adopted_orphans_superseded_requires_matching_archive(tmp_path):
+    # A superseded stem only retires the parked copy when the parked bytes
+    # survive somewhere: an archive holding the NEW input bytes leaves the
+    # parked copy as the only holder of the old ones, so it must be kept.
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    sup_dir = out / "_superseded"
+    orphans_dir.mkdir(parents=True)
+    sup_dir.mkdir(parents=True)
+    orphan = orphans_dir / "F10126107.pdf"
+    orphan.write_bytes(b"old input bytes")
+    (sup_dir / "F10126107.pdf").write_bytes(b"newer input bytes")
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126107": orphan}, out, False,
+                                     logged.append, superseded={"F10126107"})
+
+    assert retired == 0
+    assert orphan.is_file()
+    assert "not retired: no byte-identical copy in tree or _superseded/; kept" \
+        in "\n".join(logged)
+
+
+def test_retire_adopted_orphans_superseded_retires_on_matching_archive(tmp_path):
+    # The safe supersede case: the archived copy holds exactly the parked
+    # bytes, so nothing is lost by retiring the parked duplicate.
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    sup_dir = out / "_superseded"
+    orphans_dir.mkdir(parents=True)
+    sup_dir.mkdir(parents=True)
+    orphan = orphans_dir / "F10126107.pdf"
+    orphan.write_bytes(b"same bytes")
+    (sup_dir / "F10126107.pdf").write_bytes(b"same bytes")
+    logged = []
+
+    retired = retire_adopted_orphans({"F10126107": orphan}, out, False,
+                                      logged.append, superseded={"F10126107"})
+
+    assert retired == 1
+    assert not orphan.exists()
+    assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
 
 
 def test_retire_adopted_orphans_keeps_differing_live_copy(tmp_path):
@@ -1282,11 +1336,17 @@ def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
     out = tmp_path / "out"
     orphans_dir = out / "_orphans"
+    sup_dir = out / "_superseded"
     orphans_dir.mkdir(parents=True)
+    sup_dir.mkdir(parents=True)
     orph1 = orphans_dir / "F10126107.pdf"
     orph2 = orphans_dir / "F10126108.pdf"
     orph1.write_bytes(b"orph1")
     orph2.write_bytes(b"orph2")
+    # Both stems are superseded: retirement is only due because the parked
+    # bytes survive in the archive.
+    (sup_dir / "F10126107.pdf").write_bytes(b"orph1")
+    (sup_dir / "F10126108.pdf").write_bytes(b"orph2")
 
     real_unlink = Path.unlink
 

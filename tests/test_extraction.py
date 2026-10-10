@@ -767,6 +767,36 @@ def _wide_window_rows(label_x):
     return rows
 
 
+def test_word_path_row_with_keyword_words_not_title_block():
+    """A BOM row's own text may contain a title-block keyword word
+    ('SHEET METAL BRACKET'); only whole-row keyword captions (or a USED ON /
+    drawing-size cell) mark the title block, so such a row must not disable
+    the F-number rows below it."""
+    rows = {100: [(50, "SHEET"), (74, "METAL"), (98, "BRACKET"), (122, "ITEM")],
+            110: [(50, "1"), (60, "F10126107")],
+            120: [(50, "2"), (60, "F10126108")]}
+    ys = sorted(rows)
+    y_index = {y: i for i, y in enumerate(ys)}
+    row_words = sorted(rows[110], key=lambda t: t[0])
+
+    assert not extraction._word_row_is_title_block(rows, ys, 110, row_words,
+                                                   y_index)
+
+
+def test_word_path_keyword_caption_row_is_title_block():
+    # Whole-row title-block captions still disable the rows below them.
+    rows = {100: [(50, "USED"), (74, "ON")],
+            110: [(50, "F10126109")],
+            120: [(50, "SIZE"), (74, "A0")],
+            130: [(50, "1"), (60, "F10126107")]}
+    ys = sorted(rows)
+    y_index = {y: i for i, y in enumerate(ys)}
+    assert extraction._word_row_is_title_block(rows, ys, 110,
+                                               sorted(rows[110]), y_index)
+    assert extraction._word_row_is_title_block(rows, ys, 130,
+                                               sorted(rows[130]), y_index)
+
+
 def test_used_on_wide_window_requires_horizontal_association():
     ys = sorted(_wide_window_rows(50))
     y_idx = ys.index(150)
@@ -776,3 +806,104 @@ def test_used_on_wide_window_requires_horizontal_association():
     # Same vertical gap, label in a different column: the row is kept.
     far = _wide_window_rows(600)
     assert not extraction._positional_row_is_title_block(far, ys, y_idx, 150)
+
+
+def test_caption_row_recognizes_keywords_and_values():
+    for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
+                 "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
+                 "NEXT ASSY F10126107", "  sheet  1  of  2 "):
+        assert extraction._is_caption_row(text), text
+
+
+def test_caption_row_rejects_bom_text():
+    for text in ("SHEET METAL BRACKET", "BRACKET USED ON ASSY",
+                 "NAME PLATE", "SCALE BAR", "1 F10126107 BRACKET",
+                 "ITEM 1 F10126107", "ITEM F10126107"):
+        assert not extraction._is_caption_row(text), text
+
+
+class _CaptionPage:
+    def __init__(self, words):
+        self._words = words
+
+    def get_text(self, kind="text"):
+        assert kind == "words"
+        return self._words
+
+
+def _cword(x0, y0, text):
+    return (x0, y0, x0 + 8, y0 + 8, text, 0, 0, 0)
+
+
+def test_positional_caption_with_value_skips_row_below():
+    # 'SCALE 1:1' is a caption even though it is not a bare keyword; the row
+    # right below it carries an item number and must still be skipped, while
+    # the next row (out of caption reach) is kept.
+    page = _CaptionPage([
+        _cword(50, 100, "SCALE"), _cword(90, 100, "1:1"),
+        _cword(50, 110, "1"), _cword(70, 110, "F10126107"),
+        _cword(50, 140, "2"), _cword(70, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert [v for v, _, _ in found] == ["F10126108"]
+
+
+def test_positional_row_with_used_on_words_is_kept():
+    # A BOM description may mention USED ON; the row itself is not a caption,
+    # so its F-number is kept.
+    page = _CaptionPage([
+        _cword(50, 100, "1"), _cword(70, 100, "F10126107"),
+        _cword(130, 100, "BRACKET"), _cword(180, 100, "USED"),
+        _cword(210, 100, "ON"),
+        _cword(50, 140, "2"), _cword(70, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]
+
+
+def test_positional_item_row_with_fermi_number_kept():
+    # A row 'ITEM 1 F10126107' is a BOM row (item label, item number, part),
+    # not a caption: the child must be emitted, not skipped.
+    page = _CaptionPage([
+        _cword(40, 100, "ITEM"), _cword(70, 100, "1"),
+        _cword(90, 100, "F10126107"),
+        _cword(70, 140, "2"), _cword(90, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]
+
+
+def test_fermi_line_title_block_used_on_caption_only():
+    # A USED ON caption two lines above marks the line as title block...
+    assert extraction._fermi_line_is_title_block(
+        ["USED ON", "SPEC", "F10126107"], 2)
+    # ...but a line merely containing the phrase is BOM text.
+    assert not extraction._fermi_line_is_title_block(
+        ["BRACKET USED ON ASSY", "SPEC", "F10126107"], 2)
+
+
+def test_positional_row_own_used_on_text_kept():
+    # The row's own text mentioning USED ON must not mark it as title block.
+    rows = {100: [(50, "1"), (70, "F10126107"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            140: [(50, "2"), (70, "F10126108")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 0, 100)
+
+
+def test_positional_nearby_description_with_used_on_not_caption():
+    # A nearby BOM row containing the phrase is not a USED ON caption.
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            140: [(50, "2"), (70, "F10126108")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 2, 150)
+
+
+def test_positional_used_on_caption_still_marks():
+    # The genuine caption above a row still marks it as title block.
+    rows = {120: [(50, "USED"), (74, "ON")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert extraction._positional_row_is_title_block(rows, ys, 1, 150)

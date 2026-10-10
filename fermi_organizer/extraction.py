@@ -868,8 +868,7 @@ def _fermi_line_is_title_block(lines, i):
         elif re.match(r"^1\s+OF\s*\d+", nxt_up, re.IGNORECASE):
             is_title_block = True
     if not is_title_block and i > 1:
-        prev2_up = lines[i - 2].upper()
-        if "USED ON" in prev2_up:
+        if _is_used_on_caption(lines[i - 2]):
             is_title_block = True
     return is_title_block
 
@@ -960,7 +959,7 @@ def _dict_row_text(rows, y):
 
 
 def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
-    if "USED ON" in _dict_row_text(rows, y).upper():
+    if _is_caption_row(_dict_row_text(rows, y)):
         return True
     for _, t in rows[y]:
         t_up = t.upper()
@@ -976,7 +975,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 30:
             break
-        if "USED ON" in _dict_row_text(rows, prev_y).upper():
+        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
             return True
     # A tall title-block cell can park the USED ON value several rows below
     # its label (F10205800: 3 note rows intervene, label 4 rows back), which
@@ -995,7 +994,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 100:
             break
-        if "USED ON" in _dict_row_text(rows, prev_y).upper():
+        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
             label_xs = [x for x, t in rows[prev_y]
                         if "USED" in t.upper() or t.upper() == "ON"]
             if any(lo <= x <= hi for x in label_xs):
@@ -1175,12 +1174,56 @@ def _word_row_has_item_before(row_words, x):
     return False
 
 
+_CAPTION_VALUE_RE = re.compile(r"(?:\d+(?::\d+)?|A\d|OF|[A-Z])")
+_CAPTION_FERMI_VALUE_RE = re.compile(r"F[C]?\d+[A-Za-z]?")
+# Fields whose caption value is an F-number by design. Other keywords must not
+# let an F-number pass as their value: 'ITEM 1 F10126107' is a BOM row (item
+# number + part), not a caption, and skipping it would drop a real child.
+_CAPTION_FERMI_FIELDS = frozenset(
+    {"USED ON", "DRAWING NUMBER", "NUMBER", "NEXT ASSY"})
+_CAPTION_PHRASES = sorted(TITLE_BLOCK_KEYWORDS, key=len, reverse=True)
+
+
+def _is_caption_row(text):
+    """True when a row reads as a title-block caption: one of the configured
+    keywords (multi-word phrases included) followed only by value tokens -
+    'SCALE 1:1', 'SHEET 1 OF 2', 'USED ON F10126107', bare 'REV'. An F-number
+    is a value only for the fields that hold one (see _CAPTION_FERMI_FIELDS).
+    A row that merely starts with or contains a keyword word as ordinary text
+    ('SHEET METAL BRACKET', 'BRACKET USED ON ASSY') is BOM content, not a
+    caption."""
+    text = " ".join((text or "").upper().split())
+    if not text:
+        return False
+    for kw in _CAPTION_PHRASES:
+        if text == kw:
+            return True
+        if text.startswith(kw + " "):
+            rest = text[len(kw) + 1:].split()
+            fermi_ok = kw in _CAPTION_FERMI_FIELDS
+            if rest and all(
+                    _CAPTION_VALUE_RE.fullmatch(t)
+                    or (fermi_ok and _CAPTION_FERMI_VALUE_RE.fullmatch(t))
+                    for t in rest):
+                return True
+    return False
+
+
+def _is_used_on_caption(text):
+    """True when a row is a USED ON caption ('USED ON', 'USED ON F1...'),
+    not BOM text merely containing the phrase ('BRACKET USED ON ASSY')."""
+    text = " ".join((text or "").upper().split())
+    return text.startswith("USED ON") and _is_caption_row(text)
+
+
 def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # Same row: a drawing-size token (A0-A9) marks the title block.
     for _, w in row_words:
         if SIZE_RE.match(w):
             return True
-    # Nearby rows: title-block keywords or size tokens.
+    # Nearby rows: title-block captions or size tokens. A caption is a
+    # keyword row, optionally with its value ('SCALE 1:1', 'USED ON F1...');
+    # a keyword word inside a BOM row's text must not disable the rows below.
     y_idx = y_index[y_key]
     for dy in range(1, 4):
         if y_idx - dy < 0:
@@ -1189,11 +1232,9 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         if prev_y < y_key - 30:
             break
         prev_text = " ".join(w for _, w in sorted(rows[prev_y], key=lambda t: t[0]))
-        if "USED ON" in prev_text.upper():
+        if _is_caption_row(prev_text):
             return True
         for _, w in rows[prev_y]:
-            if w.upper() in TITLE_BLOCK_KEYWORDS:
-                return True
             if SIZE_RE.match(w):
                 return True
     return False
@@ -1226,7 +1267,7 @@ def _extract_bom_positional(page, page_num, issues=None):
             continue
         row_words = sorted(rows[y_key], key=lambda t: t[0])
         row_text = " ".join(w for _, w in row_words)
-        if "USED ON" in row_text.upper():
+        if _is_caption_row(row_text):
             continue
         if _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
             continue
