@@ -497,11 +497,16 @@ def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_
 # ---------------------------------------------------------------------------
 def _in_place_tree_copy(p, stem, output):
     """(In-place runs) True when a scanned PDF looks like an organized copy:
-    it sits inside a folder named after its own base number ('F10126107 NAME',
-    as place_files writes). A PDF at the output root or in an unrelated input
-    subfolder is an input original, not a placed copy."""
+    it sits inside the exact stem/base folder or a '{base} NAME' folder, the
+    shapes place_files writes. A PDF at the output root or in an unrelated
+    input subfolder is an input original, not a placed copy. A user folder
+    deliberately named '{base} something' is indistinguishable from the
+    convention and still counts as organized."""
     base = stem.split("_")[0]
-    return p.parent != output and p.parent.name.upper().startswith(base)
+    if p.parent == output:
+        return False
+    name = p.parent.name.upper()
+    return name == stem or name == base or name.startswith(base + " ")
 
 
 def _collect_incremental_candidates(scan_index, output, scan_res=None,
@@ -1463,7 +1468,11 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     placeable = [R for R in new_roots
                  if _incremental_placeable(R, new_boms, new_children,
                                            org_parents_of, org_children_of)]
-    kept, skipped = fit_roots_within_cap(new_children, placeable, log)
+    # A root referenced by several organized parents is copied under each
+    # claimant: charge its subtree once per claimant against the cap.
+    weights = {R: max(1, len(org_parents_of.get(R, ()))) for R in placeable}
+    kept, skipped = fit_roots_within_cap(new_children, placeable, log,
+                                         weights=weights)
     refused = bool(skipped)
     skipped_set = {r for r, _ in skipped}
     if refused and not kept:
@@ -1676,10 +1685,14 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                                 pre_org_par, pre_org_ch)]
     # Silent fit: the pre-check only gates the supersede swaps below. The
     # backstop in _incremental_place logs authoritatively, on the final
-    # graph.
+    # graph. Weights match the backstop (multi-claimant roots are copied
+    # once per organized parent).
+    _pre_weights = {r: max(1, len(pre_org_par.get(r, ())))
+                    for r in pre_placeable}
     _pre_kept, _pre_dropped = fit_roots_within_cap(pre_children,
                                                    pre_placeable,
-                                                   lambda msg: None)
+                                                   lambda msg: None,
+                                                   weights=_pre_weights)
     refused = bool(_pre_dropped)
 
     swapped_old: list = []

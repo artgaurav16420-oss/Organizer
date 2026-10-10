@@ -5,6 +5,19 @@ All notable changes to the Fermi PDF organizer are recorded here.
 ## Unreleased
 
 ### Logic-audit fixes (round 2)
+- `BAD_DESC_RE` no longer rejects part names starting with `ENERGY`
+  (`ENERGY ABSORBER`); the boilerplate title-block line is still caught via
+  `UNITED`/`DEPARTMENT`.
+- Table cells with a same-line split value (`F101 26145`) re-join the split
+  digits before tokenizing, while a newline-stacked quantity
+  (`F10112345\n2`) still splits.
+- In-place organized detection requires place_files' own shapes (exact
+  stem/base folder or `{base} NAME`): a user folder that merely starts with
+  the base (`F10126107_backup`) no longer counts as organized. A folder
+  deliberately named `{base} something` is indistinguishable from the
+  convention and still counts.
+- The incremental fan-out cap charges a root referenced by several
+  organized parents once per claimant (it is copied once per claimant).
 - `BAD_DESC_RE` now matches whole words: a single-line BOM row whose part
   name starts like a label (`REVERSE SHAFT`, `PARTITION PLATE`, `TABLETOP`)
   is no longer rejected as `REV`/`PART`/`TABLE` text. Plural and

@@ -897,23 +897,27 @@ def test_bad_desc_rejects_labels_not_word_prefixes():
     for text in ("REV A BRACKET", "PART NUMBER", "PARTS LIST", "NOTES:",
                  "FIGURE 3", "TABLE 1", "USED ON", "ITEM 1 BRACKET",
                  "UNLESS OTHERWISE SPECIFIED", "ASSEMBLY", "MATERIALS:",
-                 "SUBASSEMBLY DETAIL"):
+                 "SUBASSEMBLY DETAIL", "UNITED STATES DEPARTMENT OF ENERGY"):
         assert extraction.BAD_DESC_RE.match(text), text
     for text in ("REVERSE SHAFT", "PARTITION PLATE", "TABLETOP BRACKET",
-                 "VIEWPORT COVER", "CODER WHEEL", "PARTICLE BOARD"):
+                 "VIEWPORT COVER", "CODER WHEEL", "PARTICLE BOARD",
+                 "ENERGY ABSORBER"):
         assert not extraction.BAD_DESC_RE.match(text), text
 
 
 def test_table_rows_take_whole_fermi_token():
     # A cell can stack the value and its quantity ('F10112345\n2' used to
-    # normalize to the wrong number) or carry an item number before the value
-    # ('1 F10126108', dropped): the whole FERMI token wins.
+    # normalize to the wrong number), carry an item number before the value
+    # ('1 F10126108', dropped), or split the value with a space
+    # ('F101 26145'): the whole FERMI token wins, split digits re-join.
     data = [["ITEM", "FERMI NO.", "PART NAME"],
             ["1", "F10126107", "BRACKET"],
             ["2", "F10112345\n2", "SHIM"],
-            ["3", "1 F10126108", "WASHER"]]
+            ["3", "1 F10126108", "WASHER"],
+            ["4", "F101 26145", "GASKET"]]
     entries = extraction._table_rows_to_entries(data, 0, 1, 1)
-    assert [e[0] for e in entries] == ["F10126107", "F10112345", "F10126108"]
+    assert [e[0] for e in entries] == \
+        ["F10126107", "F10112345", "F10126108", "F10126145"]
 
 
 def test_drawing_name_skips_parts_list_header_pair(tmp_path, make_pdf):

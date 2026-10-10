@@ -813,9 +813,12 @@ def _table_rows_to_entries(data, hdr_idx, fermi_col, page_num):
             continue
         # A cell can carry more than the value: a quantity stacked under it
         # ('F10126145\n2' used to normalize to 'F101261452' - a wrong part
-        # number) or an item number before it ('1 F10126108', dropped). Take
-        # the first whitespace-separated token that is a whole FERMI value.
-        for token in re.split(r"\s+", str(row[fermi_col] or "")):
+        # number) or a same-line split value ('F101 26145'). Re-join digits
+        # separated by spaces/tabs only (a newline is a stacked cell, not a
+        # split number), then take the first whole FERMI token.
+        text = re.sub(r"(?<=[0-9])[ \t]+(?=[0-9])", "",
+                      str(row[fermi_col] or ""))
+        for token in re.split(r"\s+", text):
             val = normalize(token)
             if FERMI_RE.match(val):
                 entries.append((val, page_num, "table"))

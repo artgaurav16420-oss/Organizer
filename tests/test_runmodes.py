@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from fermi_organizer import extraction, fsops
+from fermi_organizer import extraction, fsops, runmodes
 from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
                                       _ensure_lock, _swap_revision_files, _log_summary,
                                       _log_unplaced, _titleblock_mismatches)
@@ -1219,6 +1219,52 @@ def test_run_incremental_in_place_picks_up_new_arrivals(tmp_path, make_pdf):
     # The input subfolder was not mistaken for an organized folder.
     assert (sub / "F10126150.pdf").is_file()
     assert (folder / "_orphans" / "F10126150.pdf").is_file()
+
+
+def test_in_place_tree_copy_shape(tmp_path):
+    # Only place_files' own shapes count as organized: the bare stem/base
+    # folder or '{base} NAME'. A user folder that merely starts with the base
+    # ('F10126107_backup') must not swallow a new PDF as "already organized".
+    out = tmp_path / "out"
+    (out / "F10126107 Child part").mkdir(parents=True)
+    (out / "F10126107").mkdir()
+    (out / "F10126107_A___DWG1").mkdir()
+    (out / "F10126107_backup").mkdir()
+    pdf = out / "x.pdf"
+
+    assert runmodes._in_place_tree_copy(out / "F10126107 Child part" / "x.pdf",
+                                        "F10126107", out)
+    assert runmodes._in_place_tree_copy(out / "F10126107" / "x.pdf",
+                                        "F10126107", out)
+    assert runmodes._in_place_tree_copy(out / "F10126107_A___DWG1" / "x.pdf",
+                                        "F10126107_A___DWG1", out)
+    assert not runmodes._in_place_tree_copy(out / "F10126107_backup" / "x.pdf",
+                                            "F10126107", out)
+    assert not runmodes._in_place_tree_copy(pdf, "F10126107", out)
+    del pdf
+
+
+def test_run_incremental_cap_charges_multi_claimant_root_per_parent(
+        tmp_path, make_pdf, monkeypatch):
+    # F10126109 is copied under two organized parents; the fan-out cap must
+    # charge its subtree twice, so a cap of 1 refuses it (it used to be
+    # charged once and placed).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126109 FUTURE PART", "NAME", "Parent A"])
+    make_pdf(in_dir / "F10126108.pdf", [
+        "FERMI PART LIST", "F10126109 FUTURE PART", "NAME", "Parent B"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "Future part"])
+    monkeypatch.setattr("fermi_organizer.fsops.MAX_PLANNED_COPIES", 1)
+    ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["skipped_roots"] and ctx["skipped_roots"][0][0] == "F10126109"
+    assert not (out / "F10126106 Parent A" / "F10126109 Future part").exists()
+    assert not (out / "F10126108 Parent B" / "F10126109 Future part").exists()
 
 
 def test_run_incremental_new_child_under_every_organized_parent(tmp_path, make_pdf):
