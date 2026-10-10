@@ -181,8 +181,9 @@ def test_split_superseded_plain_and_sheet_tie_keeps_all(tmp_path):
     """A plain stem tied with its sheeted export(s) is one more sheet, not a
     winner: both stay active, so the sheet's BOM is not dropped."""
     dummy = tmp_path / "dummy.pdf"
-    active, old = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy})
-    assert set(active) == {"F1_A", "F1_A_DWG1"}
+    active, old = split_superseded({"F10126106": dummy,
+                                    "F10126106___DWG1": dummy})
+    assert set(active) == {"F10126106", "F10126106___DWG1"}
     assert old == {}
 
     active, old = split_superseded({
@@ -199,12 +200,13 @@ def test_split_superseded_mixed_tie_order_independent(tmp_path):
     """The mixed plain + sheeted tie keeps the same set for both insertion
     orders (sorted first-seen per sheet token)."""
     dummy = tmp_path / "dummy.pdf"
-    forward = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy,
-                                "F1_A_DWG1_XML2348": dummy})
-    reverse = split_superseded({"F1_A_DWG1_XML2348": dummy,
-                                "F1_A_DWG1": dummy, "F1_A": dummy})
-    assert set(forward[0]) == set(reverse[0]) == {"F1_A", "F1_A_DWG1"}
-    assert set(forward[1]) == set(reverse[1]) == {"F1_A_DWG1_XML2348"}
+    forward = split_superseded({"F10126106": dummy, "F10126106___DWG1": dummy,
+                                "F10126106___DWG1_XML2348": dummy})
+    reverse = split_superseded({"F10126106___DWG1_XML2348": dummy,
+                                "F10126106___DWG1": dummy, "F10126106": dummy})
+    assert set(forward[0]) == set(reverse[0]) == \
+        {"F10126106", "F10126106___DWG1"}
+    assert set(forward[1]) == set(reverse[1]) == {"F10126106___DWG1_XML2348"}
 
 
 def test_split_superseded_same_token_still_collapses_with_plain(tmp_path):
@@ -212,33 +214,41 @@ def test_split_superseded_same_token_still_collapses_with_plain(tmp_path):
     a plain stem keeps the same base active."""
     dummy = tmp_path / "dummy.pdf"
     active, old = split_superseded({
-        "F1_A": dummy,
-        "F1_A_DWG1_XML2348": dummy,
-        "F1_A_DWG1_XML2347": dummy,
+        "F10126106": dummy,
+        "F10126106___DWG1_XML2348": dummy,
+        "F10126106___DWG1_XML2347": dummy,
     })
-    assert set(active) == {"F1_A", "F1_A_DWG1_XML2347"}
-    assert set(old) == {"F1_A_DWG1_XML2348"}
+    assert set(active) == {"F10126106", "F10126106___DWG1_XML2347"}
+    assert set(old) == {"F10126106___DWG1_XML2348"}
 
 
 def test_match_pdfs_plain_and_sheet_parity():
     """match_pdfs uses the same sheet-winner policy: a reference to the base
     returns the plain stem and one stem per distinct sheet token."""
-    stems = {"F1_A", "F1_A_DWG1"}
-    assert match_pdfs("F1", stems) == ["F1_A", "F1_A_DWG1"]
+    stems = {"F10126106", "F10126106___DWG1"}
+    assert match_pdfs("F10126106", stems) == ["F10126106", "F10126106___DWG1"]
     stems = {"F10126106___DWG1", "F10126106___DWG2", "F10126106___DWG2_X"}
     assert match_pdfs("F10126106", stems) == \
         ["F10126106___DWG1", "F10126106___DWG2"]
 
 
 def test_match_pdfs_exact_stem_expands_its_sheet_group():
-    """An exact match expands within its own revision only: a reference to
-    the plain stem keeps its sibling sheets; other revisions never leak in."""
-    stems = {"F1_A", "F1_A_DWG1", "F1_A_DWG2", "F1_B", "F1_C_DWG1"}
-    assert match_pdfs("F1_A", stems) == ["F1_A", "F1_A_DWG1", "F1_A_DWG2"]
-    assert match_pdfs("F1_B", stems) == ["F1_B"]
+    """An exact, processable reference (bare number) expands within its own
+    base: the plain stem keeps its sibling sheets, and no other base leaks
+    in."""
+    stems = {"F10126106", "F10126106___DWG1", "F10126106___DWG2",
+             "F10126107", "F10126108___DWG1"}
+    assert match_pdfs("F10126106", stems) == \
+        ["F10126106", "F10126106___DWG1", "F10126106___DWG2"]
+    assert match_pdfs("F10126107", stems) == ["F10126107"]
+    # A same-base stem in a different revision rank is not expanded into.
+    assert match_pdfs("F10126106", {"F10126106", "F10126106_A"}) == \
+        ["F10126106"]
     # Same-token duplicate exports still collapse to the sorted-first.
-    dupes = {"F1_A_DWG1_XML2347", "F1_A_DWG1_XML2348"}
-    assert match_pdfs("F1_A_DWG1_XML2347", dupes) == ["F1_A_DWG1_XML2347"]
+    dupes = {"F10126106", "F10126106___DWG1_XML2347",
+             "F10126106___DWG1_XML2348"}
+    assert match_pdfs("F10126106", dupes) == \
+        ["F10126106", "F10126106___DWG1_XML2347"]
 
 
 def test_split_superseded_order_independent(tmp_path):
@@ -246,9 +256,10 @@ def test_split_superseded_order_independent(tmp_path):
     (sorted first-seen per sheet token); the plain stem and its sheeted
     export both stay active."""
     dummy = tmp_path / "dummy.pdf"
-    forward = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy})
-    reverse = split_superseded({"F1_A_DWG1": dummy, "F1_A": dummy})
-    assert set(forward[0]) == set(reverse[0]) == {"F1_A", "F1_A_DWG1"}
+    forward = split_superseded({"F10126106": dummy, "F10126106___DWG1": dummy})
+    reverse = split_superseded({"F10126106___DWG1": dummy, "F10126106": dummy})
+    assert set(forward[0]) == set(reverse[0]) == \
+        {"F10126106", "F10126106___DWG1"}
     assert set(forward[1]) == set(reverse[1]) == set()
 
     # Same-token duplicates keep the lexicographically first export in both
