@@ -1175,12 +1175,38 @@ def _word_row_has_item_before(row_words, x):
     return False
 
 
+_CAPTION_VALUE_RE = re.compile(r"(?:\d+(?::\d+)?|A\d|F[C]?\d+[A-Za-z]?|OF|[A-Z])")
+_CAPTION_PHRASES = sorted(TITLE_BLOCK_KEYWORDS, key=len, reverse=True)
+
+
+def _is_caption_row(text):
+    """True when a row reads as a title-block caption: one of the configured
+    keywords (multi-word phrases included) followed only by value tokens -
+    'SCALE 1:1', 'SHEET 1 OF 2', 'USED ON F10126107', bare 'REV'. A row that
+    merely starts with or contains a keyword word as ordinary text
+    ('SHEET METAL BRACKET', 'BRACKET USED ON ASSY') is BOM content, not a
+    caption."""
+    text = " ".join((text or "").upper().split())
+    if not text:
+        return False
+    for kw in _CAPTION_PHRASES:
+        if text == kw:
+            return True
+        if text.startswith(kw + " "):
+            rest = text[len(kw) + 1:].split()
+            if rest and all(_CAPTION_VALUE_RE.fullmatch(t) for t in rest):
+                return True
+    return False
+
+
 def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # Same row: a drawing-size token (A0-A9) marks the title block.
     for _, w in row_words:
         if SIZE_RE.match(w):
             return True
-    # Nearby rows: title-block keywords or size tokens.
+    # Nearby rows: title-block captions or size tokens. A caption is a
+    # keyword row, optionally with its value ('SCALE 1:1', 'USED ON F1...');
+    # a keyword word inside a BOM row's text must not disable the rows below.
     y_idx = y_index[y_key]
     for dy in range(1, 4):
         if y_idx - dy < 0:
@@ -1189,13 +1215,7 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         if prev_y < y_key - 30:
             break
         prev_text = " ".join(w for _, w in sorted(rows[prev_y], key=lambda t: t[0]))
-        prev_up = prev_text.upper()
-        if "USED ON" in prev_up:
-            return True
-        # Whole-row match only: a keyword word inside a BOM row's text (e.g.
-        # 'SHEET METAL BRACKET') must not disable the rows below it, but the
-        # row must be a title-block caption - 'REV', 'SCALE 1:1', 'USED ON'.
-        if prev_up in TITLE_BLOCK_KEYWORDS:
+        if _is_caption_row(prev_text):
             return True
         for _, w in rows[prev_y]:
             if SIZE_RE.match(w):
@@ -1230,7 +1250,7 @@ def _extract_bom_positional(page, page_num, issues=None):
             continue
         row_words = sorted(rows[y_key], key=lambda t: t[0])
         row_text = " ".join(w for _, w in row_words)
-        if "USED ON" in row_text.upper():
+        if _is_caption_row(row_text):
             continue
         if _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
             continue

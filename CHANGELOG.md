@@ -8,12 +8,14 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - Sibling sheets of one drawing (e.g. `F10038961___DWG1` / `___DWG2`) are no
   longer treated as rival revisions: the lower-ranked sheet was dropped with
   its BOM, so its children surfaced as orphans and were never placed under
-  the drawing. `split_superseded` now keeps every top-ranked stem per base
-  when all tied stems carry a sheet token; any other tie keeps the previous
-  first-seen winner. `match_pdfs` likewise returns every sibling sheet as a
-  child of a drawing reference, so a parent that lists the drawing gets all
-  sheets (a full run places each sheet with its own subtree, and nests every
-  sheet under such a parent).
+  the drawing. Ties at a base's top rank now resolve to one stem per distinct
+  sheet token (`_sheet_winners`, shared by `split_superseded` and
+  `match_pdfs`): sibling sheets all stay, while duplicate exports of the SAME
+  sheet (`___DWG1_XML2347` vs `___DWG1_XML2348`) collapse to the first-seen
+  stem. Any tie without sheet tokens keeps the previous first-seen winner.
+  A drawing reference returns every sibling sheet as a child, so a parent
+  that lists the drawing gets all sheets (a full run places each sheet with
+  its own subtree, and nests every sheet under such a parent).
 - `retire_adopted_orphans` no longer deletes a parked `_orphans/` copy on the
   superseded stem alone: the parked copy is retired only when its exact bytes
   survive somewhere else - in the tree or in the archive (`_superseded/`).
@@ -22,9 +24,14 @@ All notable changes to the Fermi PDF organizer are recorded here.
   unchanged.
 - The word-path title-block check no longer treats a title-block keyword word
   inside a BOM row (`SHEET METAL BRACKET`) as a title-block caption: that
-  silently dropped the F-number rows below it. Only whole-row keyword
-  captions, `USED ON`, and drawing-size cells mark the title block (the
-  positional parser already compared whole cells).
+  silently dropped the F-number rows below it. A nearby row is a caption only
+  when it starts with a configured keyword (phrases included) followed solely
+  by value tokens - `SCALE 1:1`, `SHEET 1 OF 2`, `USED ON F10126107`, bare
+  `REV` - so value-bearing captions stay effective while BOM text containing a
+  keyword word (`BRACKET USED ON ASSY`) no longer disables the rows below it.
+  The same caption check now gates the row's own skip test, so a BOM row whose
+  description merely mentions USED ON is kept (the positional parser already
+  compared whole cells).
 
 ### Placement fan-out guard
 - Over-cap runs now degrade gracefully instead of refusing the whole batch:

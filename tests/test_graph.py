@@ -160,6 +160,22 @@ def test_split_superseded_tie_without_sheet_token_keeps_one_stem(tmp_path):
     assert set(old) == {"F10126106"}
 
 
+def test_split_superseded_dedupes_duplicate_sheet_variants(tmp_path):
+    """Duplicate exports of the SAME sheet (same sheet token, different
+    trailing token) collapse to one stem; distinct sheets all stay."""
+    dummy = tmp_path / "dummy.pdf"
+    index = {
+        "F10038961___DWG1": dummy,
+        "F10038961___DWG1_XML2347": dummy,
+        "F10038961___DWG1_XML2348": dummy,
+        "F10038961___DWG2": dummy,
+    }
+    active, old = split_superseded(index)
+    assert set(active) == {"F10038961___DWG1", "F10038961___DWG2"}
+    assert set(old) == {"F10038961___DWG1_XML2347",
+                        "F10038961___DWG1_XML2348"}
+
+
 def test_match_pdfs_exact_and_revision_pick():
     stems = {"F10126107", "F10126107_A", "F10126107_B", "F10126108"}
     assert match_pdfs("F10126107", stems) == ["F10126107"]
@@ -176,6 +192,14 @@ def test_match_pdfs_sibling_sheets_all_children():
     assert match_pdfs("F10126106_A", stems) == \
         ["F10126106_A___DWG1", "F10126106_A___DWG2"]
     assert match_pdfs("F10126106", {"F10126106___DWG1", "F10126106___DWG2"}) == \
+        ["F10126106___DWG1", "F10126106___DWG2"]
+
+
+def test_match_pdfs_dedupes_duplicate_sheet_variants():
+    # Duplicate exports of one sheet collapse; the other sheet stays.
+    stems = {"F10126106___DWG1", "F10126106___DWG1_XML2347",
+             "F10126106___DWG1_XML2348", "F10126106___DWG2"}
+    assert match_pdfs("F10126106", stems) == \
         ["F10126106___DWG1", "F10126106___DWG2"]
 
 

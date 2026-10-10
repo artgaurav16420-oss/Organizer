@@ -806,3 +806,55 @@ def test_used_on_wide_window_requires_horizontal_association():
     # Same vertical gap, label in a different column: the row is kept.
     far = _wide_window_rows(600)
     assert not extraction._positional_row_is_title_block(far, ys, y_idx, 150)
+
+
+def test_caption_row_recognizes_keywords_and_values():
+    for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
+                 "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
+                 "  sheet  1  of  2 "):
+        assert extraction._is_caption_row(text), text
+
+
+def test_caption_row_rejects_bom_text():
+    for text in ("SHEET METAL BRACKET", "BRACKET USED ON ASSY",
+                 "NAME PLATE", "SCALE BAR", "1 F10126107 BRACKET"):
+        assert not extraction._is_caption_row(text), text
+
+
+class _CaptionPage:
+    def __init__(self, words):
+        self._words = words
+
+    def get_text(self, kind="text"):
+        assert kind == "words"
+        return self._words
+
+
+def _cword(x0, y0, text):
+    return (x0, y0, x0 + 8, y0 + 8, text, 0, 0, 0)
+
+
+def test_positional_caption_with_value_skips_row_below():
+    # 'SCALE 1:1' is a caption even though it is not a bare keyword; the row
+    # right below it carries an item number and must still be skipped, while
+    # the next row (out of caption reach) is kept.
+    page = _CaptionPage([
+        _cword(50, 100, "SCALE"), _cword(90, 100, "1:1"),
+        _cword(50, 110, "1"), _cword(70, 110, "F10126107"),
+        _cword(50, 140, "2"), _cword(70, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert [v for v, _, _ in found] == ["F10126108"]
+
+
+def test_positional_row_with_used_on_words_is_kept():
+    # A BOM description may mention USED ON; the row itself is not a caption,
+    # so its F-number is kept.
+    page = _CaptionPage([
+        _cword(50, 100, "1"), _cword(70, 100, "F10126107"),
+        _cword(130, 100, "BRACKET"), _cword(180, 100, "USED"),
+        _cword(210, 100, "ON"),
+        _cword(50, 140, "2"), _cword(70, 140, "F10126108"),
+    ])
+    found = extraction._extract_bom_positional(page, 1)
+    assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]

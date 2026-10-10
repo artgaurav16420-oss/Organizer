@@ -45,14 +45,29 @@ def _sheet_token(stem):
     return None
 
 
+def _sheet_winners(tied):
+    """One stem per distinct sheet token when every tied stem is a sheet
+    variant: sibling sheets of one drawing are one part, while duplicate
+    exports of the SAME sheet (same token, different trailing text, e.g.
+    '___DWG1_XML2347' vs '___DWG1_XML2348') are one sheet and keep the
+    first-seen stem. A tie without sheet tokens keeps the first-seen stem."""
+    tokens = [_sheet_token(s) for s in tied]
+    if len(tied) > 1 and all(tokens):
+        winners = {}
+        for s, token in zip(tied, tokens, strict=True):
+            winners.setdefault(token, s)
+        return list(winners.values())
+    return [tied[0]]
+
+
 def split_superseded(index):
     """Split index into (active, superseded). Keep highest revision per base.
 
-    Stems tied at a base's top rank are all kept active when every tied stem
-    carries a sheet token: those are sibling sheets of one drawing, not rival
-    revisions, and dropping a sheet would also drop its BOM (its children
-    would surface as orphans). Any other tie keeps the first-seen stem, as
-    before.
+    Stems tied at a base's top rank resolve to one stem per distinct sheet
+    token when every tied stem carries one: sibling sheets are all kept (a
+    dropped sheet would drop its BOM, surfacing its children as orphans),
+    while duplicate exports of one sheet collapse. Any other tie keeps the
+    first-seen stem, as before.
     """
     by_base = defaultdict(list)
     for s in index:
@@ -61,10 +76,7 @@ def split_superseded(index):
     for stems in by_base.values():
         top = max(revision_rank(s) for s in stems)
         tied = [s for s in stems if revision_rank(s) == top]
-        if len(tied) > 1 and all(_sheet_token(s) for s in tied):
-            active_stems.update(tied)
-        else:
-            active_stems.add(tied[0])
+        active_stems.update(_sheet_winners(tied))
     active = {}
     old = {}
     for s, p in index.items():
@@ -152,14 +164,11 @@ def match_pdfs(val, stems):
         return [val]
     with_rev = sorted(s for s in stems if s.startswith(val + "_"))
     if with_rev:
-        # startswith pins the base; return the highest revision among matches.
+        # startswith pins the base; return the highest revision among matches
+        # (one stem per sibling sheet, duplicate sheet exports collapsed).
         top = max(revision_rank(s) for s in with_rev)
         tied = [s for s in with_rev if revision_rank(s) == top]
-        if len(tied) > 1 and all(_sheet_token(s) for s in tied):
-            # Sibling sheets of one drawing are one part: a reference lists
-            # the drawing, not a single sheet, so every sheet is a child.
-            return tied
-        return [tied[0]]
+        return _sheet_winners(tied)
     # Negative lookahead keeps loose prefix matches from extending the base.
     pat = _LOOSE_RE_CACHE.get(val)
     if pat is None:
