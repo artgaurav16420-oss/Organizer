@@ -77,15 +77,16 @@ def _classify_input_pdf(p, folder, index):
 
 
 def _unusual_revision_stems(index):
-    """Validate revision-token convention: second underscore segment must be empty,
-    a single letter, or a CHK marker (ranked, not "treated as 0")."""
+    """Validate revision-token convention: second underscore segment must be
+    empty, one or two letters, or a CHK marker (all ranked, not "treated as
+    0")."""
     unusual = []
     for s in index:
         if is_chk_stem(s):
             continue
         parts = s.split("_")
         tok = parts[1] if len(parts) > 1 else ""
-        if tok and not (len(tok) == 1 and tok.isalpha()):
+        if tok and not (tok.isalpha() and len(tok) <= 2):
             unusual.append(s)
     return unusual
 

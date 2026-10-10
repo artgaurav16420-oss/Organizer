@@ -107,6 +107,8 @@ def test_revision_letter_rank():
 
 
 def test_revision_rank_chk_below_all_dwg():
+    """CHK drawings rank below every DWG revision but stay ordered among
+    themselves."""
     assert revision_rank("F10126106_CHK") == -1000
     assert revision_rank("F10126106") == 0
     assert revision_rank("F10126106_A") == 1
@@ -118,6 +120,8 @@ def test_revision_rank_chk_below_all_dwg():
 
 
 def test_revision_rank_two_letter_bijective_base26():
+    """Two-letter revisions use bijective base-26 (AA=27) and outrank every
+    single letter; CHK and sheet tokens are unaffected."""
     # A=1 .. Z=26, AA=27, AB=28 (bijective base-26): two-letter revisions
     # outrank every single letter instead of tying with no revision.
     assert revision_letter_rank("F10038961_AA") == 27
