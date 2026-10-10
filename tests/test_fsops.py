@@ -1462,15 +1462,40 @@ def test_place_files_failed_copy_leaves_no_partial_target(tmp_path, monkeypatch)
     monkeypatch.setattr(fsops.shutil, "copy2", flaky)
     target = folder / "F10126106" / "F10126106.pdf"
 
-    place_files({"F10126106": ["F10126106"]}, ["F10126106"],
-                {"F10126106": pdf}, folder, False, lambda m: None)
+    place_files({}, ["F10126106"], {"F10126106": pdf}, folder, False,
+                lambda m: None)
     assert not target.exists()
     assert not [p for p in folder.rglob("*") if "copy_tmp" in p.name]
 
     # The next run retries and completes.
-    place_files({"F10126106": ["F10126106"]}, ["F10126106"],
-                {"F10126106": pdf}, folder, False, lambda m: None)
+    place_files({}, ["F10126106"], {"F10126106": pdf}, folder, False,
+                lambda m: None)
     assert target.read_bytes() == b"%PDF-real-bytes"
+
+
+def test_copy_atomic_refuses_symlinked_staging(tmp_path):
+    # The staging name is PID-predictable and copy2 follows a symlink on
+    # write: a link planted at the staging path must not redirect the copy
+    # outside the tree.
+    out = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF-real")
+    target = out / "F10126106" / "F10126106.pdf"
+    target.parent.mkdir(parents=True)
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"untouched")
+    staging = target.with_name(f"{target.name}.copy_tmp.{os.getpid()}")
+    try:
+        os.symlink(str(victim), str(staging))
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+
+    n = place_files({}, ["F10126106"], {"F10126106": pdf}, out, False,
+                    lambda m: None)
+
+    assert n == 0
+    assert victim.read_bytes() == b"untouched"
+    assert not target.exists()
 
 
 def test_copy_orphans_failed_copy_leaves_no_partial(tmp_path, monkeypatch):

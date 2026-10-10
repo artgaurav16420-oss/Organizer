@@ -52,6 +52,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   system dir is still left alone).
 - The supersede re-home copy is counted in the run's copy total (the
   summary used to underreport it).
+- Staging paths are PID-predictable and `shutil.copy2` follows a symlink on
+  write: a symlink planted at a `.copy_tmp.<pid>` or
+  `.supersede_tmp.<pid>` staging path is now refused, so it can never
+  redirect a copy outside the tree.
 - BOM table cells are read token-wise: a quantity stacked under the value
   (`F10112345\n2`, which used to normalize to the wrong number
   `F101123452`) or an item number before it (`1 F10126108`, dropped) no

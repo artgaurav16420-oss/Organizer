@@ -312,9 +312,14 @@ def _copy_atomic(src, dst):
     shutil.copy2 writes the destination in place, so a failure mid-write
     leaves a truncated PDF at `dst` that later runs treat as placed and never
     retry. Stage next to the target and os.replace, so the target is either
-    absent or complete; a failed attempt removes its own temp file.
+    absent or complete; a failed attempt removes its own temp file. The
+    staging name is PID-predictable, and copy2 follows a link on write: a
+    planted or raced symlink there would redirect the copy outside the tree,
+    so a symlinked staging path is refused like every other copy path.
     """
     tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
+    if _islink(tmp):
+        raise OSError(f"copy staging path is a symlink, refusing: {tmp}")
     try:
         shutil.copy2(_native(src), _native(tmp))
         os.replace(_native(tmp), _native(dst))

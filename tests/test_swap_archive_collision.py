@@ -21,6 +21,36 @@ def _setup_collision(tmp_path, out_name, old_bytes, archived_bytes, new_bytes=b"
     return out, sup, old, new_pdf
 
 
+def test_swap_refuses_symlinked_staging(tmp_path):
+    # The swap stages under a PID-predictable name; a symlink planted there
+    # must not redirect the new revision outside the tree. The old copy and
+    # the link target stay untouched, and the swap is skipped.
+    out = tmp_path / "out"
+    folder = out / "F10126107 Base part"
+    folder.mkdir(parents=True)
+    old = folder / "F10126107.pdf"
+    old.write_bytes(b"old")
+    new_pdf = tmp_path / "F10126107_A.pdf"
+    new_pdf.write_bytes(b"new")
+    sup = out / "_superseded"
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"untouched")
+    staging = folder / f"{new_pdf.name}.supersede_tmp.{os.getpid()}"
+    try:
+        os.symlink(str(victim), str(staging))
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+    logged = []
+
+    moved, copies = _swap_revision_files([old], new_pdf, sup, out, False,
+                                         logged.append)
+
+    assert moved == [] and copies == 0
+    assert victim.read_bytes() == b"untouched"
+    assert old.read_bytes() == b"old"
+    assert "staging path is a symlink" in "\n".join(logged)
+
+
 def test_swap_archive_collision_suffixes_on_different_content(tmp_path):
     out, sup, old, new_pdf = _setup_collision(
         tmp_path, "out_diff", b"old", b"already archived, different size")
