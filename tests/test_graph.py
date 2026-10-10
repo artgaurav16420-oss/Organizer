@@ -177,25 +177,79 @@ def test_split_superseded_keeps_sibling_sheets(tmp_path):
     assert set(active) | set(old) == set(index)
 
 
-def test_split_superseded_tie_without_sheet_token_keeps_one_stem(tmp_path):
-    """A tie that is not a sheet pair (no sheet token) stays single-winner:
-    the sorted first-seen stem wins, independent of insertion order."""
+def test_split_superseded_plain_and_sheet_tie_keeps_all(tmp_path):
+    """A plain stem tied with its sheeted export(s) is one more sheet, not a
+    winner: both stay active, so the sheet's BOM is not dropped."""
     dummy = tmp_path / "dummy.pdf"
-    index = {"F10126106___DWG1": dummy, "F10126106": dummy}
-    active, old = split_superseded(index)
-    assert set(active) == {"F10126106"}
-    assert set(old) == {"F10126106___DWG1"}
+    active, old = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy})
+    assert set(active) == {"F1_A", "F1_A_DWG1"}
+    assert old == {}
+
+    active, old = split_superseded({
+        "F10126106_B": dummy,
+        "F10126106_B___DWG1": dummy,
+        "F10126106_B___DWG2": dummy,
+    })
+    assert set(active) == {"F10126106_B", "F10126106_B___DWG1",
+                           "F10126106_B___DWG2"}
+    assert old == {}
+
+
+def test_split_superseded_mixed_tie_order_independent(tmp_path):
+    """The mixed plain + sheeted tie keeps the same set for both insertion
+    orders (sorted first-seen per sheet token)."""
+    dummy = tmp_path / "dummy.pdf"
+    forward = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy,
+                                "F1_A_DWG1_XML2348": dummy})
+    reverse = split_superseded({"F1_A_DWG1_XML2348": dummy,
+                                "F1_A_DWG1": dummy, "F1_A": dummy})
+    assert set(forward[0]) == set(reverse[0]) == {"F1_A", "F1_A_DWG1"}
+    assert set(forward[1]) == set(reverse[1]) == {"F1_A_DWG1_XML2348"}
+
+
+def test_split_superseded_same_token_still_collapses_with_plain(tmp_path):
+    """Duplicate exports of one sheet collapse to the sorted-first, even when
+    a plain stem keeps the same base active."""
+    dummy = tmp_path / "dummy.pdf"
+    active, old = split_superseded({
+        "F1_A": dummy,
+        "F1_A_DWG1_XML2348": dummy,
+        "F1_A_DWG1_XML2347": dummy,
+    })
+    assert set(active) == {"F1_A", "F1_A_DWG1_XML2347"}
+    assert set(old) == {"F1_A_DWG1_XML2348"}
+
+
+def test_match_pdfs_plain_and_sheet_parity():
+    """match_pdfs uses the same sheet-winner policy: a reference to the base
+    returns the plain stem and one stem per distinct sheet token."""
+    stems = {"F1_A", "F1_A_DWG1"}
+    assert match_pdfs("F1", stems) == ["F1_A", "F1_A_DWG1"]
+    stems = {"F10126106___DWG1", "F10126106___DWG2", "F10126106___DWG2_X"}
+    assert match_pdfs("F10126106", stems) == \
+        ["F10126106___DWG1", "F10126106___DWG2"]
+
+
+def test_match_pdfs_exact_stem_expands_its_sheet_group():
+    """An exact match expands within its own revision only: a reference to
+    the plain stem keeps its sibling sheets; other revisions never leak in."""
+    stems = {"F1_A", "F1_A_DWG1", "F1_A_DWG2", "F1_B", "F1_C_DWG1"}
+    assert match_pdfs("F1_A", stems) == ["F1_A", "F1_A_DWG1", "F1_A_DWG2"]
+    assert match_pdfs("F1_B", stems) == ["F1_B"]
+    # Same-token duplicate exports still collapse to the sorted-first.
+    dupes = {"F1_A_DWG1_XML2347", "F1_A_DWG1_XML2348"}
+    assert match_pdfs("F1_A_DWG1_XML2347", dupes) == ["F1_A_DWG1_XML2347"]
 
 
 def test_split_superseded_order_independent(tmp_path):
-    """Tie resolution uses the sorted first-seen stem, so the result must be
-    identical for both dict insertion orders (insertion order used to pick
-    the winner)."""
+    """Tie resolution keeps the same sheets for both dict insertion orders
+    (sorted first-seen per sheet token); the plain stem and its sheeted
+    export both stay active."""
     dummy = tmp_path / "dummy.pdf"
     forward = split_superseded({"F1_A": dummy, "F1_A_DWG1": dummy})
     reverse = split_superseded({"F1_A_DWG1": dummy, "F1_A": dummy})
-    assert set(forward[0]) == set(reverse[0]) == {"F1_A"}
-    assert set(forward[1]) == set(reverse[1]) == {"F1_A_DWG1"}
+    assert set(forward[0]) == set(reverse[0]) == {"F1_A", "F1_A_DWG1"}
+    assert set(forward[1]) == set(reverse[1]) == set()
 
     # Same-token duplicates keep the lexicographically first export in both
     # insertion orders.
