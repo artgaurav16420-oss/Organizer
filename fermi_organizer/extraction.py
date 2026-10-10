@@ -27,6 +27,7 @@ from .config import (canonical_stem,
                      FERMI_HEADER_RE, OCR_MIN_CHARS, OCR_MAIN_DPI, OCR_STRIP_DPI,
                      OCR_VAL_RE, OCR_CORR, ITEM_RE, BAD_DESC_RE, SIZE_RE,
                      SINGLE_LINE_RE, TOKEN_RE, USED_RE, STOP_RE,
+                     PARTS_HEADER_RE, PARTS_HEADER_COMBO_RE,
                      TITLE_BLOCK_KEYWORDS, WATERMARK_TEXT_RE, WATERMARK_MAX_PAGES,
                      WATERMARK_TRANSPARENT_OPACITY, WATERMARK_TRANSPARENT_MIN_SIZE,
                      WATERMARK_DIAGONAL_MIN_SIZE, WATERMARK_LIGHT_MIN_SIZE,
@@ -885,6 +886,22 @@ def _fermi_line_has_context(lines, i):
     return False
 
 
+_CROSS_REF_WORDS = frozenset(
+    {"AND", "OR", "&", "W/", "WITH", "PER", "SEE", "REF", "+"})
+
+
+def _desc_is_cross_reference(desc):
+    """A 'description' that only points at other drawings (e.g. the wrapped
+    fabrication note 'F10112550 AND F10118731.') is a cross-reference, not a
+    part name. No genuine part name consists solely of drawing references
+    and conjunctions, so rejecting these can only drop bogus edges (the part
+    then surfaces as an orphan/missing reference, visibly)."""
+    text = FERMI_RE_SEARCH.sub(" ", desc.upper())
+    words = [w.strip(".,;:()") for w in text.split()]
+    words = [w for w in words if w]
+    return bool(words) and all(w in _CROSS_REF_WORDS for w in words)
+
+
 def _line_bom_entries(lines, page_num):
     """Formats 1-3 over the page's text lines, in exact scan order."""
     entries = []
@@ -895,6 +912,14 @@ def _line_bom_entries(lines, page_num):
         if FERMI_RE.match(line) and i > 0 and ITEM_RE.match(lines[i - 1]):
             desc_candidate = lines[i + 1] if i + 1 < len(lines) else ""
             if desc_candidate and not BAD_DESC_RE.match(desc_candidate):
+                if _desc_is_cross_reference(desc_candidate):
+                    # Cross-reference, not a part: skip the row entirely.
+                    # Without this the FERMI line falls through to Format 3
+                    # below, whose context check the ITEM line above
+                    # satisfies - emitting the rejected drawing anyway.
+                    # (BAD_DESC rejections keep the old fallthrough.)
+                    i += 1
+                    continue
                 val = normalize(line)
                 entries.append((val, page_num, "text-fallback", desc_candidate.strip()))
                 i += 2
@@ -907,12 +932,18 @@ def _line_bom_entries(lines, page_num):
                         break
                     i += 1
                 continue
-        # Format 2: Single-line (FERMI# + description on same line)
+        # Format 2: Single-line (FERMI# + description on same line). The
+        # description must read like a part name: a wrapped fabrication note
+        # ("F10112550 AND F10118731.") matches the shape but only points at
+        # other drawings, so cross-references are rejected (neighboring bare
+        # dimension lines satisfy ITEM_RE, so a context gate would not save
+        # us here - and isolated single-line rows are legitimate BOM content
+        # per test_single_line_bom_detection, so none is required).
         m = SINGLE_LINE_RE.match(line)
         if m:
             val = normalize(m.group(1))
             desc = m.group(2).strip()
-            if not BAD_DESC_RE.match(desc):
+            if not BAD_DESC_RE.match(desc) and not _desc_is_cross_reference(desc):
                 entries.append((val, page_num, "text-fallback", desc))
                 i += 1
                 continue
@@ -947,6 +978,28 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
             break
         if "USED ON" in _dict_row_text(rows, prev_y).upper():
             return True
+    # A tall title-block cell can park the USED ON value several rows below
+    # its label (F10205800: 3 note rows intervene, label 4 rows back), which
+    # the tight loop above never reaches - and a USED ON value is an F-number
+    # by design, i.e. a certain false BOM edge. Only USED ON gets the wide
+    # window; other keywords stay tight so genuine rows near spec text keep
+    # working.
+    # The wide window must also be horizontally associated with this row: a
+    # USED ON label in another column (or a neighbouring drawing's block) is
+    # not this row's title-block cell.
+    row_xs = [x for x, _ in rows[y]]
+    lo, hi = min(row_xs) - 60, max(row_xs) + 60
+    for dy in range(4, 9):
+        if y_idx - dy < 0:
+            break
+        prev_y = sorted_ys[y_idx - dy]
+        if prev_y < y - 100:
+            break
+        if "USED ON" in _dict_row_text(rows, prev_y).upper():
+            label_xs = [x for x, t in rows[prev_y]
+                        if "USED" in t.upper() or t.upper() == "ON"]
+            if any(lo <= x <= hi for x in label_xs):
+                return True
     return False
 
 
@@ -1002,6 +1055,14 @@ def _positional_row_entries(page, page_num, entries, issues):
             for _, t in rows[y]:
                 t_stripped = t.strip()
                 if FERMI_RE.match(t_stripped):
+                    # A bare FERMI token takes its description from the row
+                    # below (Format-1 stack shape): a pure cross-reference
+                    # there ("AND F10126108.") rejects the row, mirroring the
+                    # line parser - otherwise the positional path re-adds
+                    # what the line path just rejected.
+                    if y_idx + 1 < len(sorted_ys) and _desc_is_cross_reference(
+                            _dict_row_text(rows, sorted_ys[y_idx + 1])):
+                        continue
                     val = normalize(t_stripped)
                     if val not in existing:
                         entries.append((val, page_num, "text-positional"))
@@ -1011,13 +1072,42 @@ def _positional_row_entries(page, page_num, entries, issues):
             issues.append(f"page {page_num}: positional grouping failed: {e}")
 
 
+def _doc_has_parts_header(doc):
+    """Whether any page prints a parts-list header: a standalone caption
+    ("PARTS LIST", "BOM", ...), the column combo on one line ("ITEM ...
+    FERMI ..."), or the column labels on adjacent lines (PDF text extraction
+    often emits one label per line). Gates the line-based BOM fallback (see
+    extract_bom_from_text): without a header anywhere, F-numbered text lines
+    are notes/title-block content. Table and positional parsers carry their
+    own structural gates and are unaffected."""
+    try:
+        texts = [page.get_text() for page in doc]
+    except (RuntimeError, ValueError):
+        return False
+    for text in texts:
+        lines = [raw.strip() for raw in text.splitlines()]
+        for i, line in enumerate(lines):
+            if PARTS_HEADER_RE.match(line) or PARTS_HEADER_COMBO_RE.search(line):
+                return True
+            if ITEM_RE.match(line):
+                for dy in (-2, -1, 1, 2):
+                    j = i + dy
+                    if 0 <= j < len(lines) and FERMI_HEADER_RE.match(lines[j]):
+                        return True
+    return False
+
+
 def extract_bom_from_text(doc, issues=None):
     """Text-based BOM entries from an open doc (line + positional fallbacks).
 
     Image-only pages (< OCR_MIN_CHARS of text) go through the OCR context when
-    enabled; the native line/word parsers never see unstructured OCR text.
+    enabled; the native line parser never sees unstructured OCR text. The
+    line parser additionally requires a parts-list header somewhere in the
+    document: on a headerless sheet every F-numbered line is a note, a
+    reference, or title-block content.
     """
     entries = []
+    header = _doc_has_parts_header(doc)
     for page_num, page in enumerate(doc, 1):
         text = page.get_text()
         if len(text.strip()) < OCR_MIN_CHARS:
@@ -1033,7 +1123,8 @@ def extract_bom_from_text(doc, issues=None):
             continue
         lines = [l.strip() for l in text.splitlines()]
         lines = [l for l in lines if l]
-        entries.extend(_line_bom_entries(lines, page_num))
+        if header:
+            entries.extend(_line_bom_entries(lines, page_num))
         _positional_row_entries(page, page_num, entries, issues)
         entries.extend(_extract_bom_positional(page, page_num, issues))
     return entries

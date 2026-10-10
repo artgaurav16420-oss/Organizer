@@ -23,6 +23,89 @@ def test_bom_requires_fermi_header_gate(tmp_path, make_pdf):
     assert entries == []
 
 
+def test_note_reference_to_other_drawings_is_not_bom(tmp_path, make_pdf):
+    # F10118360-style fabrication note: the F-number leads the wrapped line
+    # ("... PER WELDMENT DRAWING / F10126107 AND F10126108.") but only points
+    # at other drawings. The bare dimension lines (80/70) satisfy ITEM_RE, so
+    # a context gate would not reject this - the cross-reference description
+    # must. The real USED ON box below is guarded separately. The FERMI
+    # title-block line forces the page into the text parser (without any
+    # FERMI text the page is skipped before parsing starts).
+    lines = ["FERMI NATIONAL ACCELERATOR LABORATORY",
+             "3. PEM-NUT HOLE SIZE TO BE DETERMINED",
+             "BY VENDORS CHOICE OF PEM-NUT STYLE,",
+             "PEM-NUT THREAD SIZE SHALL BE",
+             "MAINTAINED PER WELDMENT DRAWING",
+             "F10126107 AND F10126108.",
+             "4. TRAILING ZERO DENOTE TOLERANCE.",
+             "267.0", "80", "250.0", "70",
+             "USED ON",
+             "F10126107 & F10126108"]
+    pdf = make_pdf(tmp_path / "F10126106.pdf", lines)
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert entries == []
+
+
+def test_note_reference_rejected_even_with_parts_header(tmp_path, make_pdf):
+    # Same note on a sheet that DOES carry a parts list: the header lets the
+    # line parser run, but the cross-reference description still rejects the
+    # note row while the genuine row is kept.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST",
+                    "F10126109 GUSSET RING",
+                    "MAINTAINED PER WELDMENT DRAWING",
+                    "F10126107 AND F10126108."])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert ("F10126109", 1, "text-fallback", "GUSSET RING") in entries
+    assert all(v != "F10126107" for v, *_rest in entries)
+
+
+def test_single_line_desc_containing_reference_is_kept(tmp_path, make_pdf):
+    # Boundary: a genuine part name that merely mentions another drawing
+    # ("CLAMP REF F10126108") is not a pure cross-reference - keep it.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "F10126107 CLAMP REF F10126108"])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert ("F10126107", 1, "text-fallback", "CLAMP REF F10126108") in entries
+
+
+def test_cross_reference_connector_forms():
+    # The tokenizer must not mangle connectors: "W/" stays "W/" (it is in
+    # the connector set), so every spelling of a pure pointer is rejected
+    # while real names pass.
+    is_ref = extraction._desc_is_cross_reference
+    assert is_ref("AND F10118731.") is True
+    assert is_ref("W/ F10118731") is True
+    assert is_ref("F10112550 & F10118731") is True
+    assert is_ref("CHILD PART") is False
+    assert is_ref("CLAMP REF F10126108") is False
+    assert is_ref("O-RING") is False
+
+
+def test_multiline_cross_reference_desc_does_not_fall_through(tmp_path,
+                                                              make_pdf):
+    # Format-1 shape (ITEM above) with a cross-reference description: the
+    # row must be skipped, not fall through to Format 3 (whose context the
+    # ITEM line above would satisfy, emitting the rejected drawing anyway).
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "1", "F10126107", "AND F10126108."])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert entries == []
+
+
+def test_split_line_column_headers_enable_fallback(tmp_path, make_pdf):
+    # Column labels emitted one per line ("ITEM" / "FERMI #") still count as
+    # a parts-list header; the genuine row below is kept while a note-style
+    # cross-reference on the same sheet is rejected.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["ITEM", "FERMI #", "1", "F10126107", "CHILD PART",
+                    "MAINTAINED PER DRAWING", "F10126108 AND F10126109."])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    values = {v for v, *_rest in entries}
+    assert "F10126107" in values
+    assert "F10126108" not in values
+
+
 def test_multiline_bom_skips_note_lines_until_qty(tmp_path, make_pdf):
     pdf = make_pdf(tmp_path / "F10126106.pdf",
                    ["FERMI PART LIST", "1", "F10126107", "CHILD PART A",
@@ -673,3 +756,23 @@ def test_export_for_pymupdf_switch_drops_stale_prefix(monkeypatch, tmp_path):
     parts = os.environ["PATH"].split(os.pathsep)
     assert str(a) not in parts and parts[0] == str(b)
     assert os.environ["TESSDATA_PREFIX"] == str(b / "tessdata")
+
+
+def _wide_window_rows(label_x):
+    """USED ON label 4 rows above a data row (y=150), with spec text between."""
+    rows = {110: [(label_x, "USED"), (label_x + 20, "ON")]}
+    for y in (120, 130, 140):
+        rows[y] = [(50, "SPEC")]
+    rows[150] = [(50, "12"), (200, "X")]
+    return rows
+
+
+def test_used_on_wide_window_requires_horizontal_association():
+    ys = sorted(_wide_window_rows(50))
+    y_idx = ys.index(150)
+    # Label in the row's own column: rejected as title-block content.
+    aligned = _wide_window_rows(50)
+    assert extraction._positional_row_is_title_block(aligned, ys, y_idx, 150)
+    # Same vertical gap, label in a different column: the row is kept.
+    far = _wide_window_rows(600)
+    assert not extraction._positional_row_is_title_block(far, ys, y_idx, 150)

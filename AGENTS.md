@@ -14,7 +14,7 @@ python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental
 
 - Repo venv `.venv\Scripts\python.exe` (Python 3.11, uv-managed, **no pip** — install via `uv pip install --python .venv\Scripts\python.exe -r requirements.txt`). Editable install present, so `python -m fermi_organizer.cli` and `fermi-organize` work from any cwd; never run `fermi_organizer\cli.py` directly (relative imports fail).
 - Default output is the **input folder itself** (in-place). Pass `--output <input>/Output` to keep the tree separate. Always `--dry-run` first. Dry-run copies nothing; it skips the `.txt` when the output folder doesn't exist yet (folder isn't pre-created) but still writes the workbook.
-- `--incremental` processes only stems missing from the output tree plus parked `_orphans/`; existing folders stay put except supersede swaps / parent-adoption moves. Target an existing tree with `--output <input>/Output`.
+- `--incremental` processes only stems missing from the output tree plus parked `_orphans/`; existing folders stay put except supersede swaps / parent-adoption moves. A claimed child nested under a live parent is copied to every claimant; only a top-level organized root is re-homed (moved). Target an existing tree with `--output <input>/Output`.
 - `--jobs N`: 0=auto (default), 1=serial; N>1 uses spawn ProcessPool (do not switch to fork). `--rekey-titleblock` re-keys misnamed **text-layer** PDFs only (never OCR reads), and only when that number isn't already in the run.
 - One run per output folder at a time, enforced by `<output>/.fermi_organizer.lock` (CLI exit 1 if held; steals stale >2 h with warning; CLI exit 2 if the lock is stolen mid-run). Network-share output (SMB/NFS, mapped drives) is **not lock-safe** — coordinate manually.
 

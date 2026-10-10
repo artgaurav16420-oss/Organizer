@@ -32,6 +32,39 @@ All notable changes to the Fermi PDF organizer are recorded here.
   re-indexed as input on later full runs. Name-based skips (`Output/`,
   `_`-prefixed dirs) are unchanged.
 
+### Incremental adoption
+- Adopting an organized child under a newly arrived parent no longer steals
+  shared folders: a child nested under another live parent is now COPIED to
+  every claimant (matching place_files), while a top-level organized root is
+  still re-homed (moved). Previously the move hollowed out the former parent
+  (e.g. `F10187622` lost its `F10128174` copy to `F10119081`) and left later
+  claimants empty-handed. Affected trees should be rebuilt with a fresh run.
+- Audited sibling: `_move_children_under_superseding` still moves (its old
+  folder is archived away, so re-homing is correct there), with a documented
+  residual risk for children shared under another live parent; zero such
+  moves observed on real corpora, so it stays untouched pending a failing
+  case. All other tree writes are copies or byte-verified retirements.
+
+### Extraction precision
+- Fabrication-note references no longer become BOM edges: a single-line
+  "description" that only points at other drawings (`F10112550 AND
+  F10118731.`, including `W/`-style connectors) is rejected as a
+  cross-reference - in the line parser, in the Format-1 fallthrough (which
+  otherwise re-emitted the row via Format 3), and in the positional parser
+  (which checks the row below for bare-FERMI stacks).
+- The USED ON title-block guard of both positional parsers now looks
+  further above the row: tall cells park the value several rows below the
+  label, and a USED ON value is an F-number by design. Full-width on
+  purpose - the real case sits down-and-right of its label, so any
+  horizontal-overlap requirement would miss it.
+- The line-based fallback additionally requires a parts-list header
+  (`PARTS LIST`, `BOM`, an `ITEM`/`FERMI` column combo, or the column labels
+  on adjacent lines) somewhere in the document: on a headerless sheet every
+  F-numbered text line is a note, a reference, or title-block content.
+  Table and positional parsers keep their own structural gates. All three
+  had attached phantom parent-child edges that surfaced as BOM cycles;
+  verified on HBCM data (7 phantom cycles gone, copy totals unchanged).
+
 ### Concurrency & process safety
 - Exclusive per-output run lock (`<output>/.fermi_organizer.lock`): a second
   concurrent run is refused with `RunLockedError` (CLI exits 1) instead of
