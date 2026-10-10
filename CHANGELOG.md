@@ -29,9 +29,11 @@ All notable changes to the Fermi PDF organizer are recorded here.
   by value tokens - `SCALE 1:1`, `SHEET 1 OF 2`, `USED ON F10126107`, bare
   `REV` - so value-bearing captions stay effective while BOM text containing a
   keyword word (`BRACKET USED ON ASSY`) no longer disables the rows below it.
-  The same caption check now gates the row's own skip test, so a BOM row whose
-  description merely mentions USED ON is kept (the positional parser already
-  compared whole cells).
+  The same rule now gates the row's own skip test and the positional parser's
+  USED ON checks (own row via the full caption test, nearby rows via a
+  USED-ON-only caption test, as is the line parser's two-lines-above check):
+  a row, line, or BOM description merely containing the phrase no longer
+  disables the rows below it.
 
 ### Placement fan-out guard
 - Over-cap runs now degrade gracefully instead of refusing the whole batch:

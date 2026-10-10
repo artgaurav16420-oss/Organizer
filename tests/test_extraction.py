@@ -858,3 +858,39 @@ def test_positional_row_with_used_on_words_is_kept():
     ])
     found = extraction._extract_bom_positional(page, 1)
     assert sorted(v for v, _, _ in found) == ["F10126107", "F10126108"]
+
+
+def test_fermi_line_title_block_used_on_caption_only():
+    # A USED ON caption two lines above marks the line as title block...
+    assert extraction._fermi_line_is_title_block(
+        ["USED ON", "SPEC", "F10126107"], 2)
+    # ...but a line merely containing the phrase is BOM text.
+    assert not extraction._fermi_line_is_title_block(
+        ["BRACKET USED ON ASSY", "SPEC", "F10126107"], 2)
+
+
+def test_positional_row_own_used_on_text_kept():
+    # The row's own text mentioning USED ON must not mark it as title block.
+    rows = {100: [(50, "1"), (70, "F10126107"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            140: [(50, "2"), (70, "F10126108")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 0, 100)
+
+
+def test_positional_nearby_description_with_used_on_not_caption():
+    # A nearby BOM row containing the phrase is not a USED ON caption.
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            140: [(50, "2"), (70, "F10126108")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 2, 150)
+
+
+def test_positional_used_on_caption_still_marks():
+    # The genuine caption above a row still marks it as title block.
+    rows = {120: [(50, "USED"), (74, "ON")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert extraction._positional_row_is_title_block(rows, ys, 1, 150)

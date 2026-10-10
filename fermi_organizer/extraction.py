@@ -868,8 +868,7 @@ def _fermi_line_is_title_block(lines, i):
         elif re.match(r"^1\s+OF\s*\d+", nxt_up, re.IGNORECASE):
             is_title_block = True
     if not is_title_block and i > 1:
-        prev2_up = lines[i - 2].upper()
-        if "USED ON" in prev2_up:
+        if _is_used_on_caption(lines[i - 2]):
             is_title_block = True
     return is_title_block
 
@@ -960,7 +959,7 @@ def _dict_row_text(rows, y):
 
 
 def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
-    if "USED ON" in _dict_row_text(rows, y).upper():
+    if _is_caption_row(_dict_row_text(rows, y)):
         return True
     for _, t in rows[y]:
         t_up = t.upper()
@@ -976,7 +975,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 30:
             break
-        if "USED ON" in _dict_row_text(rows, prev_y).upper():
+        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
             return True
     # A tall title-block cell can park the USED ON value several rows below
     # its label (F10205800: 3 note rows intervene, label 4 rows back), which
@@ -995,7 +994,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 100:
             break
-        if "USED ON" in _dict_row_text(rows, prev_y).upper():
+        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
             label_xs = [x for x, t in rows[prev_y]
                         if "USED" in t.upper() or t.upper() == "ON"]
             if any(lo <= x <= hi for x in label_xs):
@@ -1197,6 +1196,13 @@ def _is_caption_row(text):
             if rest and all(_CAPTION_VALUE_RE.fullmatch(t) for t in rest):
                 return True
     return False
+
+
+def _is_used_on_caption(text):
+    """True when a row is a USED ON caption ('USED ON', 'USED ON F1...'),
+    not BOM text merely containing the phrase ('BRACKET USED ON ASSY')."""
+    text = " ".join((text or "").upper().split())
+    return text.startswith("USED ON") and _is_caption_row(text)
 
 
 def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
