@@ -1344,13 +1344,15 @@ def test_run_incremental_supersede_copies_shared_child(tmp_path, make_pdf):
 
     make_pdf(in_dir / "F10126108_B.pdf", [
         "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent C rev B"])
-    run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+    ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
 
     c_copy = (out / "F10126108 Parent C" / "F10126150 Shared part"
               / "F10126150.pdf")
     assert c_copy.is_file()
     assert a_copy.is_file()
     assert b_copy.is_file()
+    # Swap (2 copies) + the shared-child copy (1): the summary must count it.
+    assert ctx["counters"]["copies"] == 3
 
 
 def test_run_full_reports_titleblock_mismatches(tmp_path, make_pdf):

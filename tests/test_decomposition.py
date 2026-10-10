@@ -140,7 +140,7 @@ def test_move_children_under_superseding(tmp_path, dry_run):
                  "F10126107": [child_folder / "F10126107.pdf"]}
     logged = []
     moved_dirs = {}
-    moves = _move_children_under_superseding(
+    moves, _copies = _move_children_under_superseding(
         ["F10126106"], organized, {"F10126106": ["F10126107"]},
         {"F10126106", "F10126107"}, out, dry_run, moved_dirs, logged.append)
 
@@ -174,7 +174,7 @@ def test_move_children_under_superseding_shared_folder_skips(tmp_path, dry_run):
                  "F10126108": [foreign]}
     logged = []
     moved_dirs = {}
-    moves = _move_children_under_superseding(
+    moves, _copies = _move_children_under_superseding(
         ["F10126106"], organized, {"F10126106": ["F10126107"]},
         {"F10126106", "F10126107"}, out, dry_run, moved_dirs, logged.append)
 
@@ -213,7 +213,7 @@ def test_move_children_under_superseding_oserror(tmp_path):
         return orig_move(src, dst)
 
     with patch("shutil.move", side_effect=mock_move):
-        moves = _move_children_under_superseding(
+        moves, _copies = _move_children_under_superseding(
             ["F10126106"], organized, {"F10126106": ["F10126107", "F10126108"]},
             {"F10126106", "F10126107", "F10126108"}, out, False, moved_dirs, logged.append)
 

@@ -742,26 +742,23 @@ def sweep_supersede_staging(output, dry_run, log):
     mid-operation leaves the staging file behind. It never ends in .pdf, so
     scans ignore it - only this sweep cleans it up. Only the exact staging
     shapes are swept (a PDF target name plus `.supersede_tmp.<digits>` or
-    `.copy_tmp.<digits>`), and "_"-prefixed system dirs are pruned from the
-    walk: staging only ever happens next to targets in the organized tree, so
-    matching lookalikes elsewhere are not ours to delete. Dry-run reports
-    without touching the tree.
+    `.copy_tmp.<digits>`). Supersede staging only ever happens next to tree
+    targets, so a matching name under a top-level "_" system dir is not ours
+    to delete; copy staging also happens in _orphans/, so copy_tmp leftovers
+    are swept anywhere. Dry-run reports without touching the tree.
     """
     output = Path(output)
     if not output.is_dir():
         return
     staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
-    for dirpath, dirnames, filenames in os.walk(output):
-        if Path(dirpath) == output:
-            # Only top-level "_" dirs are system dirs; nested ones are not
-            # pruned (is_system_dir's convention covers the top level only).
-            dirnames[:] = [d for d in dirnames if not is_system_dir(d)]
+    copy_re = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
+    for dirpath, _dirnames, filenames in os.walk(output):
         for name in sorted(filenames):
             if not staging_re.search(name):
                 continue
             p = Path(dirpath) / name
             rel = p.relative_to(output)
-            if is_system_dir(rel.parts[0]):
+            if is_system_dir(rel.parts[0]) and not copy_re.search(name):
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")

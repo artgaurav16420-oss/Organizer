@@ -709,13 +709,14 @@ def _shared_folder_blocks_move(c, child_folder, output, log):
 def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                                    output, dry_run, moved_dirs, log):
     """Move organized parts referenced by a superseding revision under its
-    folder. Mutates moved_dirs; returns the number of moves.
+    folder. Mutates moved_dirs; returns (moves, copies).
 
     A child that also lives under another parent is shared: it is COPIED
     (the other parent keeps its copy, matching place_files), and the copy
     is not recorded in moved_dirs - the original stays the reference for
     later claimants. Only a child whose sole copy is this folder moves."""
     moves = 0
+    copies = 0
     for s2 in swapped:
         s_paths = organized.get(s2, [])
         if not s_paths:
@@ -742,6 +743,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     continue
                 if any(p.parent != child_folder for p in child_paths):
                     # Shared child: copy so the other parent keeps its copy.
+                    plan_copies = sum(1 for _ in child_folder.rglob("*.pdf"))
                     if dry_run:
                         log(f"  [DRY-RUN] copy {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
@@ -755,6 +757,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                             continue
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
+                    copies += plan_copies
                     continue
                 if dry_run:
                     log(f"  [DRY-RUN] move {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
@@ -767,7 +770,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     log(f"  moved: {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
                 moved_dirs[child_folder] = target_path
                 moves += 1
-    return moves
+    return moves, copies
 
 
 def _current_folder_of(stem, organized, output, moved_dirs):
@@ -1401,9 +1404,10 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
             log(f"  {len(swapped)} organized revision(s) superseded in place")
             all_stems = new_stems | org_stems
             # Move organized parts referenced by a superseding revision under its folder
-            total_moves = _move_children_under_superseding(swapped, organized, org_boms,
-                                                           org_stems, output, dry_run,
-                                                           moved_dirs, log)
+            total_moves, move_copies = _move_children_under_superseding(
+                swapped, organized, org_boms, org_stems, output, dry_run,
+                moved_dirs, log)
+            total_copies += move_copies
     return moved_dirs, total_moves, total_copies, all_stems, swapped_old
 
 

@@ -1423,6 +1423,26 @@ def test_sweep_removes_copy_tmp_staging(tmp_path):
     assert lookalike.is_file()
 
 
+def test_sweep_copy_tmp_in_system_dirs(tmp_path):
+    # _copy_atomic stages orphan copies inside _orphans/, so copy_tmp
+    # leftovers are swept there too; supersede staging under a system dir is
+    # still left alone (it only ever happens in the tree).
+    orphans = tmp_path / "_orphans"
+    orphans.mkdir()
+    orphan_tmp = orphans / "F10126107.pdf.copy_tmp.12345"
+    orphan_tmp.write_bytes(b"partial")
+    sup = tmp_path / "_superseded"
+    sup.mkdir()
+    sup_tmp = sup / "F10126106.pdf.supersede_tmp.99999"
+    sup_tmp.write_bytes(b"partial")
+    logged = []
+
+    sweep_supersede_staging(tmp_path, False, logged.append)
+
+    assert not orphan_tmp.exists()
+    assert sup_tmp.is_file()
+
+
 def test_place_files_failed_copy_leaves_no_partial_target(tmp_path, monkeypatch):
     # A failure mid-write must not leave a truncated PDF at the target:
     # later runs treat any tree PDF as placed and would never retry it.

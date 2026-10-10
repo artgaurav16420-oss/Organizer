@@ -47,7 +47,11 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - `place_files` and `copy_orphans` stage each copy next to its target and
   `os.replace` into place: a failure mid-write leaves no truncated PDF in
   the tree, so the next run retries instead of treating it as placed. The
-  staging sweep also removes `.copy_tmp.<pid>` leftovers.
+  staging sweep also removes `.copy_tmp.<pid>` leftovers, including inside
+  `_orphans/` where orphan copies are staged (supersede staging under a
+  system dir is still left alone).
+- The supersede re-home copy is counted in the run's copy total (the
+  summary used to underreport it).
 - BOM table cells are read token-wise: a quantity stacked under the value
   (`F10112345\n2`, which used to normalize to the wrong number
   `F101123452`) or an item number before it (`1 F10126108`, dropped) no
