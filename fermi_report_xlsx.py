@@ -19,6 +19,27 @@ import os
 import shutil
 import traceback
 from pathlib import Path
+from typing import TypedDict
+
+
+class WorkbookContext(TypedDict):
+    """Typed context dictionary consumed by build_workbook."""
+    output: str
+    run_mode: str
+    run_time: str
+    counters: dict
+    missing: list
+    chk: list
+    orphans: list
+    roots: list
+    mismatches: list
+    used_on_bugs: list
+    titleblock_mismatches: list
+    scanned: list
+    watermarks: list
+    report_txt: str
+    names: dict
+    placement_refused: bool
 
 try:
     from openpyxl import Workbook
@@ -126,7 +147,9 @@ def _pill(cell, palette):
 
 
 def _link(cell, target, bold=False):
-    """Hyperlink styled as a link; failures leave the plain value."""
+    """Hyperlink styled as a link; failures or targets > 255 chars leave the plain value."""
+    if not target or len(str(target)) > 255:
+        return
     try:
         cell.hyperlink = target
         cell.font = _font(10, bold, NAVY, underline="single")
@@ -150,12 +173,18 @@ def _rel(path, output):
 
 def _autofit(ws, ncols, nrows, minimums, cap=MAX_COL_WIDTH):
     """Widen columns to their content (rows 2..nrows+1), capped; never shrink."""
-    for ci in range(1, ncols + 1):
-        longest = 0
-        for r in range(2, nrows + 2):
-            v = ws.cell(row=r, column=ci).value
-            if v is not None:
-                longest = max(longest, len(str(v)))
+    if nrows == 0:
+        return
+
+    max_lens = [0] * ncols
+    for row in ws.iter_rows(min_row=2, max_row=nrows + 1, min_col=1, max_col=ncols, values_only=True):
+        for ci, val in enumerate(row):
+            if val is not None:
+                str_len = len(str(val))
+                if str_len > max_lens[ci]:
+                    max_lens[ci] = str_len
+
+    for ci, longest in enumerate(max_lens, start=1):
         want = min(cap, longest + 4)
         cur = minimums[ci - 1] if ci - 1 < len(minimums) else 10
         ws.column_dimensions[get_column_letter(ci)].width = max(cur, want)
@@ -192,13 +221,17 @@ def _empty_state(ws, ncols, message):
     ws.row_dimensions[2].height = 28
 
 
-def _inert_text(cell):
-    """Force a leading-'=' string to text.
+_FORMULA_PREFIXES = ("=", "@", "+", "-", "\t", "\r")
 
-    PDF-derived names/notes could otherwise be saved as formulas that Excel
-    evaluates on open (formula injection via drawing content).
+
+def _inert_text(cell):
+    """Force a leading formula-trigger string to text.
+
+    PDF-derived names/notes starting with '=', '@', '+', '-', '\t', or '\r'
+    could otherwise be saved/exported as formulas that spreadsheet tools
+    evaluate on open (formula injection via drawing content).
     """
-    if isinstance(cell.value, str) and cell.value.startswith("="):
+    if isinstance(cell.value, str) and cell.value.startswith(_FORMULA_PREFIXES):
         cell.data_type = "s"
 
 
@@ -295,18 +328,25 @@ def _save_history(xlsx_path, rows, log=None):
 def _resolve_names(names_raw, live):
     """names_raw + base-stem fallback, for every tree/orphan stem and every key."""
     resolved = {}
-    live_stems = [canonical_stem(q.stem) for q in live["tree"] + live["orph"]]
-    for stem in set(list(names_raw) + [s for s in live_stems if s]):
-        v = names_raw.get(stem)
-        if not v:
-            v = names_raw.get(stem.split("_")[0], "")
+    stems = set(names_raw)
+    for p in live.get("tree", []):
+        s = canonical_stem(p.stem)
+        if s:
+            stems.add(s)
+    for p in live.get("orph", []):
+        s = canonical_stem(p.stem)
+        if s:
+            stems.add(s)
+
+    for stem in stems:
+        v = names_raw.get(stem) or names_raw.get(stem.split("_")[0], "")
         if v:
             resolved[stem] = v
     return resolved
 
 
 
-def build_workbook(path, ctx, log=None):
+def build_workbook(path, ctx: WorkbookContext, log=None):
     """Build/refresh the live workbook at `path`; returns it (None without openpyxl).
 
     Context keys read (15): output, run_mode, run_time,
@@ -340,7 +380,7 @@ def build_workbook(path, ctx, log=None):
     hist = wb.create_sheet("Run History")
 
     counters = ctx.get("counters", {})
-    live = _scan_tree(ctx["output"])
+    live = _scan_tree(ctx.get("output", ""))
     missing_pairs = sorted(set(ctx.get("missing", [])))
     names = _resolve_names(ctx.get("names", {}) or {}, live)
 
@@ -693,7 +733,8 @@ def _mismatch_sheet(mism_ws, ctx, names):
                          "(USED ON BUGS): a child's USED ON names a parent whose BOM does "
                          "not list it. BOM is the only source of truth, so these are data "
                          "bugs, not placement edges.", "amber"))
-    base = len(mism_data) + 6
+    table1_rows = len(mism_data) if mism_data else 1
+    base = table1_rows + 4
     sec = mism_ws.cell(row=base, column=1, value=f"USED ON BUGS ({len(bug_data)})")
     sec.font = _font(12, True, DARK)
     mism_ws.row_dimensions[base].height = 26
@@ -838,7 +879,7 @@ def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
     outdir = Path(output)
     outdir.mkdir(parents=True, exist_ok=True)
     xlsx = os.path.join(str(outdir), "organize_fermi_report.xlsx")
-    return build_workbook(xlsx, {
+    ctx: WorkbookContext = {
         "output": str(output),
         "run_mode": run_mode,
         "run_time": run_time,
@@ -855,4 +896,5 @@ def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
         "report_txt": os.path.basename(report_txt or ""),
         "names": names or {},
         "placement_refused": placement_refused,
-    }, log=log)
+    }
+    return build_workbook(xlsx, ctx, log=log)

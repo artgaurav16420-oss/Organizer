@@ -4,6 +4,14 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Excel report performance, security, and layout improvements
+- Optimized column auto-fitting (`_autofit`) using row-major `ws.iter_rows()` to eliminate random-access cell dictionary lookups.
+- Streamlined stem name resolution (`_resolve_names`) by populating a set directly, avoiding intermediate list concatenations.
+- Expanded formula injection neutralization (`_inert_text`) to neutralize leading formula-trigger characters (`=`, `@`, `+`, `-`, `\t`, `\r`).
+- Protected against Excel workbook corruption prompts by suppressing hyperlink setting (`_link`) when target URI exceeds 255 characters.
+- Dynamically calculated table base row in `_mismatch_sheet` to maintain uniform 2-row vertical spacing between tables regardless of empty-state rendering.
+- Added `WorkbookContext` (`TypedDict`) for typed context data transfer in `build_workbook` and `refresh_from_run`.
+
 ### USED ON no longer leaks into the BOM (cycle fix)
 - The positional extractors read a drawing's title-block `USED ON` value as a
   parts-list entry, adding an inverted edge (child -> parent) that closed a
