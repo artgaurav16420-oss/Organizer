@@ -1032,9 +1032,10 @@ def _fermi_value_x(row):
 
 # Horizontal association span for a USED ON label and its value: the label's
 # x is its LEFT edge while the value starts past the label text itself
-# (~55 pt). Measured label-to-value offsets run 88-116 pt (F10205800,
-# F10153201, F10119103, F10144381), all inside 180; a label farther away in
-# either direction belongs to another column, not this row's title block.
+# (~55 pt), so the label always sits left of its value. Measured offsets run
+# 88-116 pt (F10205800, F10153201, F10119103, F10144381), all inside 180; a
+# label anywhere else - far left or right of the F-number - belongs to
+# another column, not this row's title block.
 _USED_ON_ASSOC = 180
 
 
@@ -1074,7 +1075,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     # by design, i.e. a certain false BOM edge. Only USED ON gets the wide
     # window; other keywords stay tight so genuine rows near spec text keep
     # working.
-    lo, hi = anchor_lo, anchor_hi + _USED_ON_ASSOC
+    lo, hi = anchor_lo, anchor_hi
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break
@@ -1335,7 +1336,7 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # Same tall-cell case as the span path (F10197064: 3 note rows between the
     # USED ON label and its value), with the same horizontal association so a
     # neighbouring column's label does not suppress a genuine BOM row.
-    lo, hi = anchor_lo, anchor_hi + _USED_ON_ASSOC
+    lo, hi = anchor_lo, anchor_hi
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break

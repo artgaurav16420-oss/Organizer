@@ -952,6 +952,24 @@ def test_used_on_label_far_left_column_does_not_suppress():
     assert extraction._positional_row_is_title_block(near, nys, 1, 150)
 
 
+def test_used_on_label_right_of_fermi_does_not_suppress():
+    # The label always precedes its value, so a USED ON caption right of the
+    # F-number - a neighbouring column 4-8 rows above - is not this row's
+    # title-block cell, in either path.
+    wrows = {110: [(200, "USED"), (220, "ON")],
+             120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+             150: [(50, "1"), (70, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+    rows = {110: [(200, "USED"), (220, "ON")],
+            120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 4, 150)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
