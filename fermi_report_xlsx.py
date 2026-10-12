@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TypedDict
 
 
-class WorkbookContext(TypedDict, total=False):
+class WorkbookContext(TypedDict):
     """Typed context dictionary consumed by build_workbook."""
     output: str
     run_mode: str
@@ -380,7 +380,7 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     hist = wb.create_sheet("Run History")
 
     counters = ctx.get("counters", {})
-    live = _scan_tree(ctx["output"])
+    live = _scan_tree(ctx.get("output", ""))
     missing_pairs = sorted(set(ctx.get("missing", [])))
     names = _resolve_names(ctx.get("names", {}) or {}, live)
 

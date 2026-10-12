@@ -576,6 +576,18 @@ def test_workbook_context_typeddict():
         "run_mode": "EXECUTE",
         "run_time": "2026-10-15T10:00:00",
         "counters": {"scanned": 5},
+        "missing": [],
+        "chk": [],
+        "orphans": [],
+        "roots": [],
+        "mismatches": [],
+        "used_on_bugs": [],
+        "titleblock_mismatches": [],
+        "scanned": [],
+        "watermarks": [],
+        "report_txt": "report.txt",
+        "names": {},
+        "placement_refused": False,
     }
     assert ctx["output"] == "/tmp/out"
     assert ctx.get("run_mode") == "EXECUTE"
