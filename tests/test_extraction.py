@@ -970,6 +970,25 @@ def test_used_on_label_right_of_fermi_does_not_suppress():
     assert not extraction._positional_row_is_title_block(rows, ys, 4, 150)
 
 
+def test_used_on_label_on_candidate_row_marks_title_block():
+    # A merged USED ON label on the candidate row itself ('2 | USED ON |
+    # F10119...') is a title-block value row: neither path used to check the
+    # row being evaluated, so an item token left of the value let it pass
+    # through as a BOM entry.
+    rows = {150: [(20, "2"), (1029, "USED"), (1049, "ON"), (1145, "F10126107")]}
+    ys = sorted(rows)
+    assert extraction._positional_row_is_title_block(rows, ys, 0, 150)
+    wrows = {150: [(20, "2"), (1029, "USED"), (1049, "ON"), (1145, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert extraction._word_row_is_title_block(wrows, wys, 150,
+                                               sorted(wrows[150]), y_index)
+    # ...while a BOM row carrying the phrase after its F-number stays kept.
+    kept = {150: [(50, "1"), (70, "F10126107"), (180, "USED"), (210, "ON")]}
+    kys = sorted(kept)
+    assert not extraction._positional_row_is_title_block(kept, kys, 0, 150)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",

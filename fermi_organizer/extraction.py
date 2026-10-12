@@ -1057,6 +1057,13 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     fermi_x = _fermi_value_x(rows[y])
     anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
     anchor_lo = anchor_hi - _USED_ON_ASSOC
+    # A merged USED ON label on this row itself ('2 | USED ON | F10119...'):
+    # like any title-block cell, the label precedes its value. A BOM row
+    # merely containing the phrase stays a BOM row: mid-row prose fails the
+    # caption-tail check, and a trailing phrase sits right of the F-number.
+    own = _used_on_label_x(rows[y])
+    if own is not None and anchor_lo <= own <= anchor_hi:
+        return True
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1315,6 +1322,10 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     fermi_x = _fermi_value_x(row_words)
     anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
     anchor_lo = anchor_hi - _USED_ON_ASSOC
+    # A merged USED ON label on this row itself: same rule as the span path.
+    own = _used_on_label_x(row_words)
+    if own is not None and anchor_lo <= own <= anchor_hi:
+        return True
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
