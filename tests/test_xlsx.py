@@ -486,3 +486,96 @@ def test_formula_fuzz_every_input_field_produces_zero_formulas(tmp_path):
                 if isinstance(c.value, str) and c.value.startswith("=")]
         assert hits, f"fuzz payload must reach {sheet} cells"
         assert all(c.data_type == "s" for c in hits), sheet
+
+
+def test_formula_injection_extended_prefixes(tmp_path):
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    path = tmp_path / "organize_fermi_report.xlsx"
+    prefixes = ["=", "@", "+", "-", "\t", "\r"]
+    missing_items = [(f"STEM_{i}", f"{p}evil_payload") for i, p in enumerate(prefixes)]
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 0, "copies": 0, "cycles": 0, "warnings": 0},
+        "missing": missing_items,
+        "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "", "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+    wb = load_workbook(path)
+    ws = wb["Missing"]
+    for row_idx, p in enumerate(prefixes, start=2):
+        cell = ws.cell(row=row_idx, column=1)
+        assert cell.data_type == "s"
+        if p == "\r":
+            assert cell.value in ("\revil_payload", "\nevil_payload")
+        else:
+            assert cell.value == f"{p}evil_payload"
+
+
+def test_link_target_length_guard():
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    c1 = ws.cell(row=1, column=1, value="normal")
+    fx._link(c1, "http://example.com/short")
+    assert c1.hyperlink is not None
+    assert c1.hyperlink.target == "http://example.com/short"
+
+    c2 = ws.cell(row=2, column=1, value="long")
+    long_target = "http://example.com/" + ("a" * 250)
+    fx._link(c2, long_target)
+    assert c2.hyperlink is None
+
+    c3 = ws.cell(row=3, column=1, value="none")
+    fx._link(c3, None)
+    assert c3.hyperlink is None
+
+
+def test_mismatch_sheet_dynamic_layout_spacing(tmp_path):
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+
+    # Case 1: Empty mismatches data -> table1_rows = 1 (empty state row) -> base = 5
+    path_empty = tmp_path / "empty_mism.xlsx"
+    ctx_empty = {
+        "output": str(out), "run_mode": "DRY-RUN", "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 0, "roots": 0, "copies": 0, "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "used_on_bugs": [("P1", "C1")], "report_txt": "", "names": {},
+    }
+    fx.build_workbook(path_empty, ctx_empty)
+    ws_empty = load_workbook(path_empty)["USED ON check"]
+    assert ws_empty.cell(row=5, column=1).value == "USED ON BUGS (1)"
+
+    # Case 2: 2 mismatches -> table1_rows = 2 -> base = 6
+    path_populated = tmp_path / "populated_mism.xlsx"
+    ctx_pop = {
+        "output": str(out), "run_mode": "DRY-RUN", "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 0, "roots": 0, "copies": 0, "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [],
+        "mismatches": [("P1", "C1", ["A1"]), ("P2", "C2", ["A2"])],
+        "used_on_bugs": [("P1", "C1")], "report_txt": "", "names": {},
+    }
+    fx.build_workbook(path_populated, ctx_pop)
+    ws_pop = load_workbook(path_populated)["USED ON check"]
+    assert ws_pop.cell(row=6, column=1).value == "USED ON BUGS (1)"
+
+
+def test_workbook_context_typeddict():
+    ctx: fx.WorkbookContext = {
+        "output": "/tmp/out",
+        "run_mode": "EXECUTE",
+        "run_time": "2026-10-15T10:00:00",
+        "counters": {"scanned": 5},
+    }
+    assert ctx["output"] == "/tmp/out"
+    assert ctx.get("run_mode") == "EXECUTE"
