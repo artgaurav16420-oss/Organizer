@@ -635,10 +635,12 @@ def _ocr_strip_tokens(page, rect, psm="7"):
         for zoom, mode, oem in passes:
             if zoom not in pngs:
                 pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect)
-                fd, png = tempfile.mkstemp(prefix="fermipdf_ocr_", suffix=".png")
-                os.close(fd)
-                pix.save(png)
+                with tempfile.NamedTemporaryFile(
+                        prefix="fermipdf_ocr_", suffix=".png", delete=False) as tmp:
+                    png = tmp.name
+                    tmp.close()
                 pngs[zoom] = png
+                pix.save(png)
             try:
                 r = _tesseract_run(
                     [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,
@@ -1403,8 +1405,10 @@ def _ocr_words_zoom(page, clip, zoom=8, psm="11"):
         max_zoom = (OCR_MAX_RENDER_MP * 1e6 / (clip.width * clip.height)) ** 0.5
         zoom = min(zoom, max(1.0, max_zoom))
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip)
-    fd, png = tempfile.mkstemp(prefix="fermipdf_ocr_", suffix=".png")
-    os.close(fd)
+    with tempfile.NamedTemporaryFile(
+            prefix="fermipdf_ocr_", suffix=".png", delete=False) as tmp:
+        png = tmp.name
+        tmp.close()
     try:
         pix.save(png)
         r = _tesseract_run([exe, png, "stdout", "tsv", "--psm", psm], 180)

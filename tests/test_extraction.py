@@ -958,3 +958,109 @@ def test_positional_used_on_caption_still_marks():
             150: [(50, "1"), (70, "F10126107")]}
     ys = sorted(rows)
     assert extraction._positional_row_is_title_block(rows, ys, 1, 150)
+
+
+def test_ocr_strip_tokens_tempfile_security_and_cleanup(monkeypatch, tmp_path, make_pdf):
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    created_tempfiles = []
+    orig_named_temp = extraction.tempfile.NamedTemporaryFile
+
+    def tracking_named_temp(*args, **kwargs):
+        tf = orig_named_temp(*args, **kwargs)
+        created_tempfiles.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(extraction.tempfile, "NamedTemporaryFile", tracking_named_temp)
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 0, stdout="F10126107", stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert out == ["F10126107"]
+    assert len(created_tempfiles) > 0
+    for tmp_file in created_tempfiles:
+        assert os.path.basename(tmp_file).startswith("fermipdf_ocr_")
+        assert tmp_file.endswith(".png")
+        assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up!"
+    doc.close()
+
+
+def test_ocr_words_zoom_tempfile_security_and_cleanup(monkeypatch, tmp_path, make_pdf):
+    import subprocess as sp
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    created_tempfiles = []
+    orig_named_temp = extraction.tempfile.NamedTemporaryFile
+
+    def tracking_named_temp(*args, **kwargs):
+        tf = orig_named_temp(*args, **kwargs)
+        created_tempfiles.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(extraction.tempfile, "NamedTemporaryFile", tracking_named_temp)
+
+    tsv_output = (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+        "5\t1\t1\t1\t1\t1\t10\t10\t50\t20\t95\tNUMBER\n"
+    )
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 0, stdout=tsv_output, stderr="")
+
+    monkeypatch.setattr(extraction.subprocess, "run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    clip = fitz.Rect(0, 0, 100, 100)
+    words = extraction._ocr_words_zoom(page, clip, zoom=8, psm="11")
+
+    assert len(words) == 1
+    assert words[0][4] == "NUMBER"
+    assert len(created_tempfiles) == 1
+    tmp_file = created_tempfiles[0]
+    assert os.path.basename(tmp_file).startswith("fermipdf_ocr_")
+    assert tmp_file.endswith(".png")
+    assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up!"
+    doc.close()
+
+
+def test_ocr_strip_tokens_cleanup_on_pix_save_failure(monkeypatch, tmp_path, make_pdf):
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    created_tempfiles = []
+    orig_named_temp = extraction.tempfile.NamedTemporaryFile
+
+    def tracking_named_temp(*args, **kwargs):
+        tf = orig_named_temp(*args, **kwargs)
+        created_tempfiles.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(extraction.tempfile, "NamedTemporaryFile", tracking_named_temp)
+
+    class FakePix:
+        def save(self, filename):
+            raise RuntimeError("pix.save failed")
+
+    monkeypatch.setattr(page, "get_pixmap", lambda *a, **k: FakePix())
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    with pytest.raises(RuntimeError, match="pix.save failed"):
+        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert len(created_tempfiles) == 1
+    tmp_file = created_tempfiles[0]
+    assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up on pix.save failure!"
+    doc.close()
