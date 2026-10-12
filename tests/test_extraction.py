@@ -928,6 +928,30 @@ def test_word_wide_window_size_token_needs_association():
                                                sorted(near[150]), n_index)
 
 
+def test_used_on_label_far_left_column_does_not_suppress():
+    # One association rule everywhere: the label must sit within 180pt left
+    # of the F-number. A USED ON caption in another column - far left in the
+    # tight window, or left of the item column in the wide window - is not
+    # this row's title-block cell.
+    rows = {120: [(100, "USED"), (120, "ON")],
+            150: [(1100, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    wrows = {110: [(300, "USED"), (320, "ON")],
+             120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+             150: [(20, "2"), (1145, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+    # ...while a label just inside the span (all measured real offsets are
+    # 88-116pt) still marks the row in both windows.
+    near = {120: [(1000, "USED"), (1020, "ON")],
+            150: [(1100, "F10126107")]}
+    nys = sorted(near)
+    assert extraction._positional_row_is_title_block(near, nys, 1, 150)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
