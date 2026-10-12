@@ -96,6 +96,17 @@ depth, except those under a top-level `Output/` (case-insensitive) or `_`-prefix
 folder, plus the run's own `--output` folder by resolved path (whatever it is
 named). A nested `sub/Output/` **is** scanned.
 
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Normal outcome — orphans, `CHK` files and missing BOM references are reported but still exit 0. |
+| `1` | Nothing ran: input folder missing/not a directory, no PDFs found, output folder could not be created, or another run holds the lock. |
+| `2` | The run started but ended non-successfully: an over-cap placement refusal (see *Known limits*; report + workbook **are** written) **or** the run lock was lost mid-run (report + workbook are **not** written — the tree may hold partial writes). |
+
+Scripts should treat `2` as "inspect the log and the output folder" rather than a
+crash: whether the artifacts exist tells the two `2` cases apart.
+
 ## Outputs
 
 Everything is written under the output folder:
@@ -118,11 +129,18 @@ block check (filename vs the drawing's own title block), Files, Run History.
 - **BOM only.** A child is placed under a parent because the parent's parts list
   names it. `USED ON` is a cross-check, never a placement source.
 - **Revision ranking.** `CHK` (unapproved) ranks below no-revision, which ranks below
-  `A`, `B`, and so on; the highest revision wins and older ones are archived.
+  `A`, `B`, … `Z`, then two-letter revisions `AA`, `AB`, … (a two-letter revision beats
+  any single letter); the highest revision wins and older ones are archived.
+- **Sibling sheets are not revisions.** Sheets of one drawing (`F10126106_A___DWG1` /
+  `F10126106_A___DWG2` — a plain stem tied with its sheeted exports counts too) all stay
+  active at the top rank, each placed from its own `NAME`, because a dropped sheet would
+  orphan its BOM children. Only duplicate exports of the *same* sheet collapse to the
+  first-seen copy. A BOM reference to the drawing brings in every sibling sheet.
 - **Duplicate stems.** Hyphen/underscore/numeric-prefix variants of one filename
   canonicalize to the same stem, so they are treated as the same revision. The copy
   used in the tree is chosen before extraction: non-watermarked beats watermarked,
-  then a text-layer copy beats a scanned one, then the shallowest path wins.
+  then a text-layer copy beats a scanned one, then the shallowest path wins, then
+  lexicographic order.
 - **Title block check.** The number, revision and `NAME` printed in each drawing's own
   title block are compared against the filename; disagreements are listed in the
   Title block check sheet. Placement follows the filename unless
@@ -161,9 +179,9 @@ directory once installed editable).
 - One run per output folder at a time, enforced by `<output>/.fermi_organizer.lock`:
   a second concurrent run refuses with an error instead of racing the first
   (locks older than 2 h are stolen with a warning — a crashed run leaks its
-  lock). A run killed mid-supersede leaves `*.supersede_tmp.*` staging files
-  behind (the PDF scans never match them), and the next run's startup sweep
-  removes them.
+  lock). A run killed mid-copy or mid-supersede leaves `*.supersede_tmp.*` /
+  `*.copy_tmp.*` staging files behind (the PDF scans never match them), and the
+  next run's startup sweep removes them.
 - A failing filesystem operation (copy, move, `mkdir`) logs a warning and the run
   continues rather than aborting.
 
