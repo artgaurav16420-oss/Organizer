@@ -4,6 +4,31 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### USED ON no longer leaks into the BOM (cycle fix)
+- The positional extractors read a drawing's title-block `USED ON` value as a
+  parts-list entry, adding an inverted edge (child -> parent) that closed a
+  2-node cycle against the parent that genuinely lists the child. On real
+  corpora this was every cycle seen: 68 of 68 in SSR2 Parts and 55 of 55 in
+  HBCM Parts traced to the leak, with the graph reaching 0 cycles once fixed.
+  The `USED ON` field stays cross-check-only, as the BOM-only invariant
+  requires.
+- Root cause was row clustering being y-only: a left-column note line lands in
+  the same row as the right-column caption ('BREAK ALL SHARP EDGES, MAX: 0.5 |
+  USED ON | NAME'), so the joined text no longer starts with 'USED ON' and the
+  caption read as prose. The per-token `_used_on_label_x` helper finds the
+  label in either the span or word path regardless of what merged into the row.
+- The wide window's horizontal association widened from +/-60 to +/-180: the
+  label's x is its left edge while the value starts past the label text, so
+  real label-to-value offsets (88-116 pt, F10205800 / F10153201 / F10197064 /
+  F10144381) all fell outside the old window and went undetected. The label
+  must also sit at or left of the value, which keeps a parts-list description
+  containing the phrase ('BRACKET USED ON ASSY' - text that trails the
+  F-number) working as BOM content.
+- The word-level path gained the same tall-cell window the span path already
+  had, so its two remaining leaks close as well. Genuine edges are untouched:
+  one real parts-list row that also appears in its own `USED ON` field
+  (F10204743 -> F10204745) is correctly still placed.
+
 ### Sheet-set tie fixes
 - Mixed ties of a plain stem and its sheeted exports (e.g. `F10038961` /
   `F10038961___DWG1`) now keep every sheet active instead of archiving the

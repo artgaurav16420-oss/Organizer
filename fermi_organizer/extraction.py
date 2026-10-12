@@ -980,6 +980,65 @@ def _dict_row_text(rows, y):
     return " ".join(t for _, t in sorted(rows[y]))
 
 
+def _used_on_tail_ok(tail):
+    """Tokens after a USED ON label must read as caption tail (keywords or
+    caption values like NAME / an F-number), not BOM prose: 'BRACKET USED ON
+    ASSY' is a description, while 'USED ON | NAME' is a merged caption cell."""
+    return all(
+        w.upper() in TITLE_BLOCK_KEYWORDS
+        or _CAPTION_VALUE_RE.fullmatch(w.upper())
+        or _CAPTION_FERMI_VALUE_RE.fullmatch(w.upper())
+        for w in tail)
+
+
+def _used_on_label_x(row):
+    """x of this row's USED ON label, or None.
+
+    Row clustering is y-only, so a note line from the left column can merge
+    with the title-block caption in the right column ('BREAK ALL SHARP EDGES,
+    MAX: 0.5 | USED ON | NAME'); the joined row text then no longer *starts*
+    with 'USED ON' and the caption reads as ordinary text. Matching per token
+    (and across the 'USED' 'ON' word split) finds the label regardless of what
+    else landed in the row. The caller still gates on the label sitting at or
+    left of the value row: in a title block the label precedes its value, while
+    a BOM row's description - 'BRACKET USED ON ASSY' - trails the F-number, so
+    the two separate without needing to parse the surrounding prose.
+    """
+    toks = sorted(row, key=lambda t: t[0])
+    for i, (x, t) in enumerate(toks):
+        if _is_used_on_caption(t):
+            words = t.upper().split()
+            tail = words[words.index("ON") + 1:] + [w for _, w in toks[i + 1:]]
+            if _used_on_tail_ok(tail):
+                return x
+        elif (t.upper() == "USED" and i + 1 < len(toks)
+                and toks[i + 1][1].upper() == "ON"):
+            if _used_on_tail_ok([w for _, w in toks[i + 2:]]):
+                return x
+    return None
+
+
+def _fermi_value_x(row):
+    """x of the row's F-number token (leftmost), or None if it has none.
+
+    The USED ON title-block checks must anchor on the value being evaluated,
+    not the row's rightmost token: a BOM description extends right of the
+    F-number, and anchoring on the row extent lets a nearby description
+    containing 'USED ON' suppress a valid part.
+    """
+    xs = [x for x, t in row if FERMI_RE_SEARCH.search(t)]
+    return min(xs) if xs else None
+
+
+# Horizontal association span for a USED ON label and its value: the label's
+# x is its LEFT edge while the value starts past the label text itself
+# (~55 pt), so the label always sits left of its value. Measured offsets run
+# 88-116 pt (F10205800, F10153201, F10119103, F10144381), all inside 180; a
+# label anywhere else - far left or right of the F-number - belongs to
+# another column, not this row's title block.
+_USED_ON_ASSOC = 180
+
+
 def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     if _is_caption_row(_dict_row_text(rows, y)):
         return True
@@ -991,13 +1050,31 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
             return True
         if SIZE_RE.match(t_up):
             return True
+    # The label must sit at or left of the value (see _used_on_label_x),
+    # within one association span: a label farther left belongs to another
+    # column, not this row's title-block cell.
+    row_xs = [x for x, _ in rows[y]]
+    fermi_x = _fermi_value_x(rows[y])
+    anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
+    anchor_lo = anchor_hi - _USED_ON_ASSOC
+    # A merged USED ON label on this row itself ('2 | USED ON | F10119...'):
+    # like any title-block cell, the label precedes its value. A BOM row
+    # merely containing the phrase stays a BOM row: mid-row prose fails the
+    # caption-tail check, and a trailing phrase sits right of the F-number.
+    own = _used_on_label_x(rows[y])
+    if own is not None and anchor_lo <= own <= anchor_hi:
+        return True
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 30:
             break
-        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
+        # No bare-caption shortcut here: a whole-row 'USED ON' in another
+        # column must not suppress this row either, so every USED ON caption
+        # goes through the associated per-token check below.
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and anchor_lo <= label_x <= anchor_hi:
             return True
     # A tall title-block cell can park the USED ON value several rows below
     # its label (F10205800: 3 note rows intervene, label 4 rows back), which
@@ -1005,22 +1082,16 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     # by design, i.e. a certain false BOM edge. Only USED ON gets the wide
     # window; other keywords stay tight so genuine rows near spec text keep
     # working.
-    # The wide window must also be horizontally associated with this row: a
-    # USED ON label in another column (or a neighbouring drawing's block) is
-    # not this row's title-block cell.
-    row_xs = [x for x, _ in rows[y]]
-    lo, hi = min(row_xs) - 60, max(row_xs) + 60
+    lo, hi = anchor_lo, anchor_hi
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 100:
             break
-        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
-            label_xs = [x for x, t in rows[prev_y]
-                        if "USED" in t.upper() or t.upper() == "ON"]
-            if any(lo <= x <= hi for x in label_xs):
-                return True
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and lo <= label_x <= hi:
+            return True
     return False
 
 
@@ -1247,6 +1318,14 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # keyword row, optionally with its value ('SCALE 1:1', 'USED ON F1...');
     # a keyword word inside a BOM row's text must not disable the rows below.
     y_idx = y_index[y_key]
+    row_xs = [x for x, _ in row_words]
+    fermi_x = _fermi_value_x(row_words)
+    anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
+    anchor_lo = anchor_hi - _USED_ON_ASSOC
+    # A merged USED ON label on this row itself: same rule as the span path.
+    own = _used_on_label_x(row_words)
+    if own is not None and anchor_lo <= own <= anchor_hi:
+        return True
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1254,10 +1333,32 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         if prev_y < y_key - 30:
             break
         prev_text = " ".join(w for _, w in sorted(rows[prev_y], key=lambda t: t[0]))
-        if _is_caption_row(prev_text):
+        if _is_caption_row(prev_text) and not _is_used_on_caption(prev_text):
+            return True
+        # A whole-row 'USED ON' caption takes the associated per-token check
+        # below, like the span path: unassociated, a neighbouring column's
+        # caption would suppress this row.
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and anchor_lo <= label_x <= anchor_hi:
             return True
         for _, w in rows[prev_y]:
             if SIZE_RE.match(w):
+                return True
+    # Same tall-cell case as the span path (F10197064: 3 note rows between the
+    # USED ON label and its value), with the same horizontal association so a
+    # neighbouring column's label does not suppress a genuine BOM row.
+    lo, hi = anchor_lo, anchor_hi
+    for dy in range(4, 9):
+        if y_idx - dy < 0:
+            break
+        prev_y = sorted_y_keys[y_idx - dy]
+        if prev_y < y_key - 100:
+            break
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and lo <= label_x <= hi:
+            return True
+        for sx, w in rows[prev_y]:
+            if SIZE_RE.match(w) and lo <= sx <= hi:
                 return True
     return False
 

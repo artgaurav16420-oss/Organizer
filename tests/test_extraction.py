@@ -808,6 +808,187 @@ def test_used_on_wide_window_requires_horizontal_association():
     assert not extraction._positional_row_is_title_block(far, ys, y_idx, 150)
 
 
+def test_used_on_caption_merged_with_note_row_marks_title_block():
+    # Row clustering is y-only, so a left-column note line lands in the SAME
+    # row as the right-column title-block caption ('BREAK ALL SHARP EDGES,
+    # MAX: 0.5 | USED ON | NAME'). The joined text no longer starts with
+    # 'USED ON', which let F10153201's USED ON value become a BOM edge and
+    # close a 2-node cycle against the parent that lists it.
+    rows = {100: [(848, "BREAK ALL SHARP EDGES, MAX:"), (983, "0.5"),
+                  (1029, "USED ON"), (1315, "NAME")],
+            120: [(848, "1. PART MUST BE FREE OF DIRT")],
+            130: [(20, "2"), (1136, "F10110917")]}
+    ys = sorted(rows)
+    y_idx = ys.index(130)
+    assert extraction._positional_row_is_title_block(rows, ys, y_idx, 130)
+    # The word path splits the label into two tokens and must reach the same
+    # verdict (F10197064: 3 note rows between label and value).
+    wrows = {100: [(848, "BREAK"), (900, "ALL"), (983, "0.5"),
+                   (1029, "USED"), (1049, "ON"), (1315, "NAME")],
+             120: [(848, "1."), (900, "PART")],
+             130: [(20, "2"), (1136, "F10119103")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wys)}
+    assert extraction._word_row_is_title_block(wrows, wys, 130,
+                                               sorted(wrows[130]), y_index)
+
+
+def test_used_on_label_sits_left_of_its_value():
+    # The label's x is its left edge while the value starts past the label
+    # text (~55 pt): measured real offsets are 88-116 pt, so an association
+    # window of +/-60 missed every one of them (F10205800 et al., where the
+    # label sits 4 rows up behind intervening note rows).
+    rows = {110: [(1029, "USED"), (1049, "ON")]}
+    for y in (120, 130, 140):
+        rows[y] = [(848, "NOTE")]
+    rows[150] = [(1145, "F10204367")]
+    ys = sorted(rows)
+    y_idx = ys.index(150)
+    assert extraction._positional_row_is_title_block(rows, ys, y_idx, 150)
+    wrows = {110: [(1029, "USED"), (1049, "ON")]}
+    for y in (120, 130, 140):
+        wrows[y] = [(848, "NOTE")]
+    wrows[150] = [(1145, "F10204367")]
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wys)}
+    assert extraction._word_row_is_title_block(wrows, wys, 150,
+                                               sorted(wrows[150]), y_index)
+
+
+def test_used_on_phrase_in_description_right_of_fermi_is_not_caption():
+    # A parts-list description may contain the phrase ('BRACKET USED ON
+    # ASSY'). Such text trails the F-number on the row, whereas a title-block
+    # label precedes its value - so the x relation separates them and the
+    # row below stays a BOM row.
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    wrows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                   (180, "USED"), (210, "ON")],
+             150: [(50, "1"), (70, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+
+
+def test_used_on_anchor_is_fermi_not_row_edge():
+    # The anchor must be the F-number's x, not the row's rightmost token: a
+    # genuine BOM row carries its description right of the F-number, and the
+    # row edge would let a nearby 'USED ON' description suppress the part.
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            150: [(50, "1"), (70, "F10126107"), (130, "STEEL"),
+                  (300, "WASHER"), (500, "LARGE")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    wrows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                   (180, "USED"), (210, "ON")],
+             150: [(50, "1"), (70, "F10126107"), (130, "STEEL"),
+                   (300, "WASHER"), (500, "LARGE")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+
+
+def test_used_on_prose_tail_is_not_a_label():
+    # 'BRACKET USED ON ASSY' is a BOM description, not a caption: the USED/ON
+    # pair must not mark the row as a label when BOM prose follows it - even
+    # when the candidate F-number sits to its right.
+    assert extraction._used_on_label_x(
+        [(130, "BRACKET"), (180, "USED"), (210, "ON"), (250, "ASSY")]) is None
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON"), (250, "ASSY")],
+            150: [(500, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    # ...while a merged caption cell ('USED ON | NAME') still marks it.
+    assert extraction._used_on_label_x(
+        [(848, "BREAK ALL SHARP EDGES, MAX:"), (983, "0.5"),
+         (1029, "USED ON"), (1315, "NAME")]) == 1029
+
+
+def test_word_wide_window_size_token_needs_association():
+    # An A0-A9 token in another column, 4 rows up, must not suppress a
+    # genuine BOM value; the horizontally associated one still marks it.
+    base = {110: [(50, "SPEC")], 120: [(50, "SPEC")], 130: [(50, "SPEC")],
+            150: [(50, "1"), (70, "F10126107")]}
+    far = {100: [(600, "A3")]} | base
+    wys = sorted(far)
+    y_index = {y: i for i, y in enumerate(far)}
+    assert not extraction._word_row_is_title_block(far, wys, 150,
+                                                   sorted(far[150]), y_index)
+    near = {100: [(60, "A3")]} | base
+    nys = sorted(near)
+    n_index = {y: i for i, y in enumerate(near)}
+    assert extraction._word_row_is_title_block(near, nys, 150,
+                                               sorted(near[150]), n_index)
+
+
+def test_used_on_label_far_left_column_does_not_suppress():
+    # One association rule everywhere: the label must sit within 180pt left
+    # of the F-number. A USED ON caption in another column - far left in the
+    # tight window, or left of the item column in the wide window - is not
+    # this row's title-block cell.
+    rows = {120: [(100, "USED"), (120, "ON")],
+            150: [(1100, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    wrows = {110: [(300, "USED"), (320, "ON")],
+             120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+             150: [(20, "2"), (1145, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+    # ...while a label just inside the span (all measured real offsets are
+    # 88-116pt) still marks the row in both windows.
+    near = {120: [(1000, "USED"), (1020, "ON")],
+            150: [(1100, "F10126107")]}
+    nys = sorted(near)
+    assert extraction._positional_row_is_title_block(near, nys, 1, 150)
+
+
+def test_used_on_label_right_of_fermi_does_not_suppress():
+    # The label always precedes its value, so a USED ON caption right of the
+    # F-number - a neighbouring column 4-8 rows above - is not this row's
+    # title-block cell, in either path.
+    wrows = {110: [(200, "USED"), (220, "ON")],
+             120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+             150: [(50, "1"), (70, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+    rows = {110: [(200, "USED"), (220, "ON")],
+            120: [(50, "SPEC")], 130: [(50, "SPEC")], 140: [(50, "SPEC")],
+            150: [(50, "1"), (70, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 4, 150)
+
+
+def test_used_on_label_on_candidate_row_marks_title_block():
+    # A merged USED ON label on the candidate row itself ('2 | USED ON |
+    # F10119...') is a title-block value row: neither path used to check the
+    # row being evaluated, so an item token left of the value let it pass
+    # through as a BOM entry.
+    rows = {150: [(20, "2"), (1029, "USED"), (1049, "ON"), (1145, "F10126107")]}
+    ys = sorted(rows)
+    assert extraction._positional_row_is_title_block(rows, ys, 0, 150)
+    wrows = {150: [(20, "2"), (1029, "USED"), (1049, "ON"), (1145, "F10126107")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert extraction._word_row_is_title_block(wrows, wys, 150,
+                                               sorted(wrows[150]), y_index)
+    # ...while a BOM row carrying the phrase after its F-number stays kept.
+    kept = {150: [(50, "1"), (70, "F10126107"), (180, "USED"), (210, "ON")]}
+    kys = sorted(kept)
+    assert not extraction._positional_row_is_title_block(kept, kys, 0, 150)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
