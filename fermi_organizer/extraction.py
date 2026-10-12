@@ -1003,6 +1003,18 @@ def _used_on_label_x(row):
     return None
 
 
+def _fermi_value_x(row):
+    """x of the row's F-number token (leftmost), or None if it has none.
+
+    The USED ON title-block checks must anchor on the value being evaluated,
+    not the row's rightmost token: a BOM description extends right of the
+    F-number, and anchoring on the row extent lets a nearby description
+    containing 'USED ON' suppress a valid part.
+    """
+    xs = [x for x, t in row if FERMI_RE_SEARCH.search(t)]
+    return min(xs) if xs else None
+
+
 def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     if _is_caption_row(_dict_row_text(rows, y)):
         return True
@@ -1016,8 +1028,12 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
             return True
     # Value-row extent: the label must not sit to its right (see
     # _used_on_label_x) and the wide window below associates against it.
+    # Anchored on the F-number token, not the row's rightmost token: a BOM
+    # description extends right of the F-number, and the row extent would let
+    # a nearby 'USED ON' description suppress a valid part.
     row_xs = [x for x, _ in rows[y]]
-    v_hi = max(row_xs)
+    fermi_x = _fermi_value_x(rows[y])
+    anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1027,7 +1043,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         if _is_used_on_caption(_dict_row_text(rows, prev_y)):
             return True
         label_x = _used_on_label_x(rows[prev_y])
-        if label_x is not None and label_x <= v_hi:
+        if label_x is not None and label_x <= anchor_hi:
             return True
     # A tall title-block cell can park the USED ON value several rows below
     # its label (F10205800: 3 note rows intervene, label 4 rows back), which
@@ -1041,7 +1057,7 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     # value sits past the label text itself (~55 pt), so the association span
     # is 180: measured label-to-value offsets run 88-116 pt (F10205800,
     # F10153201, F10119103, F10144381), all inside 180.
-    lo, hi = min(row_xs) - 180, v_hi + 180
+    lo, hi = min(row_xs) - 180, anchor_hi + 180
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break
@@ -1277,7 +1293,9 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # keyword row, optionally with its value ('SCALE 1:1', 'USED ON F1...');
     # a keyword word inside a BOM row's text must not disable the rows below.
     y_idx = y_index[y_key]
-    v_hi = max(x for x, _ in row_words)
+    row_xs = [x for x, _ in row_words]
+    fermi_x = _fermi_value_x(row_words)
+    anchor_hi = fermi_x if fermi_x is not None else max(row_xs)
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1288,7 +1306,7 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         if _is_caption_row(prev_text):
             return True
         label_x = _used_on_label_x(rows[prev_y])
-        if label_x is not None and label_x <= v_hi:
+        if label_x is not None and label_x <= anchor_hi:
             return True
         for _, w in rows[prev_y]:
             if SIZE_RE.match(w):
@@ -1296,7 +1314,7 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # Same tall-cell case as the span path (F10197064: 3 note rows between the
     # USED ON label and its value), with the same horizontal association so a
     # neighbouring column's label does not suppress a genuine BOM row.
-    lo, hi = min(x for x, _ in row_words) - 180, v_hi + 180
+    lo, hi = min(row_xs) - 180, anchor_hi + 180
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break

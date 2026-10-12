@@ -874,6 +874,26 @@ def test_used_on_phrase_in_description_right_of_fermi_is_not_caption():
                                                    sorted(wrows[150]), y_index)
 
 
+def test_used_on_anchor_is_fermi_not_row_edge():
+    # The anchor must be the F-number's x, not the row's rightmost token: a
+    # genuine BOM row carries its description right of the F-number, and the
+    # row edge would let a nearby 'USED ON' description suppress the part.
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON")],
+            150: [(50, "1"), (70, "F10126107"), (130, "STEEL"),
+                  (300, "WASHER"), (500, "LARGE")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    wrows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                   (180, "USED"), (210, "ON")],
+             150: [(50, "1"), (70, "F10126107"), (130, "STEEL"),
+                   (300, "WASHER"), (500, "LARGE")]}
+    wys = sorted(wrows)
+    y_index = {y: i for i, y in enumerate(wrows)}
+    assert not extraction._word_row_is_title_block(wrows, wys, 150,
+                                                   sorted(wrows[150]), y_index)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",
