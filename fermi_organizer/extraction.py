@@ -639,8 +639,8 @@ def _ocr_strip_tokens(page, rect, psm="7"):
                         prefix="fermipdf_ocr_", suffix=".png", delete=False) as tmp:
                     png = tmp.name
                     tmp.close()
-                pix.save(png)
                 pngs[zoom] = png
+                pix.save(png)
             try:
                 r = _tesseract_run(
                     [exe, pngs[zoom], "stdout", "--psm", mode, "--oem", oem,

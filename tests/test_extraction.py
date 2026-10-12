@@ -1033,3 +1033,34 @@ def test_ocr_words_zoom_tempfile_security_and_cleanup(monkeypatch, tmp_path, mak
     assert tmp_file.endswith(".png")
     assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up!"
     doc.close()
+
+
+def test_ocr_strip_tokens_cleanup_on_pix_save_failure(monkeypatch, tmp_path, make_pdf):
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    created_tempfiles = []
+    orig_named_temp = extraction.tempfile.NamedTemporaryFile
+
+    def tracking_named_temp(*args, **kwargs):
+        tf = orig_named_temp(*args, **kwargs)
+        created_tempfiles.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(extraction.tempfile, "NamedTemporaryFile", tracking_named_temp)
+
+    class FakePix:
+        def save(self, filename):
+            raise RuntimeError("pix.save failed")
+
+    monkeypatch.setattr(page, "get_pixmap", lambda *a, **k: FakePix())
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
+
+    with pytest.raises(RuntimeError, match="pix.save failed"):
+        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+
+    assert len(created_tempfiles) == 1
+    tmp_file = created_tempfiles[0]
+    assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up on pix.save failure!"
+    doc.close()
