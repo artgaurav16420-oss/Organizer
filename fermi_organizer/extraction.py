@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Content extraction: BOM tables/text, USED ON, NAME, OCR fallback."""
+import itertools
 import multiprocessing
 import os
 import re
@@ -1588,7 +1589,7 @@ def detect_watermark(doc, issues=None):
     except (RuntimeError, ValueError, AttributeError) as e:
         if issues is not None:
             issues.append(f"watermark layer check failed: {e}")
-    for page in list(doc)[:WATERMARK_MAX_PAGES]:
+    for page in itertools.islice(doc, WATERMARK_MAX_PAGES):
         try:
             m = WATERMARK_TEXT_RE.search(page.get_text())
         except (RuntimeError, ValueError) as e:
