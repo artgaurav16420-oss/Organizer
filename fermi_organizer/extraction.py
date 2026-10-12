@@ -980,6 +980,29 @@ def _dict_row_text(rows, y):
     return " ".join(t for _, t in sorted(rows[y]))
 
 
+def _used_on_label_x(row):
+    """x of this row's USED ON label, or None.
+
+    Row clustering is y-only, so a note line from the left column can merge
+    with the title-block caption in the right column ('BREAK ALL SHARP EDGES,
+    MAX: 0.5 | USED ON | NAME'); the joined row text then no longer *starts*
+    with 'USED ON' and the caption reads as ordinary text. Matching per token
+    (and across the 'USED' 'ON' word split) finds the label regardless of what
+    else landed in the row. The caller still gates on the label sitting at or
+    left of the value row: in a title block the label precedes its value, while
+    a BOM row's description - 'BRACKET USED ON ASSY' - trails the F-number, so
+    the two separate without needing to parse the surrounding prose.
+    """
+    toks = sorted(row, key=lambda t: t[0])
+    for i, (x, t) in enumerate(toks):
+        if _is_used_on_caption(t):
+            return x
+        if (t.upper() == "USED" and i + 1 < len(toks)
+                and toks[i + 1][1].upper() == "ON"):
+            return x
+    return None
+
+
 def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     if _is_caption_row(_dict_row_text(rows, y)):
         return True
@@ -991,6 +1014,10 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
             return True
         if SIZE_RE.match(t_up):
             return True
+    # Value-row extent: the label must not sit to its right (see
+    # _used_on_label_x) and the wide window below associates against it.
+    row_xs = [x for x, _ in rows[y]]
+    v_hi = max(row_xs)
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -998,6 +1025,9 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
         if prev_y < y - 30:
             break
         if _is_used_on_caption(_dict_row_text(rows, prev_y)):
+            return True
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and label_x <= v_hi:
             return True
     # A tall title-block cell can park the USED ON value several rows below
     # its label (F10205800: 3 note rows intervene, label 4 rows back), which
@@ -1007,20 +1037,20 @@ def _positional_row_is_title_block(rows, sorted_ys, y_idx, y):
     # working.
     # The wide window must also be horizontally associated with this row: a
     # USED ON label in another column (or a neighbouring drawing's block) is
-    # not this row's title-block cell.
-    row_xs = [x for x, _ in rows[y]]
-    lo, hi = min(row_xs) - 60, max(row_xs) + 60
+    # not this row's title-block cell. The label's x is its LEFT edge while the
+    # value sits past the label text itself (~55 pt), so the association span
+    # is 180: measured label-to-value offsets run 88-116 pt (F10205800,
+    # F10153201, F10119103, F10144381), all inside 180.
+    lo, hi = min(row_xs) - 180, v_hi + 180
     for dy in range(4, 9):
         if y_idx - dy < 0:
             break
         prev_y = sorted_ys[y_idx - dy]
         if prev_y < y - 100:
             break
-        if _is_used_on_caption(_dict_row_text(rows, prev_y)):
-            label_xs = [x for x, t in rows[prev_y]
-                        if "USED" in t.upper() or t.upper() == "ON"]
-            if any(lo <= x <= hi for x in label_xs):
-                return True
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and lo <= label_x <= hi:
+            return True
     return False
 
 
@@ -1247,6 +1277,7 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     # keyword row, optionally with its value ('SCALE 1:1', 'USED ON F1...');
     # a keyword word inside a BOM row's text must not disable the rows below.
     y_idx = y_index[y_key]
+    v_hi = max(x for x, _ in row_words)
     for dy in range(1, 4):
         if y_idx - dy < 0:
             break
@@ -1255,6 +1286,25 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
             break
         prev_text = " ".join(w for _, w in sorted(rows[prev_y], key=lambda t: t[0]))
         if _is_caption_row(prev_text):
+            return True
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and label_x <= v_hi:
+            return True
+        for _, w in rows[prev_y]:
+            if SIZE_RE.match(w):
+                return True
+    # Same tall-cell case as the span path (F10197064: 3 note rows between the
+    # USED ON label and its value), with the same horizontal association so a
+    # neighbouring column's label does not suppress a genuine BOM row.
+    lo, hi = min(x for x, _ in row_words) - 180, v_hi + 180
+    for dy in range(4, 9):
+        if y_idx - dy < 0:
+            break
+        prev_y = sorted_y_keys[y_idx - dy]
+        if prev_y < y_key - 100:
+            break
+        label_x = _used_on_label_x(rows[prev_y])
+        if label_x is not None and lo <= label_x <= hi:
             return True
         for _, w in rows[prev_y]:
             if SIZE_RE.match(w):
