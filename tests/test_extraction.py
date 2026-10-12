@@ -894,6 +894,40 @@ def test_used_on_anchor_is_fermi_not_row_edge():
                                                    sorted(wrows[150]), y_index)
 
 
+def test_used_on_prose_tail_is_not_a_label():
+    # 'BRACKET USED ON ASSY' is a BOM description, not a caption: the USED/ON
+    # pair must not mark the row as a label when BOM prose follows it - even
+    # when the candidate F-number sits to its right.
+    assert extraction._used_on_label_x(
+        [(130, "BRACKET"), (180, "USED"), (210, "ON"), (250, "ASSY")]) is None
+    rows = {120: [(50, "3"), (70, "F10126109"), (130, "BRACKET"),
+                  (180, "USED"), (210, "ON"), (250, "ASSY")],
+            150: [(500, "F10126107")]}
+    ys = sorted(rows)
+    assert not extraction._positional_row_is_title_block(rows, ys, 1, 150)
+    # ...while a merged caption cell ('USED ON | NAME') still marks it.
+    assert extraction._used_on_label_x(
+        [(848, "BREAK ALL SHARP EDGES, MAX:"), (983, "0.5"),
+         (1029, "USED ON"), (1315, "NAME")]) == 1029
+
+
+def test_word_wide_window_size_token_needs_association():
+    # An A0-A9 token in another column, 4 rows up, must not suppress a
+    # genuine BOM value; the horizontally associated one still marks it.
+    base = {110: [(50, "SPEC")], 120: [(50, "SPEC")], 130: [(50, "SPEC")],
+            150: [(50, "1"), (70, "F10126107")]}
+    far = {100: [(600, "A3")]} | base
+    wys = sorted(far)
+    y_index = {y: i for i, y in enumerate(far)}
+    assert not extraction._word_row_is_title_block(far, wys, 150,
+                                                   sorted(far[150]), y_index)
+    near = {100: [(60, "A3")]} | base
+    nys = sorted(near)
+    n_index = {y: i for i, y in enumerate(near)}
+    assert extraction._word_row_is_title_block(near, nys, 150,
+                                               sorted(near[150]), n_index)
+
+
 def test_caption_row_recognizes_keywords_and_values():
     for text in ("SCALE 1:1", "SHEET 1 OF 2", "USED ON F10126107", "REV",
                  "REV B", "SIZE A0", "DRAWING NUMBER F10126107",

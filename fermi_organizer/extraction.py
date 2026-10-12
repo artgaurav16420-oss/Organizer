@@ -980,6 +980,17 @@ def _dict_row_text(rows, y):
     return " ".join(t for _, t in sorted(rows[y]))
 
 
+def _used_on_tail_ok(tail):
+    """Tokens after a USED ON label must read as caption tail (keywords or
+    caption values like NAME / an F-number), not BOM prose: 'BRACKET USED ON
+    ASSY' is a description, while 'USED ON | NAME' is a merged caption cell."""
+    return all(
+        w.upper() in TITLE_BLOCK_KEYWORDS
+        or _CAPTION_VALUE_RE.fullmatch(w.upper())
+        or _CAPTION_FERMI_VALUE_RE.fullmatch(w.upper())
+        for w in tail)
+
+
 def _used_on_label_x(row):
     """x of this row's USED ON label, or None.
 
@@ -996,10 +1007,14 @@ def _used_on_label_x(row):
     toks = sorted(row, key=lambda t: t[0])
     for i, (x, t) in enumerate(toks):
         if _is_used_on_caption(t):
-            return x
-        if (t.upper() == "USED" and i + 1 < len(toks)
+            words = t.upper().split()
+            tail = words[words.index("ON") + 1:] + [w for _, w in toks[i + 1:]]
+            if _used_on_tail_ok(tail):
+                return x
+        elif (t.upper() == "USED" and i + 1 < len(toks)
                 and toks[i + 1][1].upper() == "ON"):
-            return x
+            if _used_on_tail_ok([w for _, w in toks[i + 2:]]):
+                return x
     return None
 
 
@@ -1324,8 +1339,8 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
         label_x = _used_on_label_x(rows[prev_y])
         if label_x is not None and lo <= label_x <= hi:
             return True
-        for _, w in rows[prev_y]:
-            if SIZE_RE.match(w):
+        for sx, w in rows[prev_y]:
+            if SIZE_RE.match(w) and lo <= sx <= hi:
                 return True
     return False
 
