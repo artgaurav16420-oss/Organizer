@@ -962,8 +962,15 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
                 folder = pick_shallowest(paths).parent
                 if folder.parent == output:
                     continue
-                total += sum(1 for ps in organized.values() for p in ps
-                             if p.is_relative_to(folder))
+                # Count files on disk, not just indexed PDFs: copytree
+                # carries strays (Thumbs.db, notes) too, and the cap must
+                # cover them. Falls back to the indexed count when the
+                # folder cannot be listed (e.g. a dry-run remap target).
+                try:
+                    total += sum(1 for e in folder.rglob("*") if e.is_file())
+                except OSError:
+                    total += sum(1 for ps in organized.values() for p in ps
+                                 if p.is_relative_to(folder))
             stack.extend(children.get(s, ()))
         est[R] = total
     return est

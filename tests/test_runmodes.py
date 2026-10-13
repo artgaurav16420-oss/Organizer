@@ -1889,6 +1889,9 @@ def test_adopted_copy_estimate_counts_nested_excludes_moved(tmp_path):
     nested_child = nested_parent / "F10126107 Child"
     nested_child.mkdir(parents=True)
     (nested_child / "F10126107.pdf").write_bytes(b"%PDF")
+    # Strays ride along in copytree, so the cap estimate counts files on
+    # disk, not just indexed PDFs.
+    (nested_child / "Thumbs.db").write_bytes(b"x")
     top_child = out / "F10126108 Top"
     top_child.mkdir(parents=True)
     (top_child / "F10126108.pdf").write_bytes(b"%PDF")
@@ -1897,4 +1900,4 @@ def test_adopted_copy_estimate_counts_nested_excludes_moved(tmp_path):
     est = runmodes._adopted_copy_estimate(
         ["NEWR"], {"NEWR": ["MIDR"], "MIDR": []},
         {"MIDR": ["F10126107", "F10126108"]}, organized, out)
-    assert est == {"NEWR": 1}
+    assert est == {"NEWR": 2}
