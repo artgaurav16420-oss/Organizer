@@ -71,9 +71,9 @@ Skipped roots are usually "bag" drawings such as procurement-kit lists, not real
 |---|---|
 | `No module named fermi_organizer` | Use the venv interpreter, or reinstall editable: `uv pip install -e .` |
 | `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install -r requirements.txt pytest -e .` |
-| `OCR: unavailable` | Tesseract is not installed. Scanned PDFs stay in `_orphans/`. Offer `--no-ocr` or installing Tesseract. |
+| `OCR: unavailable` | Tesseract is not installed. A scanned PDF has no readable BOM of its own. It is placed only if a readable parent BOM references it by filename; otherwise it lands in `_orphans/`. Offer installing Tesseract. |
 | Exit 2 with a placement-refused log line | Fan-out cap hit, not a crash. See Placement refusal above. |
-| `Report NOT saved (output folder missing)` on a dry run | Expected. Dry runs do not create the output folder. The workbook is still written. |
+| `Report NOT saved (output folder missing)` on a dry run | The text report is skipped because the folder does not exist yet. The workbook step runs next and creates the folder, so it exists afterward. |
 | `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | Re-run with `--output "<input>\Output"`. |
 | Everything landed in `_orphans/` | The parent drawings are not in the input folder yet. Files are placed once their parents arrive. |
 
@@ -83,7 +83,7 @@ From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cy
 
 Flag these: USED ON bugs, a large orphan count, `WARNING: in-place run`, OCR reading many PDFs, any `copy failed` or `path too long` warning, and any placement refusal.
 
-Summarize the printed output. Do not parse the `.txt` report to compute results. The `.xlsx` is the source of truth. Sanity check after a real run: the Dashboard `PDF FILES IN TREE (LIVE)` value should equal the recursive PDF count of the output minus `_orphans/` and `_superseded/`.
+Summarize the printed output. Do not parse the `.txt` report to compute results. The `.xlsx` is the source of truth. Sanity check after a real run: the Dashboard `PDF FILES IN TREE (LIVE)` value should equal the recursive PDF count of the output minus every top-level directory whose name starts with `_` (`_orphans/`, `_superseded/`, and any other).
 
 ## Expected noise
 
