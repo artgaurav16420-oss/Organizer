@@ -14,7 +14,7 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 ## Decision flow
 
 1. Resolve input and output paths. By default, specify `--output "<input>/Output"` to keep the organized tree separate from the input folder; omit `--output` only if an in-place run inside the input folder is explicitly requested.
-2. Always perform a dry run first to generate and review the plan without copying files. For status queries, `--dry-run` re-scans PDFs and updates `organize_fermi_report.xlsx` and its history sidecar without modifying original PDFs:
+2. Always perform a dry run first to generate and review the plan without copying files. For status queries, `--dry-run` re-scans PDFs and updates `organize_fermi_report.xlsx` (when openpyxl is installed) and its history sidecar without modifying original PDFs:
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>/Output" --dry-run
    ```
@@ -36,7 +36,7 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 | Flag | Effect |
 |---|---|
 | `--output <dir>` | Target folder for the organized tree. Default is the input folder itself (in-place run). |
-| `--dry-run` | Prints the plan without copying files. Rebuilds the Excel workbook and writes the text report if the output directory exists. |
+| `--dry-run` | Prints the plan without copying files. Rebuilds the Excel workbook (when openpyxl is installed) and writes the text report if the output directory exists. |
 | `--incremental` | Processes only stems not already in the output tree plus stored `_orphans/`. Keeps existing folders except for supersede swaps and parent-adoption moves. |
 | `--no-ocr` | Disables Tesseract OCR fallback for scanned (image-only) PDFs. |
 | `--jobs N` | Sets parallel extraction worker count (`0` = auto / CPU count, default; `1` = serial). |
@@ -59,7 +59,7 @@ Placement refusal log lines and Dashboard behavior:
 
 | Symptom | Action |
 |---|---|
-| `No module named fermi_organizer` | Run via the repository venv interpreter (`.venv/bin/python` or `.venv\Scripts\python.exe -m fermi_organizer.cli`), or reinstall editable (`uv pip install -e .`). |
+| `No module named fermi_organizer` | Run via the venv interpreter (`.venv/bin/python -m fermi_organizer.cli` or `.venv\Scripts\python.exe -m fermi_organizer.cli`), or reinstall editable (`uv pip install -e .`). |
 | `.venv` missing | Recreate the virtual environment using `uv venv --python 3.11 .venv` and install dependencies with `uv pip install -r requirements.txt pytest -e .`. |
 | `OCR: unavailable` | Expected when Tesseract is not installed; scanned PDFs referenced by a parent BOM are still placed, while unreferenced standalone ones stay in `_orphans/`. Pass `--no-ocr` to suppress the check deliberately. |
 | Exit code 2 with placement refusal log line | The 10,000-copy fan-out cap was hit. Placement was partially refused (oversized roots skipped while fitting roots were placed) or fully refused (folder placement skipped entirely). Inspect the BOM graph in the report/workbook and ask the user before re-running. |
