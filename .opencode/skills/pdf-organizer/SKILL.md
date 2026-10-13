@@ -59,19 +59,19 @@ Placement refusal log lines and Dashboard behavior:
 
 | Symptom | Action |
 |---|---|
-| `No module named fermi_organizer` | Run via the repository venv interpreter (`.venv\Scripts\python.exe -m fermi_organizer.cli`), or reinstall editable (`uv pip install -e .`). |
+| `No module named fermi_organizer` | Run via the repository venv interpreter (`.venv/bin/python` or `.venv\Scripts\python.exe -m fermi_organizer.cli`), or reinstall editable (`uv pip install -e .`). |
 | `.venv` missing | Recreate the virtual environment using `uv venv --python 3.11 .venv` and install dependencies with `uv pip install -r requirements.txt pytest -e .`. |
 | `OCR: unavailable` | Expected when Tesseract is not installed; scanned PDFs referenced by a parent BOM are still placed, while unreferenced standalone ones stay in `_orphans/`. Pass `--no-ocr` to suppress the check deliberately. |
 | Exit code 2 with placement refusal log line | The 10,000-copy fan-out cap was hit. Placement was partially refused (oversized roots skipped while fitting roots were placed) or fully refused (folder placement skipped entirely). Inspect the BOM graph in the report/workbook and ask the user before re-running. |
-| `Report NOT saved (output folder missing)` on a dry run | Expected behavior when a dry run targets a non-existent `--output` directory. The text report is skipped because the directory does not exist yet, but the workbook builder then creates the output folder and saves `organize_fermi_report.xlsx`. |
+| `Report NOT saved (output folder missing)` on a dry run | Expected behavior when a dry run targets a non-existent `--output` directory. The text report is skipped because the directory does not exist yet; when openpyxl is installed, the workbook builder creates the output folder and saves `organize_fermi_report.xlsx`. |
 | `WARNING: <path>/Output exists. Use --output to target it.` with `--incremental` | Specify `--output <path>/Output` explicitly to target the existing output tree. |
-| Everything landed in `_orphans/` | Parent drawings are missing from the input folder. Files remain parked in `_orphans/` until parent PDFs arrive in a future run. |
+| Everything landed in `_orphans/` | Parent drawings are missing from the input folder, or parent drawings are scanned PDFs processed without OCR. Files remain parked in `_orphans/` until parents are provided with extractable BOMs. |
 
 ## Guardrails
 
 - Original PDF files are never modified or deleted. Only the output tree is mutated through file copies, supersede swaps, and moves.
 - The BOM (parts list) table inside each drawing is the only source of truth for folder placement. `USED ON` fields are cross-checked and reported as USED ON bugs when they mismatch, but are never used to move files.
-- `_orphans/` stores drawings whose parent assembly has not been provided yet, parked for future adoption. `_superseded/` stores older revisions, unapproved `CHK` files, and watermarked duplicates.
+- `_orphans/` stores drawings whose parent assembly has not been provided yet, parked for future adoption. `_superseded/` stores older revisions, CHK files replaced by an approved DWG, and watermarked duplicates.
 - OCR text extraction is best-effort. Misread numbers can attach incorrect BOM edges, so present OCR-derived placements as requiring a spot-check.
 - Never hand-edit the output directory tree to alter placement. Modify the tool source code or correct the input drawing files instead.
 
