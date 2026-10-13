@@ -1016,70 +1016,75 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
     The adoption passes copy organized children claimed anywhere in a root's
     new subtree, outside the new-children walk the cap counts - so a small
     accepted graph could copy large organized subtrees past
-    MAX_PLANNED_COPIES. Counts PDFs under each claimed organized child
-    folder, like the pass itself (files on disk, not just indexed PDFs, so
-    strays are covered; indexed tally as fallback). Top-level folders are
-    re-homed (moved, not copied) and excluded, mirroring placement.
-    Instances are counted per placed path, not per stem: diamonds multiply,
-    exactly like _copy_counter (iterative post-order with the same memo key,
-    so shared subtrees cost one traversal). Estimate only: folder resolution
-    at copy time governs.
+    MAX_PLANNED_COPIES. Counts files on disk per claimed folder (strays ride
+    along in copytree), with the indexed tally as fallback for unlistable
+    folders. Instances are counted per placed path, not per stem: diamonds
+    multiply, like _copy_counter (layered BFS, depth-capped like the pass).
+    A top-level folder is moved by its first claimant and copied by the
+    rest, so it contributes Copies-1 there: first-sorted-root order matches
+    placement. Estimate only: folder resolution at copy time governs.
     """
     pdf_memo = {}
 
-    def adopted_pdfs(s):
-        if s not in pdf_memo:
-            total = 0
-            for c in org_children_of.get(s, ()):
-                paths = organized.get(c, [])
-                if not paths:
+    def folder_pdfs(folder):
+        key = str(folder)
+        if key not in pdf_memo:
+            try:
+                pdf_memo[key] = sum(1 for e in folder.rglob("*")
+                                    if e.is_file())
+            except OSError:
+                pdf_memo[key] = None
+        n = pdf_memo[key]
+        if n is None:
+            n = sum(1 for ps in organized.values() for p in ps
+                    if p.is_relative_to(folder))
+        return n
+
+    def path_counts(R):
+        counts = {}
+        level = {R: 1}
+        depth = 0
+        while level and depth <= TREE_MAX_DEPTH:
+            nxt = {}
+            for stem, n in level.items():
+                counts[stem] = counts.get(stem, 0) + n
+                if depth < TREE_MAX_DEPTH:
+                    for ch in children.get(stem, ()):
+                        nxt[ch] = nxt.get(ch, 0) + n
+            level, depth = nxt, depth + 1
+        return counts
+
+    def child_folder(c):
+        paths = organized.get(c, [])
+        return pick_shallowest(paths).parent if paths else None
+
+    nested = {}
+    top_claims = {}
+    folders = {}
+    for R in roots:
+        nested[R] = 0
+        for S, n in path_counts(R).items():
+            for c in org_children_of.get(S, ()):
+                if c not in folders:
+                    folders[c] = child_folder(c)
+                folder = folders[c]
+                if folder is None:
                     continue
-                folder = pick_shallowest(paths).parent
                 if folder.parent == output:
-                    continue
-                try:
-                    total += sum(1 for e in folder.rglob("*") if e.is_file())
-                except OSError:
-                    total += sum(1 for ps in organized.values() for p in ps
-                                 if p.is_relative_to(folder))
-            pdf_memo[s] = total
-        return pdf_memo[s]
-
-    memo = {}
-
-    def count(root_stem, root_depth=0):
-        remaining = TREE_MAX_DEPTH - root_depth
-        if remaining < 0:
-            return 0
-        key = (root_stem, remaining)
-        if key in memo:
-            return memo[key]
-        result = None
-        stack = [[root_stem, root_depth, adopted_pdfs(root_stem),
-                  iter(children.get(root_stem, ()))]]
-        while stack:
-            stem, depth, total, it = stack[-1]
-            child = next(it, None)
-            if child is None:
-                memo[(stem, TREE_MAX_DEPTH - depth)] = total
-                stack.pop()
-                if stack:
-                    stack[-1][2] += total
+                    top_claims.setdefault(R, []).append((c, n))
                 else:
-                    result = total
-                continue
-            c_remaining = TREE_MAX_DEPTH - (depth + 1)
-            if c_remaining < 0:
-                continue
-            c_key = (child, c_remaining)
-            if c_key in memo:
-                stack[-1][2] += memo[c_key]
-                continue
-            stack.append([child, depth + 1, adopted_pdfs(child),
-                          iter(children.get(child, ()))])
-        return result
-
-    return {R: count(R) for R in roots}
+                    nested[R] += folder_pdfs(folder) * n
+    est = dict(nested)
+    moved = set()
+    for R in sorted(roots):
+        for c, n in top_claims.get(R, []):
+            pdfs = folder_pdfs(folders[c])
+            if c in moved:
+                est[R] += pdfs * n
+            else:
+                moved.add(c)
+                est[R] += pdfs * max(0, n - 1)
+    return est
 
 
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,

@@ -1916,6 +1916,21 @@ def test_adopted_copy_estimate_counts_diamond_paths(tmp_path):
     est = runmodes._adopted_copy_estimate(
         ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
     assert est == {"NEWR": 4}
+
+
+def test_adopted_copy_estimate_top_level_moves_once(tmp_path):
+    # A top-level folder is moved by its first claimant and copied by the
+    # rest: two roots claiming one 3-PDF top-level child estimate 0 + 3.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    for name in ("F10126107.pdf", "extra1.pdf", "extra2.pdf"):
+        (child / name).write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1", "NEWR2"], {"NEWR1": [], "NEWR2": []},
+        {"NEWR1": ["F10126107"], "NEWR2": ["F10126107"]}, organized, out)
+    assert est == {"NEWR1": 0, "NEWR2": 3}
 def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
     # A top-level organized root claimed by a new non-root is re-homed
     # (moved, not copied): no stale root folder is left behind, and later
