@@ -11,7 +11,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - Same-drawing fallback in `_resolve_names`: reported-but-unscanned stems
   (superseded CHK) reuse their DWG twin's NAME instead of showing `-`.
   Blocked across different sheet tokens, so sibling sheets never inherit
-  each other's names; extracted names always win.
+  each other's names; extracted names always win. A sheeted CHK is still
+  that sheet's content (same-sheet donor only); only a sheetless CHK may
+  reuse a cross-sheet donor. The bare-base key serves only unrevisioned
+  sheetless stems (or a sheetless CHK).
 
 ### Incremental placement completeness fix
 - A new non-root parent referencing already-organized children now gets copies

@@ -338,21 +338,19 @@ def _fallback_name(resolved, stem):
     """Same-drawing NAME for a stem with no extracted entry.
 
     Same base (and revision, when present) means the same part, so a
-    superseded CHK row can reuse its DWG twin's NAME. Revisions must match
-    exactly - except for CHK requesters, which are the same drawing as
-    their rev twin. Sheet suffixes must match exactly - except for CHK
-    requesters: a plain stem is its own sheet, so a sibling sheet's NAME
-    would be the wrong content. Deterministic first-sorted-donor pick;
-    extracted names always win (this only fills gaps).
+    superseded CHK row can reuse its DWG twin's NAME. A CHK is the same
+    drawing as its rev twin (exempt from revision matching), but a sheeted
+    CHK is still that sheet's content: only a sheetless CHK may reuse a
+    cross-sheet donor. Any other sheetless stem must match sheets exactly
+    (a plain stem is its own sheet, so a sibling sheet's NAME would be the
+    wrong content). Deterministic first-sorted-donor pick; extracted names
+    always win (this only fills gaps).
     """
     base = stem.split("_")[0]
     parts = stem.split("_")
     rev = parts[1] if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2 else ""
     want_sheet = _sheet_of(stem)
-    # A CHK is the same drawing as its rev twin regardless of sheet suffix;
-    # any other sheetless stem must match sheets exactly (a plain stem is its
-    # own sheet, so a sibling sheet's NAME would be the wrong content).
-    sheet_ok = "CHK" in parts[1:]
+    is_chk = "CHK" in parts[1:]
     cands = []
     for cand in sorted(resolved):
         if cand == stem or not resolved[cand]:
@@ -361,10 +359,10 @@ def _fallback_name(resolved, stem):
             continue
         cparts = cand.split("_")
         crev = cparts[1] if len(cparts) > 1 and cparts[1].isalpha() and len(cparts[1]) <= 2 else ""
-        if rev != crev and not sheet_ok:
+        if rev != crev and not is_chk:
             continue
         got_sheet = _sheet_of(cand)
-        if want_sheet != got_sheet and not sheet_ok:
+        if want_sheet != got_sheet and not (is_chk and want_sheet is None):
             continue
         cands.append((0 if crev == rev else 1, cand))
     if not cands:
@@ -392,10 +390,6 @@ def _prior_names(path):
         return out
     try:
         ws = wb["Files"]
-    except KeyError:
-        wb.close()
-        return out
-    try:
         for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
             stem, name = (row + (None, None))[:2]
             if not stem or not name or name == "-":
@@ -403,6 +397,10 @@ def _prior_names(path):
             key = canonical_stem(str(stem))
             if key:
                 out.setdefault(key, str(name))
+    except Exception:
+        # Best-effort: the sheet is parsed lazily, so malformed Files XML
+        # surfaces here, outside the load handler above - yield no priors.
+        return {}
     finally:
         wb.close()
     return out
@@ -412,9 +410,10 @@ def _resolve_names(names_raw, live, extra=()):
     """names_raw + base-stem fallback, for every tree/orphan stem and every key.
 
     extra: reported-but-unscanned stems (CHK, missing refs) that also deserve
-    a family fallback entry. The base-key lookup carries no sheet info, so it
-    only serves sheetless (or CHK) requesters - a sheeted sibling has its own
-    NAME (same sheet rule as _fallback_name, CHK exempt).
+    a family fallback entry. The base-key lookup carries no rev/sheet info,
+    so only an unrevisioned sheetless stem (or a sheetless CHK, the same
+    drawing as its twin) may reuse it - same rev/sheet rule as
+    _fallback_name against an unrevisioned sheetless donor.
     """
     resolved = {}
     stems = set(names_raw) | set(extra)
@@ -430,9 +429,12 @@ def _resolve_names(names_raw, live, extra=()):
     for stem in stems:
         v = names_raw.get(stem) or ""
         if not v:
-            base_name = names_raw.get(stem.split("_")[0], "")
-            if base_name and ("CHK" in stem.split("_")[1:]
-                              or _sheet_of(stem) is None):
+            parts = stem.split("_")
+            rev = (parts[1] if len(parts) > 1 and parts[1].isalpha()
+                   and len(parts[1]) <= 2 else "")
+            base_name = names_raw.get(parts[0], "")
+            if (base_name and (rev == "" or "CHK" in parts[1:])
+                    and _sheet_of(stem) is None):
                 v = base_name
         if v:
             resolved[stem] = v
