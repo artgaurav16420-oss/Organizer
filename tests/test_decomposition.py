@@ -355,3 +355,40 @@ def test_copy_orphans_then_retire_adopted(tmp_path):
     assert retired == 1
     assert not orph_path.exists()
     assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
+def test_copy_org_child_tree_dry_run_accepts_moved_descendant(tmp_path, make_pdf):
+    # A child below a moved ancestor counts as simulated-present in dry-run:
+    # exact equality alone would skip a copy the real run makes.
+    out = tmp_path / "out"
+    new_home = out / "AdoptedRoot"
+    current = new_home / "Mid" / "F10126107 Child"
+    current.mkdir(parents=True)
+    make_pdf(current / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [current / "F10126107.pdf"]}
+    moved_dirs = {out / "OldRoot": new_home}
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "Target", organized,
+                                  moved_dirs, out, True, logged.append)
+    assert copies == 1
+    assert any("[DRY-RUN] copy" in m for m in logged)
+
+
+def test_copy_org_child_tree_lock_loss_stops_before_copy(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # A steal racing placement must stop the adoption like it stops
+    # place_files (LockLostError), not write into the other run's tree.
+    from fermi_organizer import runmodes as _rm
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+    logged = []
+
+    def _boom(lock, log):
+        raise fsops.LockLostError("stolen")
+
+    monkeypatch.setattr(_rm, "_ensure_lock", _boom)
+    with pytest.raises(fsops.LockLostError):
+        _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                             {}, out, False, logged.append)
+    assert not (out / "NewParent").exists()

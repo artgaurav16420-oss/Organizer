@@ -808,7 +808,7 @@ def _longest_dest_path(target_path, current):
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
-                         dry_run, log):
+                         dry_run, log, lock=None):
     """Copy organized child c's folder under target_folder; returns PDF copies.
 
     Nested under a live parent means COPY, never move: moving would hollow
@@ -830,7 +830,10 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
             break
     # A dry run never moves anything, so a folder it "moved" is simulated
     # at its destination: accept that as present for later claimants.
-    simulated = dry_run and current in moved_dirs.values()
+    # A child below a moved ancestor counts too (exact equality would
+    # skip a copy in dry-run that the real run makes).
+    simulated = dry_run and (current in moved_dirs.values() or any(
+        current.is_relative_to(v) for v in moved_dirs.values()))
     if not simulated and not _exists(current):
         log(f"  {c}: already moved, skipping")
         return 0
@@ -861,6 +864,9 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     if dry_run:
         log(f"  [DRY-RUN] copy {current.relative_to(output)} -> {target_path.relative_to(output)}")
     else:
+        # Recheck ownership before the long copy: a steal racing place_files
+        # must stop this run the way it stops place_files (LockLostError).
+        _ensure_lock(lock, log)
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
         try:
@@ -877,7 +883,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
 
 def _adopt_org_children_below(starts, new_children, org_children_of,
                               folder_names, names_of, organized, moved_dirs,
-                              output, dry_run, log, skip=()):
+                              output, dry_run, log, skip=(), lock=None):
     """Copy already-organized children under new non-root parents; returns copies.
 
     place_files only walks new children, so a new parent placed under other
@@ -916,19 +922,48 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
                 for c in sorted(org_children_of.get(s, ())):
                     total += _copy_org_child_tree(c, folder, organized,
                                                  moved_dirs, output,
-                                                 dry_run, log)
+                                                 dry_run, log, lock)
             for ch in sorted(new_children.get(s, ())):
                 stack.append((ch, folder / fname(ch), depth + 1))
     return total
 
 
-def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
-                          base, output, dry_run, log, renames=None, lock=None):
-    """R is a sub-assembly of organized part(s) P; place under P. Returns copies."""
-    if len(org_par) > 1:
-        log(f"  {R}: referenced by multiple organized parts {org_par}; placing under {P}")
-    fn = build_folder_names(new_children, [R], new_index, new_names, base, log)
-    log(f"  {R}: sub-assembly of organized part {P} -> {(base / fn.get(R, R)).relative_to(output)}")
+def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
+    """Per-root estimates of adopted organized-subtree copies (fan-out cap).
+
+    The adoption passes copy organized children claimed anywhere in a root's
+    new subtree, outside the new-children walk the cap counts - so a small
+    accepted graph could copy large organized subtrees past
+    MAX_PLANNED_COPIES. Counts PDFs under each claimed organized child
+    folder. Top-level folders are re-homed (moved, not copied) and excluded,
+    mirroring placement; pre-run locations are used (a mid-run re-home
+    flipping move to copy is rare and bounded). Estimate only: folder
+    resolution at copy time governs.
+    """
+    est = {}
+    for R in roots:
+        total = 0
+        stack = [R]
+        seen = set()
+        while stack:
+            s = stack.pop()
+            if s in seen:
+                continue
+            seen.add(s)
+            for c in org_children_of.get(s, ()):
+                paths = organized.get(c, [])
+                if not paths:
+                    continue
+                folder = pick_shallowest(paths).parent
+                if folder.parent == output:
+                    continue
+                total += sum(1 for ps in organized.values() for p in ps
+                             if p.is_relative_to(folder))
+            stack.extend(children.get(s, ()))
+        est[R] = total
+    return est
+
+
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
                            base, output, dry_run, log, org_children_of,
                            organized, moved_dirs, renames=None, lock=None):
@@ -942,7 +977,7 @@ def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
     own = base / (fn.get(R) or folder_name_for(R, new_names))
     return placed + _adopt_org_children_below(
         {R: own}, new_children, org_children_of, fn, new_names,
-        organized, moved_dirs, output, dry_run, log)
+        organized, moved_dirs, output, dry_run, log, lock=lock)
 
 
 def _place_above_organized_children(R, org_child, new_children, new_index, new_names,
@@ -986,7 +1021,10 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
                 break
         # A dry run never moves anything, so a folder it "moved" is simulated
         # at its destination: accept that as present for later claimants.
-        simulated = dry_run and current in moved_dirs.values()
+        # A child below a moved ancestor counts too (exact equality would
+        # skip a copy in dry-run that the real run makes).
+        simulated = dry_run and (current in moved_dirs.values() or any(
+            current.is_relative_to(v) for v in moved_dirs.values()))
         if not simulated and not _exists(current):
             log(f"  {c}: already moved, skipping")
             continue
@@ -1026,12 +1064,13 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
         # shared-folder guard above is move-only (copying cannot strand
         # unrelated files), so a shared source still lands whole.
         copies += _copy_org_child_tree(c, target_folder, organized,
-                                       moved_dirs, output, dry_run, log)
+                                       moved_dirs, output, dry_run, log,
+                                       lock=lock)
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
                           renames=renames, lock=lock)
     copies += _adopt_org_children_below(
         {R: target_folder}, new_children, org_children_of, fn, new_names,
-        organized, moved_dirs, output, dry_run, log, skip={R})
+        organized, moved_dirs, output, dry_run, log, skip={R}, lock=lock)
     return copies, moves
 
 
@@ -1047,7 +1086,7 @@ def _place_standalone_new_root(R, new_children, new_index, new_names,
     own = output / (fn.get(R) or folder_name_for(R, new_names))
     return placed + _adopt_org_children_below(
         {R: own}, new_children, org_children_of, fn, new_names,
-        organized, moved_dirs, output, dry_run, log)
+        organized, moved_dirs, output, dry_run, log, lock=lock)
 
 
 def _ctx_names(names_of, missing, bom_names):
@@ -1614,8 +1653,14 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     # A root referenced by several organized parents is copied under each
     # claimant: charge its subtree once per claimant against the cap.
     weights = {R: max(1, len(org_parents_of.get(R, ()))) for R in placeable}
+    # Adopted organized-subtree copies ride outside the new-children walk:
+    # charge them per claimant too, or a small accepted graph could copy
+    # large organized subtrees past the cap.
+    _est = _adopted_copy_estimate(placeable, new_children, org_children_of,
+                                  organized, output)
+    extra = {R: _est[R] * weights[R] for R in placeable}
     kept, skipped = fit_roots_within_cap(new_children, placeable, log,
-                                         weights=weights)
+                                         weights=weights, extra=extra)
     refused = bool(skipped)
     skipped_set = {r for r, _ in skipped}
     if refused and not kept:
@@ -1835,10 +1880,14 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # once per organized parent).
     _pre_weights = {r: max(1, len(pre_org_par.get(r, ())))
                     for r in pre_placeable}
+    _pre_est = _adopted_copy_estimate(pre_placeable, pre_children, pre_org_ch,
+                                      organized, output)
+    _pre_extra = {r: _pre_est[r] * _pre_weights[r] for r in pre_placeable}
     _pre_kept, _pre_dropped = fit_roots_within_cap(pre_children,
                                                    pre_placeable,
                                                    lambda msg: None,
-                                                   weights=_pre_weights)
+                                                   weights=_pre_weights,
+                                                   extra=_pre_extra)
     refused = bool(_pre_dropped)
 
     swapped_old: list = []

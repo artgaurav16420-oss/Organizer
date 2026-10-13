@@ -269,7 +269,7 @@ def ensure_placement_allowed(children, roots, log):
         log(f"  WARNING: {planned} copies planned (diamond DAG may cause exponential growth)")
 
 
-def fit_roots_within_cap(children, roots, log, weights=None):
+def fit_roots_within_cap(children, roots, log, weights=None, extra=None):
     """Drop the largest roots until the planned fan-out fits MAX_PLANNED_COPIES.
 
     Returns (kept, skipped): kept preserves the input root order; skipped is
@@ -280,11 +280,14 @@ def fit_roots_within_cap(children, roots, log, weights=None):
     root. Dropped roots are reported, never placed: their shared children are
     still placed under their other parents. `weights` multiplies a root's
     count (incremental copies a multi-claimant root under every organized
-    parent, so its subtree must be charged once per claimant).
+    parent, so its subtree must be charged once per claimant). `extra` adds a
+    flat per-root estimate (incremental's adopted organized-subtree copies,
+    which ride outside the new-children walk).
     """
     count = _copy_counter(children)
     weights = weights or {}
-    counts = {r: count(r) * weights.get(r, 1) for r in roots}
+    extra = extra or {}
+    counts = {r: count(r) * weights.get(r, 1) + extra.get(r, 0) for r in roots}
     planned = sum(counts.values())
     if planned <= MAX_PLANNED_COPIES:
         return list(roots), []

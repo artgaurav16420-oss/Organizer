@@ -1881,3 +1881,20 @@ def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
     run_incremental(in_dir, out, False, logged.append, jobs=1)
     assert not stale.exists()
     assert any("removed leftover supersede staging" in m for m in logged)
+def test_adopted_copy_estimate_counts_nested_excludes_moved(tmp_path):
+    # Adopted-copy estimates charge nested organized children per root but
+    # not top-level ones (re-homed by move, not copy).
+    out = tmp_path / "out"
+    nested_parent = out / "LiveParent"
+    nested_child = nested_parent / "F10126107 Child"
+    nested_child.mkdir(parents=True)
+    (nested_child / "F10126107.pdf").write_bytes(b"%PDF")
+    top_child = out / "F10126108 Top"
+    top_child.mkdir(parents=True)
+    (top_child / "F10126108.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [nested_child / "F10126107.pdf"],
+                 "F10126108": [top_child / "F10126108.pdf"]}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], {"NEWR": ["MIDR"], "MIDR": []},
+        {"MIDR": ["F10126107", "F10126108"]}, organized, out)
+    assert est == {"NEWR": 1}
