@@ -78,7 +78,8 @@ def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, i
             used_on_bugs=ctx["used_on_bugs"],
             titleblock_mismatches=ctx["titleblock_mismatches"],
             scanned=ctx["scanned"], watermarks=ctx["watermarks"], log=log,
-            placement_refused=ctx.get("placement_refused", False))
+            placement_refused=ctx.get("placement_refused", False),
+            skipped_roots=ctx.get("skipped_roots", []))
         if xlsx:
             log(f"  Excel report saved to: {xlsx}")
     except Exception as e:

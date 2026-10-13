@@ -78,6 +78,33 @@ def test_refresh_workbook_uses_explicit_run_time(tmp_path, monkeypatch):
     assert captured["placement_refused"] is False
 
 
+def test_refresh_workbook_passes_skipped_roots(tmp_path):
+    from openpyxl import load_workbook
+
+    ctx = _minimal_ctx()
+    ctx.update({
+        "placement_refused": True,
+        "skipped_roots": [("F10126106", 2), ("F10126109", 3)],
+    })
+    logged = []
+    cli_module._refresh_workbook(ctx, tmp_path, None,
+                                 "2026-10-08T01:02:03", True, False,
+                                 logged.append)
+
+    xlsx = tmp_path / "organize_fermi_report.xlsx"
+    assert xlsx.is_file()
+    wb = load_workbook(xlsx)
+    dash = wb["Dashboard"]
+
+    row_count = None
+    for row in dash.iter_rows(values_only=True):
+        if len(row) > 1 and row[1] == "Placement refused":
+            row_count = row[5]
+            break
+
+    assert row_count == 2
+
+
 def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,
                                                             monkeypatch):
     import fermi_report_xlsx as fx
