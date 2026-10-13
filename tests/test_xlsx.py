@@ -294,6 +294,206 @@ def test_resolve_names_unresolved_and_empty_inputs():
     assert empty_resolved == {}
 
 
+def test_resolve_names_chk_reuses_dwg_twin():
+    # Superseded CHK stems are never scanned: same base+rev reuses the DWG
+    # twin's NAME instead of showing '-'.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10137247_B_DWG1": "TUBE, INTERFACE"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10137247_B_CHK"])
+    assert resolved["F10137247_B_CHK"] == "TUBE, INTERFACE"
+
+
+def test_resolve_names_blocks_cross_sheet_fallback():
+    # Sibling sheets have their own content: DWG2 never inherits DWG1's NAME.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert "F10126106_A___DWG2" not in resolved
+
+
+def test_resolve_names_sheetless_plain_blocked_from_sheet():
+    # A plain stem is its own sheet: it must not inherit a sibling sheet's
+    # NAME (either direction) - only CHK requesters bypass sheet matching.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106",
+                                        "F10126106_A___DWG2"])
+    assert "F10126106" not in resolved
+    assert "F10126106_A___DWG2" not in resolved
+
+
+def test_fallback_name_requires_exact_rev_match():
+    # An unrevisioned stem must not inherit a later revision's NAME, and
+    # mismatched revisions never mix - only CHK requesters bypass the match.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_B": "Rev B name"}, live,
+                                 extra=["F10126106"])
+    assert "F10126106" not in resolved
+    resolved = fx._resolve_names({"F10126106_A": "Rev A name"}, live,
+                                 extra=["F10126106_B"])
+    assert "F10126106_B" not in resolved
+
+
+def test_fallback_name_chk_requester_exempt_from_rev_match():
+    # A CHK is the same drawing as its rev twin: an unrevisioned CHK may
+    # reuse a revved donor's NAME.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_B": "Rev B name"}, live,
+                                 extra=["F10126106_CHK"])
+    assert resolved["F10126106_CHK"] == "Rev B name"
+
+
+def test_resolve_names_bare_base_key_not_leaked_to_sheeted_sibling():
+    # A prior-run bare-stem NAME must not leak to sheeted siblings via the
+    # base-key lookup: each sheet has its own NAME.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert resolved["F10126106"] == "Base name"
+    assert "F10126106_A___DWG2" not in resolved
+
+
+def test_resolve_names_sheeted_chk_blocked_from_bare_base_key():
+    # A sheeted CHK is still that sheet's content: a bare (sheetless) base
+    # NAME must not leak to it via the base-key lookup - same sheet rule as
+    # _fallback_name. Only a sheetless CHK may reuse the bare base key.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_A___DWG2_CHK"])
+    assert "F10126106_A___DWG2_CHK" not in resolved
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_CHK"])
+    assert resolved["F10126106_CHK"] == "Base name"
+
+
+def test_fallback_name_sheeted_chk_requires_same_sheet():
+    # DWG2_CHK must not inherit a DWG1 donor's title; it reuses a same-sheet
+    # donor (CHK is still exempt from revision matching). A sheetless CHK
+    # keeps the cross-sheet carve-out (same drawing as its twin).
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_A___DWG1": "Sheet one"}, live,
+                                 extra=["F10126106_A___DWG2_CHK"])
+    assert "F10126106_A___DWG2_CHK" not in resolved
+    resolved = fx._resolve_names({"F10126106_A___DWG1": "Sheet one",
+                                 "F10126106_B___DWG2": "Sheet two rev B"},
+                                live, extra=["F10126106_A___DWG2_CHK"])
+    assert resolved["F10126106_A___DWG2_CHK"] == "Sheet two rev B"
+    resolved = fx._resolve_names({"F10137247_B_DWG1": "TUBE, INTERFACE"},
+                                live, extra=["F10137247_B_CHK"])
+    assert resolved["F10137247_B_CHK"] == "TUBE, INTERFACE"
+
+
+def test_resolve_names_base_key_requires_rev_equality():
+    # A bare-base NAME carries no revision: a revved sheetless stem must not
+    # inherit it (would label rev B with another revision's title). Only an
+    # unrevisioned sheetless stem - or a CHK, the same drawing as its twin -
+    # may reuse the bare base key.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_B"])
+    assert "F10126106_B" not in resolved
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_B_CHK"])
+    assert resolved["F10126106_B_CHK"] == "Base name"
+
+
+def test_fallback_name_revisionless_chk_prefers_newest_rev():
+    # A revisionless CHK is exempt from rev matching, but all revisioned
+    # donors previously tied at the same priority: lexical order picked rev
+    # A over newer B (stale NAME). Newest revision rank wins now.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_A": "Rev A name",
+                                 "F10126106_B": "Rev B name"},
+                                live, extra=["F10126106_CHK"])
+    assert resolved["F10126106_CHK"] == "Rev B name"
+
+
+def test_resolve_names_extracted_name_always_wins():
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one",
+                 "F10126106_A___DWG2": "Sheet two"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert resolved["F10126106_A___DWG2"] == "Sheet two"
+
+
+def test_prior_names_reads_files_sheet(tmp_path):
+    # Names established by earlier runs persist: Files stems map back,
+    # '-' placeholders and junk rows are skipped.
+    from openpyxl import Workbook
+    out = tmp_path / "organize_fermi_report.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Files"
+    ws.append(["Drawing (stem)", "Name"])
+    ws.append(["F10126106_A___DWG1", "Sheet one"])
+    ws.append(["F10126107", "-"])
+    ws.append(["not a stem row", "Junk"])
+    wb.save(out)
+    assert fx._prior_names(out) == {"F10126106_A___DWG1": "Sheet one"}
+
+
+def test_prior_names_missing_or_corrupt_yields_empty(tmp_path):
+    assert fx._prior_names(tmp_path / "nope.xlsx") == {}
+    bad = tmp_path / "bad.xlsx"
+    bad.write_bytes(b"not a workbook")
+    assert fx._prior_names(bad) == {}
+
+
+def test_prior_names_malformed_workbook_xml_yields_empty(tmp_path):
+    # A zip-valid workbook with malformed inner XML raises
+    # ElementTree.ParseError (a SyntaxError, not ValueError) on load: the
+    # best-effort lookup yields {} instead of aborting the rebuild.
+    import warnings
+    import zipfile
+    from openpyxl import Workbook
+    out = tmp_path / "malformed-xml.xlsx"
+    wb = Workbook()
+    wb.active.title = "Files"
+    wb.active.append(["Drawing (stem)", "Name"])
+    wb.save(out)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(out, "a") as zf:
+            zf.writestr("xl/workbook.xml", b"<not xml")
+    assert fx._prior_names(out) == {}
+
+
+def test_prior_names_workbook_without_files_sheet_returns_empty(tmp_path):
+    # A valid workbook from another tool has no Files sheet: the best-effort
+    # lookup yields {} instead of aborting the rebuild with KeyError.
+    from openpyxl import Workbook
+    out = tmp_path / "foreign.xlsx"
+    wb = Workbook()
+    wb.active.title = "Summary"
+    wb.active.append(["a", "b"])
+    wb.save(out)
+    assert fx._prior_names(out) == {}
+
+
+def test_prior_names_malformed_files_rows_yield_empty(tmp_path, monkeypatch):
+    # The Files sheet parses lazily: a read error during iter_rows (malformed
+    # sheet XML) must yield {} instead of aborting the workbook rebuild.
+    from openpyxl import Workbook
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
+    out = tmp_path / "malformed.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Files"
+    ws.append(["Drawing (stem)", "Name"])
+    ws.append(["F10126106", "Base name"])
+    wb.save(out)
+
+    def boom(self, *a, **k):
+        raise ValueError("malformed sheet XML")
+
+    monkeypatch.setattr(ReadOnlyWorksheet, "iter_rows", boom)
+    assert fx._prior_names(out) == {}
+
+
 def test_formula_injection_neutralized(tmp_path):
     # PDF-derived text starting with "=" must be stored as text, never as a
     # formula Excel evaluates on open (table rows + dashboard boxes).

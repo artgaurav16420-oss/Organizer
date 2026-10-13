@@ -2100,3 +2100,22 @@ def test_adopt_one_copy_branch_skipped_past_max_path(tmp_path, make_pdf,
     assert calls == []
     assert any("path too long" in m for m in logged)
     assert not (out / "NewParent").exists()
+
+
+def test_run_incremental_keeps_prior_batch_names(tmp_path, make_pdf):
+    # Batch-1 names must survive into batch-2's workbook context: shortened
+    # folders lose them from the tree fallback, so the incremental scan
+    # carries organized names forward (newer extraction still wins).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+    _write_standalone(make_pdf, in_dir)
+
+    logged = []
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["names"].get("F10126106") == "Test Parent"
+    assert ctx["names"].get("F10126107") == "Child part"

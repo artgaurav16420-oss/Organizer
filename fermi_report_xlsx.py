@@ -50,12 +50,14 @@ try:
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.properties import PageSetupProperties
+    from openpyxl.utils.exceptions import InvalidFileException
     _OPENPYXL_OK = True
 except ImportError:
     _OPENPYXL_OK = False
 
 from fermi_organizer.config import canonical_stem  # noqa: E402
 from fermi_organizer.fsops import scan_output_tree  # noqa: E402
+from fermi_organizer.graph import revision_letter_rank  # noqa: E402
 
 # ---------------------------------------------------------------- design tokens
 FONT = "Arial"
@@ -325,10 +327,101 @@ def _save_history(xlsx_path, rows, log=None):
         (log or print)(f"WARNING: run history not saved: {e}")
 
 
-def _resolve_names(names_raw, live):
-    """names_raw + base-stem fallback, for every tree/orphan stem and every key."""
+def _sheet_of(stem):
+    """Sheet suffix of a stem ('DWG2' in 'F10126106_A___DWG2'), or None."""
+    for part in stem.split("_")[1:]:
+        if part.startswith("DWG") and part[3:].isdigit():
+            return part
+    return None
+
+
+def _fallback_name(resolved, stem):
+    """Same-drawing NAME for a stem with no extracted entry.
+
+    Same base (and revision, when present) means the same part, so a
+    superseded CHK row can reuse its DWG twin's NAME. A CHK is the same
+    drawing as its rev twin (exempt from revision matching), but a sheeted
+    CHK is still that sheet's content: only a sheetless CHK may reuse a
+    cross-sheet donor. Any other sheetless stem must match sheets exactly
+    (a plain stem is its own sheet, so a sibling sheet's NAME would be the
+    wrong content). Deterministic newest-revision-first donor pick (exact-rev
+    match wins, then highest revision rank, then lexical); extracted names
+    always win (this only fills gaps).
+    """
+    base = stem.split("_")[0]
+    parts = stem.split("_")
+    rev = parts[1] if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2 else ""
+    want_sheet = _sheet_of(stem)
+    is_chk = "CHK" in parts[1:]
+    cands = []
+    for cand in sorted(resolved):
+        if cand == stem or not resolved[cand]:
+            continue
+        if cand.split("_")[0] != base:
+            continue
+        cparts = cand.split("_")
+        crev = cparts[1] if len(cparts) > 1 and cparts[1].isalpha() and len(cparts[1]) <= 2 else ""
+        if rev != crev and not is_chk:
+            continue
+        got_sheet = _sheet_of(cand)
+        if want_sheet != got_sheet and not (is_chk and want_sheet is None):
+            continue
+        cands.append((0 if crev == rev else 1,
+                        -revision_letter_rank(cand), cand))
+    if not cands:
+        return ""
+    cands.sort()
+    return resolved[cands[0][2]]
+
+
+def _prior_names(path):
+    """Stem->NAME read back from the previous workbook's Files sheet.
+
+    Names established by earlier runs (shortened out of folder names, or
+    from batches whose context is gone) persist across rebuilds; fresh
+    extraction always wins (merged under). Best-effort: a missing, corrupt
+    or foreign workbook yields {}.
+    """
+    out = {}
+    if not _OPENPYXL_OK:
+        return out
+    try:
+        from openpyxl import load_workbook
+        from xml.etree.ElementTree import ParseError
+        from zipfile import BadZipFile
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except (OSError, InvalidFileException, BadZipFile, KeyError, ValueError,
+            ParseError):
+        return out
+    try:
+        ws = wb["Files"]
+        for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
+            stem, name = (row + (None, None))[:2]
+            if not stem or not name or name == "-":
+                continue
+            key = canonical_stem(str(stem))
+            if key:
+                out.setdefault(key, str(name))
+    except Exception:
+        # Best-effort: the sheet is parsed lazily, so malformed Files XML
+        # surfaces here, outside the load handler above - yield no priors.
+        return {}
+    finally:
+        wb.close()
+    return out
+
+
+def _resolve_names(names_raw, live, extra=()):
+    """names_raw + base-stem fallback, for every tree/orphan stem and every key.
+
+    extra: reported-but-unscanned stems (CHK, missing refs) that also deserve
+    a family fallback entry. The base-key lookup carries no rev/sheet info,
+    so only an unrevisioned sheetless stem (or a sheetless CHK, the same
+    drawing as its twin) may reuse it - same rev/sheet rule as
+    _fallback_name against an unrevisioned sheetless donor.
+    """
     resolved = {}
-    stems = set(names_raw)
+    stems = set(names_raw) | set(extra)
     for p in live.get("tree", []):
         s = canonical_stem(p.stem)
         if s:
@@ -339,9 +432,23 @@ def _resolve_names(names_raw, live):
             stems.add(s)
 
     for stem in stems:
-        v = names_raw.get(stem) or names_raw.get(stem.split("_")[0], "")
+        v = names_raw.get(stem) or ""
+        if not v:
+            parts = stem.split("_")
+            rev = (parts[1] if len(parts) > 1 and parts[1].isalpha()
+                   and len(parts[1]) <= 2 else "")
+            base_name = names_raw.get(parts[0], "")
+            if (base_name and (rev == "" or "CHK" in parts[1:])
+                    and _sheet_of(stem) is None):
+                v = base_name
         if v:
             resolved[stem] = v
+    donors = dict(resolved)
+    for stem in sorted(stems):
+        if stem not in resolved:
+            v = _fallback_name(donors, stem)
+            if v:
+                resolved[stem] = v
     return resolved
 
 
@@ -382,7 +489,10 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     counters = ctx.get("counters", {})
     live = _scan_tree(ctx.get("output", ""))
     missing_pairs = sorted(set(ctx.get("missing", [])))
-    names = _resolve_names(ctx.get("names", {}) or {}, live)
+    extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
+    raw_names = _prior_names(path)
+    raw_names.update(ctx.get("names", {}) or {})
+    names = _resolve_names(raw_names, live, extra)
 
     _dash_sheet(dash, ctx, counters, live, missing_pairs)
     _missing_sheet(missing, missing_pairs, names)
