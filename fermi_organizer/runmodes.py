@@ -940,21 +940,19 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
     new subtree, outside the new-children walk the cap counts - so a small
     accepted graph could copy large organized subtrees past
     MAX_PLANNED_COPIES. Counts PDFs under each claimed organized child
-    folder. Top-level folders are re-homed (moved, not copied) and excluded,
-    mirroring placement; pre-run locations are used (a mid-run re-home
-    flipping move to copy is rare and bounded). Estimate only: folder
-    resolution at copy time governs.
+    folder, like the pass itself (files on disk, not just indexed PDFs, so
+    strays are covered; indexed tally as fallback). Top-level folders are
+    re-homed (moved, not copied) and excluded, mirroring placement.
+    Instances are counted per placed path, not per stem: diamonds multiply,
+    exactly like _copy_counter (iterative post-order with the same memo key,
+    so shared subtrees cost one traversal). Estimate only: folder resolution
+    at copy time governs.
     """
-    est = {}
-    for R in roots:
-        total = 0
-        stack = [R]
-        seen = set()
-        while stack:
-            s = stack.pop()
-            if s in seen:
-                continue
-            seen.add(s)
+    pdf_memo = {}
+
+    def adopted_pdfs(s):
+        if s not in pdf_memo:
+            total = 0
             for c in org_children_of.get(s, ()):
                 paths = organized.get(c, [])
                 if not paths:
@@ -962,18 +960,49 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
                 folder = pick_shallowest(paths).parent
                 if folder.parent == output:
                     continue
-                # Count files on disk, not just indexed PDFs: copytree
-                # carries strays (Thumbs.db, notes) too, and the cap must
-                # cover them. Falls back to the indexed count when the
-                # folder cannot be listed (e.g. a dry-run remap target).
                 try:
                     total += sum(1 for e in folder.rglob("*") if e.is_file())
                 except OSError:
                     total += sum(1 for ps in organized.values() for p in ps
                                  if p.is_relative_to(folder))
-            stack.extend(children.get(s, ()))
-        est[R] = total
-    return est
+            pdf_memo[s] = total
+        return pdf_memo[s]
+
+    memo = {}
+
+    def count(root_stem, root_depth=0):
+        remaining = TREE_MAX_DEPTH - root_depth
+        if remaining < 0:
+            return 0
+        key = (root_stem, remaining)
+        if key in memo:
+            return memo[key]
+        result = None
+        stack = [[root_stem, root_depth, adopted_pdfs(root_stem),
+                  iter(children.get(root_stem, ()))]]
+        while stack:
+            stem, depth, total, it = stack[-1]
+            child = next(it, None)
+            if child is None:
+                memo[(stem, TREE_MAX_DEPTH - depth)] = total
+                stack.pop()
+                if stack:
+                    stack[-1][2] += total
+                else:
+                    result = total
+                continue
+            c_remaining = TREE_MAX_DEPTH - (depth + 1)
+            if c_remaining < 0:
+                continue
+            c_key = (child, c_remaining)
+            if c_key in memo:
+                stack[-1][2] += memo[c_key]
+                continue
+            stack.append([child, depth + 1, adopted_pdfs(child),
+                          iter(children.get(child, ()))])
+        return result
+
+    return {R: count(R) for R in roots}
 
 
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,

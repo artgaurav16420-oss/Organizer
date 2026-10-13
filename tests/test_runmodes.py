@@ -1901,3 +1901,18 @@ def test_adopted_copy_estimate_counts_nested_excludes_moved(tmp_path):
         ["NEWR"], {"NEWR": ["MIDR"], "MIDR": []},
         {"MIDR": ["F10126107", "F10126108"]}, organized, out)
     assert est == {"NEWR": 2}
+def test_adopted_copy_estimate_counts_diamond_paths(tmp_path):
+    # The adoption pass copies per placed folder instance, not per stem: a
+    # diamond (D under both B and C) copies D's organized children twice, and
+    # the cap estimate must match or the cap can be exceeded.
+    out = tmp_path / "out"
+    child = out / "LiveParent" / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    (child / "extra.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR": ["MIDB", "MIDC"], "MIDB": ["MIDD"], "MIDC": ["MIDD"],
+                "MIDD": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
+    assert est == {"NEWR": 4}
