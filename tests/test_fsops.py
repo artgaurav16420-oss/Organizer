@@ -840,6 +840,27 @@ def test_fit_roots_within_cap_boundary_and_empty(monkeypatch):
     assert "placing 0 of 1" in "\n".join(logged)
 
 
+
+def test_fit_roots_within_cap_counts_adopted_extras(monkeypatch):
+    # A small new graph with a large adopted organized subtree: extras ride
+    # outside the new-children walk, so the cap must count them or a small
+    # accepted graph copies past MAX_PLANNED_COPIES.
+    children = {"F10126106": ["F10126107"]}
+    monkeypatch.setattr(fsops, "MAX_PLANNED_COPIES", 10)
+    logged = []
+
+    kept, skipped = fsops.fit_roots_within_cap(
+        children, ["F10126106"], logged.append,
+        extra={"F10126106": 8})
+    assert (kept, skipped) == (["F10126106"], [])
+    assert logged == []
+
+    kept, skipped = fsops.fit_roots_within_cap(
+        children, ["F10126106"], logged.append,
+        extra={"F10126106": 10})
+    assert kept == []
+    assert skipped == [("F10126106", 12)]
+
 def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     src = tmp_path / "in"
     src.mkdir()

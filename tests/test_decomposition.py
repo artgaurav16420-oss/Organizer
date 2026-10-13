@@ -11,6 +11,7 @@ from unittest.mock import patch
 from fermi_organizer.runmodes import (_detect_supersede_pairs,
                                       _move_children_under_superseding,
                                       _place_above_organized_children,
+                                      _copy_org_child_tree,
                                       run_full)
 
 pytestmark = pytest.mark.skipif(not fx._OPENPYXL_OK,
@@ -248,7 +249,8 @@ def test_place_above_organized_children_shared_folder_skips(tmp_path, dry_run,
 
     copies, moves = _place_above_organized_children(
         "F10126109", ["F10126107"], new_children, new_index, new_names,
-        organized, moved_dirs, out, dry_run, logged.append)
+        organized, moved_dirs, out, dry_run, logged.append,
+        org_children_of={})
 
     assert moves == 0
     assert moved_dirs == {}
@@ -284,11 +286,78 @@ def test_nested_child_copy_failure_leaves_no_partial_target(tmp_path, make_pdf,
         "F10126109", ["F10126107"], {"F10126109": set()},
         {"F10126109": new_pdf}, {"F10126109": "Higher assembly"},
         {"F10126107": [child_folder / "F10126107.pdf"]}, {}, out,
-        False, logged.append)
+        False, logged.append, org_children_of={})
 
     target = out / "F10126109 Higher assembly" / "F10126107 Child"
     assert not target.exists()
     assert any("copy failed for F10126107" in m for m in logged)
+
+
+def test_copy_org_child_tree_copies_shared_folder(tmp_path, make_pdf):
+    # The shared-folder guard is move-only: a source folder holding a foreign
+    # PDF still lands whole under the target (copying strands nothing).
+    out = tmp_path / "out"
+    parent = out / "F10126106 Parent"
+    child_folder = parent / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    make_pdf(child_folder / "F10126108.pdf", ["NAME", "Other part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"],
+                 "F10126108": [child_folder / "F10126108.pdf"]}
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                                  {}, out, False, logged.append)
+    assert copies == 2
+    assert (out / "NewParent" / "F10126107 Child" / "F10126107.pdf").is_file()
+    assert child_folder.is_dir()
+
+
+def test_copy_org_child_tree_skips_overlong_descendant(tmp_path, make_pdf,
+                                                       monkeypatch):
+    # The folder-level MAX_DIR check does not bound descendant files: a dest
+    # path beyond MAX_PATH is skipped up front instead of failing mid-copy.
+    # MAX_PATH is shrunk for determinism (tmp-path length varies by machine).
+    monkeypatch.setattr("fermi_organizer.runmodes.MAX_PATH", 100)
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+
+    calls = []
+    monkeypatch.setattr(shutil, "copytree",
+                        lambda *a, **k: calls.append((a, k)))
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                                  {}, out, False, logged.append)
+    assert copies == 0
+    assert calls == []
+    assert any("path too long" in m for m in logged)
+    assert not (out / "NewParent").exists()
+
+
+def test_copy_org_child_tree_non_oserror_cleans_partial_target(tmp_path, make_pdf,
+                                                                monkeypatch):
+    # Anything past OSError (KeyboardInterrupt, ...) must not leave a partial
+    # tree: cleanup runs from finally and the error still propagates.
+    # RuntimeError stands in (a real KeyboardInterrupt would abort pytest).
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+
+    def blow_up(src, dst, *a, **k):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "partial.pdf").write_bytes(b"")
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(shutil, "copytree", blow_up)
+    logged = []
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                             {}, out, False, logged.append)
+    assert not (out / "NewParent" / "F10126107 Child").exists()
 
 
 def test_copy_orphans_then_retire_adopted(tmp_path):
@@ -310,3 +379,40 @@ def test_copy_orphans_then_retire_adopted(tmp_path):
     assert retired == 1
     assert not orph_path.exists()
     assert "Retired 1 orphan copy(ies)" in "\n".join(logged)
+def test_copy_org_child_tree_dry_run_accepts_moved_descendant(tmp_path, make_pdf):
+    # A child below a moved ancestor counts as simulated-present in dry-run:
+    # exact equality alone would skip a copy the real run makes.
+    out = tmp_path / "out"
+    new_home = out / "AdoptedRoot"
+    current = new_home / "Mid" / "F10126107 Child"
+    current.mkdir(parents=True)
+    make_pdf(current / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [current / "F10126107.pdf"]}
+    moved_dirs = {out / "OldRoot": new_home}
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "Target", organized,
+                                  moved_dirs, out, True, logged.append)
+    assert copies == 1
+    assert any("[DRY-RUN] copy" in m for m in logged)
+
+
+def test_copy_org_child_tree_lock_loss_stops_before_copy(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # A steal racing placement must stop the adoption like it stops
+    # place_files (LockLostError), not write into the other run's tree.
+    from fermi_organizer import runmodes as _rm
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+    logged = []
+
+    def _boom(lock, log):
+        raise fsops.LockLostError("stolen")
+
+    monkeypatch.setattr(_rm, "_ensure_lock", _boom)
+    with pytest.raises(fsops.LockLostError):
+        _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                             {}, out, False, logged.append)
+    assert not (out / "NewParent").exists()

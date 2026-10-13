@@ -4,6 +4,14 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Incremental placement completeness fix
+- A new non-root parent referencing already-organized children now gets copies
+  of them in its folder (`_adopt_org_children_below`, mirroring
+  `_place_above_organized_children`'s nested-copy rule). Previously only new
+  roots routed organized children into place; non-roots silently skipped them,
+  leaving BOM-listed children out of their folder (9 parents, ~15 copies on
+  the SSR2+HBCM corpora). Nested under a live parent means copy, never move.
+
 ### Excel report performance, security, and layout improvements
 - Optimized column auto-fitting (`_autofit`) using row-major `ws.iter_rows()` to eliminate random-access cell dictionary lookups.
 - Streamlined stem name resolution (`_resolve_names`) by populating a set directly, avoiding intermediate list concatenations.
