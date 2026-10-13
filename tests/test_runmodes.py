@@ -1931,6 +1931,20 @@ def test_adopted_copy_estimate_top_level_moves_once(tmp_path):
         ["NEWR1", "NEWR2"], {"NEWR1": [], "NEWR2": []},
         {"NEWR1": ["F10126107"], "NEWR2": ["F10126107"]}, organized, out)
     assert est == {"NEWR1": 0, "NEWR2": 3}
+
+
+def test_adopted_copy_estimate_multi_placement_scales(tmp_path):
+    # A root placed under two organized parents adopts twice: the first
+    # placement moves the top-level child, the second copies it.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1"], {"NEWR1": []}, {"NEWR1": ["F10126107"]}, organized, out,
+        weights={"NEWR1": 2})
+    assert est == {"NEWR1": 1}
 def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
     # A top-level organized root claimed by a new non-root is re-homed
     # (moved, not copied): no stale root folder is left behind, and later

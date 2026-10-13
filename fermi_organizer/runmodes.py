@@ -1010,7 +1010,8 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
     return total, total_moves
 
 
-def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
+def _adopted_copy_estimate(roots, children, org_children_of, organized,
+                           output, weights=None):
     """Per-root estimates of adopted organized-subtree copies (fan-out cap).
 
     The adoption passes copy organized children claimed anywhere in a root's
@@ -1022,8 +1023,11 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
     multiply, like _copy_counter (layered BFS, depth-capped like the pass).
     A top-level folder is moved by its first claimant and copied by the
     rest, so it contributes Copies-1 there: first-sorted-root order matches
-    placement. Estimate only: folder resolution at copy time governs.
+    placement, and repeated placements of one root (weights) multiply its
+    instances first. Estimate only: folder resolution, MAX_DIR skips and
+    mid-run re-homes are resolved at copy time.
     """
+    weights = weights or {}
     pdf_memo = {}
 
     def folder_pdfs(folder):
@@ -1059,9 +1063,10 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
         return pick_shallowest(paths).parent if paths else None
 
     nested = {}
-    top_claims = {}
+    top_inst = {}
     folders = {}
     for R in roots:
+        K = weights.get(R, 1)
         nested[R] = 0
         for S, n in path_counts(R).items():
             for c in org_children_of.get(S, ()):
@@ -1071,13 +1076,15 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized, output):
                 if folder is None:
                     continue
                 if folder.parent == output:
-                    top_claims.setdefault(R, []).append((c, n))
+                    top_inst.setdefault(R, []).append((c, n * K))
                 else:
-                    nested[R] += folder_pdfs(folder) * n
+                    nested[R] += folder_pdfs(folder) * n * K
     est = dict(nested)
+    for R in sorted(roots):
+        est.setdefault(R, 0)
     moved = set()
     for R in sorted(roots):
-        for c, n in top_claims.get(R, []):
+        for c, n in top_inst.get(R, []):
             pdfs = folder_pdfs(folders[c])
             if c in moved:
                 est[R] += pdfs * n
@@ -1733,9 +1740,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     # Adopted organized-subtree copies ride outside the new-children walk:
     # charge them per claimant too, or a small accepted graph could copy
     # large organized subtrees past the cap.
-    _est = _adopted_copy_estimate(placeable, new_children, org_children_of,
-                                  organized, output)
-    extra = {R: _est[R] * weights[R] for R in placeable}
+    extra = _adopted_copy_estimate(placeable, new_children, org_children_of,
+                                       organized, output, weights)
     kept, skipped = fit_roots_within_cap(new_children, placeable, log,
                                          weights=weights, extra=extra)
     refused = bool(skipped)
@@ -1961,9 +1967,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # once per organized parent).
     _pre_weights = {r: max(1, len(pre_org_par.get(r, ())))
                     for r in pre_placeable}
-    _pre_est = _adopted_copy_estimate(pre_placeable, pre_children, pre_org_ch,
-                                      organized, output)
-    _pre_extra = {r: _pre_est[r] * _pre_weights[r] for r in pre_placeable}
+    _pre_extra = _adopted_copy_estimate(pre_placeable, pre_children, pre_org_ch,
+                                            organized, output, _pre_weights)
     _pre_kept, _pre_dropped = fit_roots_within_cap(pre_children,
                                                    pre_placeable,
                                                    lambda msg: None,
