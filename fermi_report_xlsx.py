@@ -40,6 +40,7 @@ class WorkbookContext(TypedDict):
     report_txt: str
     names: dict
     placement_refused: bool
+    skipped_roots: list  # [(stem, n_children)]; optional, absent in older callers
 
 try:
     from openpyxl import Workbook
@@ -49,6 +50,7 @@ try:
     from openpyxl.formatting.rule import DataBarRule, FormulaRule
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.hyperlink import Hyperlink
     from openpyxl.worksheet.properties import PageSetupProperties
     _OPENPYXL_OK = True
 except ImportError:
@@ -151,11 +153,17 @@ def _pill(cell, palette):
 
 
 def _link(cell, target, bold=False):
-    """Hyperlink styled as a link; failures or targets > 255 chars leave the plain value."""
+    """Hyperlink styled as a link; failures or targets > 255 chars leave the plain value.
+
+    "#'Sheet'!A1" targets become in-workbook locations (no external relationship).
+    """
     if not target or len(str(target)) > 255:
         return
     try:
-        cell.hyperlink = target
+        if str(target).startswith("#"):
+            cell.hyperlink = Hyperlink(ref=cell.coordinate, location=str(target)[1:])
+        else:
+            cell.hyperlink = target
         cell.font = _font(10, bold, NAVY, underline="single")
     except (ValueError, OSError, TypeError):  # pragma: no cover - openpyxl rejects only malformed targets
         pass
@@ -327,6 +335,10 @@ def _save_history(xlsx_path, rows, log=None):
         os.replace(tmp, hist)
     except OSError as e:
         (log or print)(f"WARNING: run history not saved: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _sheet_of(stem):
@@ -575,9 +587,8 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     # ---- title block
     dash.row_dimensions[1].height = 10
     dash.row_dimensions[2].height = 34
-    t = _box(dash, 2, 2, 16, "Fermi PDF Organizer", _font(22, True, DARK),
-             None, Alignment(horizontal="left", vertical="center"))
-    t.value = "Fermi PDF Organizer"
+    _box(dash, 2, 2, 16, "Fermi PDF Organizer", _font(22, True, DARK),
+         None, Alignment(horizontal="left", vertical="center"))
     mode = str(ctx.get("run_mode", ""))
     sub = f"Live status  \u00b7  last run {ctx.get('run_time', '')}  \u00b7  {mode}"
     _box(dash, 3, 2, 16, sub, _font(10, False, MUTED), None,
@@ -613,21 +624,24 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     # ---- needs attention
     # Two tiers: "action" categories have an explicit Download/Replace step;
     # everything else with a non-zero count is worth a look.
-    action_labels = {"Placement refused", "Missing parts", "CHK unapproved"}
+    # (label, count, palette, sheet, is_action)
+    skipped = ctx.get("skipped_roots") or []
+    # Partial skips set placement_refused too: count the skipped roots, not 1.
+    refused_n = len(skipped) if skipped else (1 if ctx.get("placement_refused") else 0)
     items = [
-        ("Placement refused", 1 if ctx.get("placement_refused") else 0, "red", None),
-        ("Missing parts", len(missing_pairs), "red", "Missing"),
-        ("CHK unapproved", chk_n, "amber", "CHK"),
-        ("Orphans (parent not seen)", orph_n, "orange", "Orphans"),
-        ("Watermarked PDFs", len(ctx.get("watermarks", [])), "amber", "Watermark"),
-        ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "blue", "Scanned"),
+        ("Placement refused", refused_n, "red", None, True),
+        ("Missing parts", len(missing_pairs), "red", "Missing", True),
+        ("CHK unapproved", chk_n, "amber", "CHK", True),
+        ("Orphans (parent not seen)", orph_n, "orange", "Orphans", False),
+        ("Watermarked PDFs", len(ctx.get("watermarks", [])), "amber", "Watermark", False),
+        ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "blue", "Scanned", False),
         ("USED ON check", len(ctx.get("mismatches", [])) + len(ctx.get("used_on_bugs", [])),
-         "amber", "USED ON check"),
+         "amber", "USED ON check", False),
         ("Title block check", len(ctx.get("titleblock_mismatches", [])), "amber",
-         "Title block check"),
+         "Title block check", False),
     ]
-    todo = sum(1 for _, n, _, _ in items if n)
-    act = sum(1 for label, n, _, _ in items if n and label in action_labels)
+    todo = sum(1 for _, n, _, _, _ in items if n)
+    act = sum(1 for _, n, _, _, a in items if n and a)
     rev = todo - act
     r = 13
     _box(dash, r, 2, 16, "NEEDS ATTENTION", _font(11, True, DARK), None,
@@ -660,7 +674,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
              Alignment(horizontal=horiz, vertical="center", indent=1 if horiz == "left" else 0))
     dash.row_dimensions[h].height = 24
     first = h + 1
-    for k, (label, n, pal, sheet) in enumerate(items):
+    for k, (label, n, pal, sheet, action) in enumerate(items):
         rr = first + k
         stripe = _solid(STRIPE if k % 2 else WHITE)
         dash.row_dimensions[rr].height = 22
@@ -669,7 +683,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
         cnt = _box(dash, rr, 6, 8, n, _font(11, True, INK), stripe,
                    Alignment(horizontal="center", vertical="center"), ROW_BORDER)
         cnt.number_format = "#,##0"
-        is_action = bool(n) and label in action_labels
+        is_action = bool(n) and action
         st_pal = "red" if is_action else (pal if n else "green")
         st = _box(dash, rr, 10, 12,
                   "Action" if is_action else ("Review" if n else "OK"),
@@ -699,7 +713,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     ch.set_categories(Reference(dash, min_col=2, min_row=first, max_row=last))
     series = ch.series[0]
     series.graphicalProperties.solidFill = PAL["blue"]["accent"]
-    for idx, (_, n, pal, _) in enumerate(items):
+    for idx, (_, n, pal, _, _) in enumerate(items):
         pt = DataPoint(idx=idx)
         pt.graphicalProperties.solidFill = PAL[pal if n else "green"]["accent"]
         series.dPt.append(pt)
@@ -984,7 +998,8 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
 def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
                      orphans, report_txt, names=None, roots=None, mismatches=None,
                      used_on_bugs=None, titleblock_mismatches=None, scanned=None,
-                     watermarks=None, log=None, placement_refused=False):
+                     watermarks=None, log=None, placement_refused=False,
+                     skipped_roots=None):
     """Called by the organizer after every run (execute AND dry-run).
 
     Dry-runs into a fresh --output never create the folder; the workbook is
@@ -1010,5 +1025,6 @@ def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
         "report_txt": os.path.basename(report_txt or ""),
         "names": names or {},
         "placement_refused": placement_refused,
+        "skipped_roots": skipped_roots or [],
     }
     return build_workbook(xlsx, ctx, log=log)
