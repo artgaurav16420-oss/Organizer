@@ -13,15 +13,15 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 
 ## Decision flow
 
-1. Resolve input and output paths. By default, specify `--output "<input>\Output"` to keep the organized tree separate from the input folder; omit `--output` only if an in-place run inside the input folder is explicitly requested.
+1. Resolve input and output paths. By default, specify `--output "<input>/Output"` to keep the organized tree separate from the input folder; omit `--output` only if an in-place run inside the input folder is explicitly requested.
 2. Always perform a dry run first to generate and review the plan without copying files. For status queries, `--dry-run` re-scans PDFs and updates `organize_fermi_report.xlsx` and its history sidecar without modifying original PDFs:
    ```
-   python -m fermi_organizer.cli "<input>" --output "<input>\Output" --dry-run
+   python -m fermi_organizer.cli "<input>" --output "<input>/Output" --dry-run
    ```
 3. Report the dry-run summary to the user and wait for explicit go-ahead.
 4. Execute the real run without `--dry-run` after receiving approval:
    ```
-   python -m fermi_organizer.cli "<input>" --output "<input>\Output"
+   python -m fermi_organizer.cli "<input>" --output "<input>/Output"
    ```
 5. Process subsequent PDF batches feeding an existing tree using incremental mode (always dry-run first, review, then execute):
    ```
@@ -48,7 +48,7 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 |---|---|---|
 | `0` | Normal completion. Missing BOM references, unapproved `CHK` files, and orphans are reported but still exit 0. | Review the printed run summary and generated report artifacts (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`). |
 | `1` | Startup failure. Triggered when the input path is missing or not a directory, no PDFs are found, the output folder cannot be created on a real run, or `.fermi_organizer.lock` is held by another process (`ERROR: ... lock ...`). No report or workbook is written. | Check the input/output paths and permissions, or wait for any concurrent run holding the lock to complete. Do not retry without resolving the underlying path or lock issue. |
-| `2` | Non-successful completion or argument error. Caused by malformed CLI flags (`argparse` error), over-cap placement refusal (planned fan-out exceeds 10,000 copies; report `.txt` and workbook `.xlsx` ARE written), or run-lock loss mid-run (lock stolen mid-run; report `.txt` and workbook `.xlsx` ARE NOT written). | Check console output and the output folder for this run's timestamped report `.txt` and workbook `.xlsx`. If written, placement refusal occurred (consult user before re-running); if missing, mid-run lock loss occurred (ensure no concurrent process interfered and re-run). |
+| `2` | Non-successful completion or argument error. Caused by malformed CLI flags (`argparse` error), over-cap placement refusal (planned fan-out exceeds 10,000 copies; report `.txt` and workbook `.xlsx` ARE written), or run-lock loss mid-run (lock stolen mid-run; report `.txt` and workbook `.xlsx` ARE NOT written). | Check console output and output folder. If report/workbook artifacts for this run were written, placement refusal occurred (consult user before re-running); if argparse usage error was printed, fix CLI flags; if lock lost error was logged, mid-run lock loss occurred (ensure no concurrent process interfered and re-run). |
 
 Placement refusal log lines and Dashboard behavior:
 - Partial refusal log line: `WARNING: placement partially refused - <N> oversized root(s) skipped (<names>); the rest <was placed|would be placed> (bounded orphan/archive copies are still handled); review the BOM graph (report + workbook still written)`
@@ -64,7 +64,7 @@ Placement refusal log lines and Dashboard behavior:
 | `OCR: unavailable` | Expected when Tesseract is not installed; scanned PDFs referenced by a parent BOM are still placed, while unreferenced standalone ones stay in `_orphans/`. Pass `--no-ocr` to suppress the check deliberately. |
 | Exit code 2 with placement refusal log line | The 10,000-copy fan-out cap was hit. Placement was partially refused (oversized roots skipped while fitting roots were placed) or fully refused (folder placement skipped entirely). Inspect the BOM graph in the report/workbook and ask the user before re-running. |
 | `Report NOT saved (output folder missing)` on a dry run | Expected behavior when a dry run targets a non-existent `--output` directory. The text report is skipped because the directory does not exist yet, but the workbook builder then creates the output folder and saves `organize_fermi_report.xlsx`. |
-| `WARNING: <path>\Output exists. Use --output to target it.` with `--incremental` | Specify `--output <path>\Output` explicitly to target the existing output tree. |
+| `WARNING: <path>/Output exists. Use --output to target it.` with `--incremental` | Specify `--output <path>/Output` explicitly to target the existing output tree. |
 | Everything landed in `_orphans/` | Parent drawings are missing from the input folder. Files remain parked in `_orphans/` until parent PDFs arrive in a future run. |
 
 ## Guardrails
