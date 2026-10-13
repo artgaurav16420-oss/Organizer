@@ -57,6 +57,7 @@ except ImportError:
 
 from fermi_organizer.config import canonical_stem  # noqa: E402
 from fermi_organizer.fsops import scan_output_tree  # noqa: E402
+from fermi_organizer.graph import revision_letter_rank  # noqa: E402
 
 # ---------------------------------------------------------------- design tokens
 FONT = "Arial"
@@ -343,7 +344,8 @@ def _fallback_name(resolved, stem):
     CHK is still that sheet's content: only a sheetless CHK may reuse a
     cross-sheet donor. Any other sheetless stem must match sheets exactly
     (a plain stem is its own sheet, so a sibling sheet's NAME would be the
-    wrong content). Deterministic first-sorted-donor pick; extracted names
+    wrong content). Deterministic newest-revision-first donor pick (exact-rev
+    match wins, then highest revision rank, then lexical); extracted names
     always win (this only fills gaps).
     """
     base = stem.split("_")[0]
@@ -364,11 +366,12 @@ def _fallback_name(resolved, stem):
         got_sheet = _sheet_of(cand)
         if want_sheet != got_sheet and not (is_chk and want_sheet is None):
             continue
-        cands.append((0 if crev == rev else 1, cand))
+        cands.append((0 if crev == rev else 1,
+                        -revision_letter_rank(cand), cand))
     if not cands:
         return ""
     cands.sort()
-    return resolved[cands[0][1]]
+    return resolved[cands[0][2]]
 
 
 def _prior_names(path):
@@ -384,9 +387,11 @@ def _prior_names(path):
         return out
     try:
         from openpyxl import load_workbook
+        from xml.etree.ElementTree import ParseError
         from zipfile import BadZipFile
         wb = load_workbook(path, read_only=True, data_only=True)
-    except (OSError, InvalidFileException, BadZipFile, KeyError, ValueError):
+    except (OSError, InvalidFileException, BadZipFile, KeyError, ValueError,
+            ParseError):
         return out
     try:
         ws = wb["Files"]

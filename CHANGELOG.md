@@ -14,7 +14,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   each other's names; extracted names always win. A sheeted CHK is still
   that sheet's content (same-sheet donor only); only a sheetless CHK may
   reuse a cross-sheet donor. The bare-base key serves only unrevisioned
-  sheetless stems (or a sheetless CHK).
+  sheetless stems (or a sheetless CHK). Non-exact-rev donors resolve
+  newest-revision-first, so a revisionless CHK never shows a stale rev A
+  NAME when rev B exists. A malformed prior workbook (including bad inner
+  XML) yields no priors instead of aborting the rebuild.
 
 ### Incremental placement completeness fix
 - A new non-root parent referencing already-organized children now gets copies

@@ -400,6 +400,17 @@ def test_resolve_names_base_key_requires_rev_equality():
     assert resolved["F10126106_B_CHK"] == "Base name"
 
 
+def test_fallback_name_revisionless_chk_prefers_newest_rev():
+    # A revisionless CHK is exempt from rev matching, but all revisioned
+    # donors previously tied at the same priority: lexical order picked rev
+    # A over newer B (stale NAME). Newest revision rank wins now.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_A": "Rev A name",
+                                 "F10126106_B": "Rev B name"},
+                                live, extra=["F10126106_CHK"])
+    assert resolved["F10126106_CHK"] == "Rev B name"
+
+
 def test_resolve_names_extracted_name_always_wins():
     live = {"tree": [], "orph": []}
     names_raw = {"F10126106_A___DWG1": "Sheet one",
@@ -430,6 +441,25 @@ def test_prior_names_missing_or_corrupt_yields_empty(tmp_path):
     bad = tmp_path / "bad.xlsx"
     bad.write_bytes(b"not a workbook")
     assert fx._prior_names(bad) == {}
+
+
+def test_prior_names_malformed_workbook_xml_yields_empty(tmp_path):
+    # A zip-valid workbook with malformed inner XML raises
+    # ElementTree.ParseError (a SyntaxError, not ValueError) on load: the
+    # best-effort lookup yields {} instead of aborting the rebuild.
+    import warnings
+    import zipfile
+    from openpyxl import Workbook
+    out = tmp_path / "malformed-xml.xlsx"
+    wb = Workbook()
+    wb.active.title = "Files"
+    wb.active.append(["Drawing (stem)", "Name"])
+    wb.save(out)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(out, "a") as zf:
+            zf.writestr("xl/workbook.xml", b"<not xml")
+    assert fx._prior_names(out) == {}
 
 
 def test_prior_names_workbook_without_files_sheet_returns_empty(tmp_path):
