@@ -1,173 +1,104 @@
 ---
 name: pdf-organizer
-description: Run the Fermi lab PDF drawing organizer on an input folder — sorts Fermilab drawings into nested `{DRAWING_NUMBER} {NAME}` folders from their BOM tables, handles superseded revisions, unapproved CHK drawings and scanned (image-only) PDFs via OCR. Use when the user says "run the PDF organizer", "organize/sort my Fermilab PDFs", "sort these drawings", "feed more PDFs into the output tree", or asks what happened to `_orphans`, `_superseded`, missing drawings or CHK files.
+description: Run the Fermi lab PDF drawing organizer to sort drawings into nested folders from BOM tables. Use when the user asks to run or sort Fermilab PDFs, feed more PDFs into an existing output tree, or asks about _orphans, _superseded, missing drawings or CHK files.
 compatibility: opencode
 metadata:
   audience: user
   repo: fermi-pdf-organizer
 ---
 
-# pdf-organizer — run the Fermi PDF organizer for the user
+# pdf-organizer
 
-Given an input folder (and possibly an existing output tree), produce a correct,
-reviewable organizer run: **dry-run first, real run only after the user says go.**
-Never edit or delete the user's original PDFs.
+Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the original PDFs.
 
-Code for this repo lives in the current repository (see `AGENTS.md` here for the code
-reference); this skill is the operator runbook. If the cwd is not inside the repo,
-clone/locate the repo first and run the commands from it.
+## Decision flow
 
-## Tool facts (verified)
-
-- Requirements: Python >=3.10, PyMuPDF `==1.28.2` (required), openpyxl `==3.1.5`
-  (optional — only the `.xlsx` workbook), Tesseract (optional, scanned PDFs only).
-- Prefer the repo venv interpreter (Windows PowerShell, works from any cwd because the
-  package is installed editable):
-
-  ```
-  & "<repo>\.venv\Scripts\python.exe" -m fermi_organizer.cli <folder> [flags]
-  ```
-
-  Other options: `fermi-organize` (console script, if the venv is on PATH), or
-  `<repo>\organize_fermi_pdfs.py` (thin launcher, also works from any cwd). Do **not**
-  run `fermi_organizer\cli.py` directly — its relative imports fail.
-- The venv has **no pip**. Install with `uv pip install --python .venv\Scripts\python.exe -r requirements.txt`
-  (add `-e .` to restore the editable install). Plain `pip install -r requirements.txt`
-  also works outside the venv.
-- Tesseract absent → the run still succeeds; scanned PDFs stay `Orphans` and the log
-  prints `OCR: unavailable (...)`. Use `--no-ocr` to skip OCR deliberately.
-- **Real timings** (16-core Windows, OCR on): a 7,065-file folder (~800 active part
-  PDFs, ~60 OCR'd) takes ~3.5 min per dry-run *and* per real run; a ~500-file batch
-  ~1.5 min dry but ~4 min real (copies + supersede handling). OCR dominates the
-  extraction phase (worker-seconds can exceed wall time - the log's
-  `OCR total: ... 502.0s` for a 206 s wall run is normal). Set command timeouts
-  >= 10 min for multi-thousand-file folders; a quiet minute under
-  `--- Scanning BOM tables ---` is not a hang.
-- Deep input trees: Windows `LongPathsEnabled=0` here, so PowerShell
-  `Get-ChildItem` can error `Could not find a part of the path` on deep dirs -
-  cosmetic; the tool reads those files itself (see Troubleshooting for the
-  pre-PR-#34 copy caveat).
-
-## Golden path (follow this order every time)
-
-1. **Resolve paths.** With only an input folder given:
-   - keep the tree separate (usual): `--output "<input>\Output"`
-   - in-place (only if the user asks): omit `--output` — the tool then re-scans its own
-     output on later full runs and prints a warning; mention it to the user.
-2. **Always dry-run first** and show the user the printed plan:
-
+1. Resolve paths. Use `--output "<input>/Output"` to keep the tree separate from the input. Omit `--output` (in-place run) only if the user asks for it.
+2. Dry-run first, every time. A dry run copies nothing:
    ```
-   & "<repo>\.venv\Scripts\python.exe" -m fermi_organizer.cli "<input>" --output "<input>\Output" --dry-run
+   python -m fermi_organizer.cli "<input>" --output "<input>/Output" --dry-run
    ```
+3. Report the dry-run plan to the user. Wait for explicit go-ahead.
+4. Real run after approval:
+   ```
+   python -m fermi_organizer.cli "<input>" --output "<input>/Output"
+   ```
+5. Later batches into an existing tree: dry-run, review, then run with `--incremental`:
+   ```
+   python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>" --dry-run
+   python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>"
+   ```
+6. Several input folders into one tree: dry-run all of them and report together. After approval, run a full run for the first folder, then `--incremental` for each later one. An incremental dry-run against a tree that does not yet hold the earlier batches shows their drawings as orphans. Expect small drift between dry-run and real-run counts; quote the real run's summary.
+7. Command timeouts: use at least 10 minutes for multi-thousand-file folders. A quiet phase under `--- Scanning BOM tables ---` is normal, not a hang.
 
-   A dry run copies nothing. Do not skip this even for a tiny folder.
-3. **Report back** (see below) and wait for an explicit go-ahead. Only then re-run
-   **without** `--dry-run`.
-4. **Later batches** feeding an existing tree: `--incremental --output "<existing Output>"`.
-   The input folder may differ from the one holding the tree.
-5. **Several input folders → one tree**: dry-run *all* of them first (the incremental
-   dry-run against a not-yet-populated tree is fine - it shows what that batch would
-   do), report the plans together, wait for the go-ahead, then execute sequentially:
-   full run for the first folder, `--incremental` for each later one. Expect small
-   drift between an incremental dry-run and its real run (the earlier batch's tree now
-   exists - e.g. 472→485 scanned, 580→555 copies); quote the **real** run's summary.
-   Cross-batch adoption is normal: `Retired N orphan copy(ies) from _orphans/` means
-   earlier-parked parts found parents in this batch.
+Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
-## Flag decisions
+## Flags
 
-| Situation | Flags |
+| Flag | Effect |
 |---|---|
-| First sort of a folder | `--output "<input>\Output"` (dry-run first) |
-| More PDFs for a tree that already exists | `--incremental --output "<existing Output>"` |
-| User wants files organized beside the originals | omit `--output` |
-| Tesseract missing, or speed over OCR | `--no-ocr` |
-| Very large folder / slow extraction | `--jobs N` (0 = auto = CPU count, default; 1 = serial) |
-| User trusts title blocks over filenames | `--rekey-titleblock` — opt-in only; re-keys misnamed **text-layer** PDFs, never scanned ones |
+| `--output <dir>` | Target folder for the organized tree. Default: the input folder (in-place). |
+| `--dry-run` | Print the plan, copy nothing. Rebuilds the Excel workbook, and writes the text report only if the output folder exists. |
+| `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. Existing folders stay, except supersede swaps and parent-adoption moves. |
+| `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
+| `--jobs N` | Extraction workers. `0` = auto (CPU count, default), `1` = serial. |
+| `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
 
-Exit codes: `0` = normal outcome (orphans/CHK/missing references are still
-`0`). `1` is fatal - read the log tail first: bad input (`ERROR: not a
-directory`, no PDFs found → fix the path, don't retry), an output folder that
-could not be created (`ERROR: could not create output folder` → check the
-path/permissions, don't retry), **or** an unhandled crash (a Python traceback
-in the captured output). `2` means the planned fan-out exceeded the
-10,000-copy cap (`placement refused for N oversized root(s)` + `skipped
-oversized root STEM (NNNN copies planned)` lines in the log, a `Roots skipped
-(oversized)` summary line, a `Placement refused` row on the Dashboard):
-the largest roots are skipped (never placed - their shared children still land
-under their other parents) and **the rest is placed normally**; supersede
-swaps/moves are skipped while over cap, but the bounded orphan-parking and
-supersede-archive copies still run. A fully over-cap run places no folders
-(full mode still parks orphans; incremental parks nothing new). Report + workbook are still written. Do **not** retry and do **not**
-treat it as a crash — inspect the BOM graph (a diamond/cycle explosion; the
-skipped roots are usually "bag" drawings like procurement-kit lists, not real
-assemblies) and ask the user before re-running. (The pre-check fits the
-cycle-broken graph, so phantom refusals from unbroken cycles are gone; if exit
-2 ever shows no skipped roots, the conservative pre-check tripped and a re-run
-converges.)
-Note: exit `2` is shared with run-lock loss (`ERROR: ...lock...`, mid-run
-steal) — but that path prints an ERROR and writes **no** report/workbook, so a
-refusal (both artifacts written) is unmistakable. Never read lock-loss as a
-completed placement.
-## Report to the user
+## Exit codes
 
-From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles
-broken, PDF copies written; then the CHK list, missing BOM references, orphans and USED ON
-bugs; then the two artifact paths in the output folder
-(`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`). Flag anything
-surprising: USED ON bugs, `Cycles broken`, a large `Orphans` count,
-`WARNING: in-place run`, OCR reading many PDFs, or any `copy failed` /
-`path too long` WARNING.
+| Code | Meaning | Action |
+|---|---|---|
+| `0` | Normal completion. Missing BOM references, unapproved CHK files and orphans are reported but still exit 0. | Summarize the run and the two report files. |
+| `1` | Startup failure. Input is missing or not a directory, no PDFs found, output folder cannot be created, or another run holds the lock (`ERROR: could not acquire run lock ...`). No report or workbook is written. | Fix the path or permissions, or wait for the other run to finish. Do not retry blindly. |
+| `2` | Argument error (argparse usage message), or the run lock was lost mid-run (`ERROR: ...`). Report and workbook are not written for a lost lock. | Argument error: fix the flags. Lost lock: check no other process touched the output, then re-run. |
+| `2` | Placement refused: planned fan-out exceeds 10,000 copies. The report and workbook are written. | Do not retry. Inspect the BOM graph and ask the user first. See the refusal section below. |
 
-Do **not** parse the `.txt` report to compute results — the `.xlsx` workbook is the
-source of truth; the printed summary is what to summarize. One cheap sanity check
-after a real run: the Dashboard's `PDF FILES IN TREE (LIVE)` must equal a recursive
-PDF count of the output minus `_orphans/` and `_superseded/`.
+Both `2` rows share a code. Tell them apart by the log: a refusal writes `Report saved to:` and the workbook; a lost lock or argument error does not.
 
-## Expected noise - do not treat as failures
+## Placement refusal
 
-- `WARNING: NNNN duplicate stem(s) across input subfolders` — normal for messy
-  corpora (the same drawing saved in many dated folders); the shallowest copy wins.
-- `Skipped NNN FC-prefixed common component(s)` — FC numbers are standard hardware,
-  never indexed or placed (hundreds per run is typical).
-- `WARNING: NNN PDF(s) without extractable NAME` — those folders fall back to the
-  bare drawing number; common on scanned/old sheets.
-- `Image too small to scale!!` / `Line cannot be recognized!!` — Tesseract stderr
-  leaking to the console during OCR; harmless. Judge a run by its exit code and
-  summary, not by these lines.
+When the plan is too large, the largest roots are skipped. The rest is placed normally.
 
-## Guardrails
+- Partial refusal log line: `WARNING: placement partially refused - <N> oversized root(s) skipped (<names>); the rest <was placed|would be placed> ...`
+- Full refusal log line: `WARNING: placement refused - folder placement skipped ...`
+- Excel Dashboard, "NEEDS ATTENTION" table, "Placement refused" row: count of skipped roots when any were skipped; `1` for a full refusal with no named roots; `0` otherwise.
 
-- Original PDFs are never modified or deleted; only the output tree is mutated (copies,
-  supersede swaps, moves). Say so if the user is anxious.
-- `_orphans/` = drawings whose parent is not in this folder, parked for later adoption.
-  `_superseded/` = older revisions, unapproved CHK files, watermarked duplicates. Both
-  are normal outcomes, not failures.
-- The BOM is the only placement source. `USED ON bugs` are reported, never used to move
-  files.
-- OCR is best-effort: a misread can attach a wrong BOM edge. Present OCR-derived results
-  as needing a spot-check.
-- Scans stored at scanner dpi (1 px = 1 pt) are supported; rare digit misreads happen.
-- For behavior changes, edit the code (`AGENTS.md` is the map) — never hand-edit the
-  output tree to "fix" placement.
+Skipped roots are usually "bag" drawings such as procurement-kit lists, not real assemblies. Tell the user which roots were skipped and ask before re-running.
 
 ## Troubleshooting
 
 | Symptom | Action |
 |---|---|
-| `No module named fermi_organizer` | use the venv interpreter, or reinstall editable (`-e .`) |
-| `.venv` missing | `uv venv --python 3.11 .venv` then install `requirements.txt pytest -e .` |
-| `OCR: unavailable` | expected without Tesseract; scanned PDFs stay orphans — offer `--no-ocr` |
-| Exit code 2 + `placement refused` in the log | fan-out cap hit, not a crash: the named oversized roots were skipped, the rest was placed, report + workbook were written; inspect the BOM graph (usually a "bag" drawing like a procurement-kit list) and ask the user before re-running |
-| `Report NOT saved (output folder missing)` on a dry run | normal: dry runs don't create the folder; the workbook is still written |
-| `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | add `--output <input>\Output` and re-run |
-| Everything landed in `_orphans/` | the parents are missing from the folder; they get placed once those PDFs arrive |
-| Run dies mid `--- Scanning BOM tables ---` with `AttributeError: 'NoneType' object has no attribute 'upper'`, or `copy failed ... [Errno 2]` on a >260-char path | the checkout predates PR #34 (UTF-8 OCR decode + `\\?\` long-path copies) — update first; if it still reproduces on current `main`, report it as a bug |
-| Capturing a log with PowerShell `> file` and grepping it programmatically | the file is UTF-16 and exception paths render repr-escaped (`'D:\\h files\\...'`) — decode as UTF-16 and unescape backslashes before matching paths |
+| `No module named fermi_organizer` | Use the venv interpreter, or reinstall editable: `uv pip install -e .` |
+| `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install -r requirements.txt pytest -e .` |
+| `OCR: unavailable` | Tesseract is not installed. A scanned PDF has no readable BOM of its own. It is placed only if a readable parent BOM references it by filename; otherwise it lands in `_orphans/`. Offer installing Tesseract. |
+| Exit 2 with a placement-refused log line | Fan-out cap hit, not a crash. See Placement refusal above. |
+| `Report NOT saved (output folder missing)` on a dry run | The text report is skipped because the folder does not exist yet. The workbook step runs next and creates the folder, so it exists afterward. |
+| `WARNING: ...\Output exists. Use --output to target it.` with `--incremental` | Re-run with `--output "<input>\Output"`. |
+| Everything landed in `_orphans/` | The parent drawings are not in the input folder yet. Files are placed once their parents arrive. |
 
-## Repo references
+## Report to the user
 
-- `AGENTS.md` — code architecture, invariants, test gates.
-- `README.md` — full flag table, outputs, known limits.
-- `tests/test_golden_log.py` pins the user-facing log byte-for-byte; update it when
-  messages intentionally change.
+From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles broken, PDF copies written; then the CHK list, missing BOM references, orphans and USED ON bugs; then the two artifact paths (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`).
+
+Flag these: USED ON bugs, a large orphan count, `WARNING: in-place run`, OCR reading many PDFs, any `copy failed` or `path too long` warning, and any placement refusal.
+
+Summarize the printed output. Do not parse the `.txt` report to compute results. The `.xlsx` is the source of truth. Sanity check after a real run: the Dashboard `PDF FILES IN TREE (LIVE)` value should equal the recursive PDF count of the output minus every top-level directory whose name starts with `_` (`_orphans/`, `_superseded/`, and any other).
+
+## Expected noise
+
+Not errors. Do not report these as failures:
+- `WARNING: <N> duplicate stem(s) across input subfolders`. The shallowest copy wins.
+- `Skipped <N> FC-prefixed common component(s)`. Standard hardware, never placed.
+- `WARNING: <N> PDF(s) without extractable NAME`. Those folders use the drawing number.
+- `Image too small to scale!!` and `Line cannot be recognized!!`. Tesseract stderr during OCR.
+
+Judge a run by its exit code and summary.
+
+## Guardrails
+
+- Original PDFs are never modified or deleted. Only the output tree changes: copies, supersede swaps, moves.
+- The BOM table is the only placement source. USED ON bugs are reported, never used to move files.
+- `_orphans/` holds drawings whose parent has not arrived. `_superseded/` holds older revisions, unapproved CHK files and watermarked duplicates. Both are normal.
+- OCR is best-effort. A misread can attach a wrong BOM edge, so present OCR-derived results as needing a spot-check.
+- Never hand-edit the output tree to change placement. Fix the code or the input drawings.
