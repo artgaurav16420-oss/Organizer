@@ -50,7 +50,6 @@ try:
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.properties import PageSetupProperties
-    from openpyxl.utils.exceptions import InvalidFileException
     _OPENPYXL_OK = True
 except ImportError:
     _OPENPYXL_OK = False
@@ -87,9 +86,12 @@ ORG_F, ORG_D = PAL["orange"]["fill"], PAL["orange"]["text"]
 GREY_F, GREY_D = PAL["grey"]["fill"], PAL["grey"]["text"]
 GRN_F, GRN_D = PAL["green"]["fill"], PAL["green"]["text"]
 
-HAIR = Side(style="thin", color=LINE)
-ROW_BORDER = Border(bottom=HAIR)
-PILL_EDGE = Side(style="medium", color=WHITE)
+if _OPENPYXL_OK:
+    HAIR = Side(style="thin", color=LINE)
+    ROW_BORDER = Border(bottom=HAIR)
+    PILL_EDGE = Side(style="medium", color=WHITE)
+else:
+    HAIR = ROW_BORDER = PILL_EDGE = None
 
 # Run-history cap: single source for both the sidecar save and the sheet render
 # (the two must agree or the saved file and the displayed table drift).
@@ -335,6 +337,14 @@ def _sheet_of(stem):
     return None
 
 
+def _rev_of(stem):
+    """Revision string of a stem ('A' in 'F10126106_A___DWG2'), or ''."""
+    parts = stem.split("_")
+    if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2:
+        return parts[1]
+    return ""
+
+
 def _fallback_name(resolved, stem):
     """Same-drawing NAME for a stem with no extracted entry.
 
@@ -350,7 +360,7 @@ def _fallback_name(resolved, stem):
     """
     base = stem.split("_")[0]
     parts = stem.split("_")
-    rev = parts[1] if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2 else ""
+    rev = _rev_of(stem)
     want_sheet = _sheet_of(stem)
     is_chk = "CHK" in parts[1:]
     cands = []
@@ -359,8 +369,7 @@ def _fallback_name(resolved, stem):
             continue
         if cand.split("_")[0] != base:
             continue
-        cparts = cand.split("_")
-        crev = cparts[1] if len(cparts) > 1 and cparts[1].isalpha() and len(cparts[1]) <= 2 else ""
+        crev = _rev_of(cand)
         if rev != crev and not is_chk:
             continue
         got_sheet = _sheet_of(cand)
@@ -387,11 +396,8 @@ def _prior_names(path):
         return out
     try:
         from openpyxl import load_workbook
-        from xml.etree.ElementTree import ParseError
-        from zipfile import BadZipFile
         wb = load_workbook(path, read_only=True, data_only=True)
-    except (OSError, InvalidFileException, BadZipFile, KeyError, ValueError,
-            ParseError):
+    except Exception:
         return out
     try:
         ws = wb["Files"]
@@ -435,8 +441,7 @@ def _resolve_names(names_raw, live, extra=()):
         v = names_raw.get(stem) or ""
         if not v:
             parts = stem.split("_")
-            rev = (parts[1] if len(parts) > 1 and parts[1].isalpha()
-                   and len(parts[1]) <= 2 else "")
+            rev = _rev_of(stem)
             base_name = names_raw.get(parts[0], "")
             if (base_name and (rev == "" or "CHK" in parts[1:])
                     and _sheet_of(stem) is None):
@@ -757,7 +762,7 @@ def _chk_sheet(chk, ctx, names):
 def _scanned_sheet(scanned_ws, ctx, names):
     data = ctx.get("scanned", [])  # [(stem, [pages]), ...]
     rows = []
-    for stem, pages in sorted(data):
+    for stem, pages in sorted(data, key=lambda t: t[0]):
         pages_txt = (", ".join(str(p) for p in pages)
                      if isinstance(pages, (list, tuple)) else str(pages))
         rows.append([stem, names.get(stem, "") or "-", pages_txt])
@@ -772,7 +777,7 @@ def _scanned_sheet(scanned_ws, ctx, names):
 def _watermark_sheet(watermark_ws, ctx, names):
     data = ctx.get("watermarks", [])  # [(stem, evidence), ...]
     rows = [[stem, names.get(stem, "") or "-", evidence or "-"]
-            for stem, evidence in sorted(data)]
+            for stem, evidence in sorted(data, key=lambda t: t[0])]
     _table(watermark_ws, ["Stem (watermarked PDF)", "Name", "Evidence"], (30, 40, 52), rows,
            tab="amber", empty="No watermarked PDFs detected",
            note=("About this sheet",
@@ -817,7 +822,7 @@ def _superseded_sheet(superseded, live):
 def _roots_sheet(roots_ws, ctx, names):
     data = ctx.get("roots", [])  # [(stem, [used_on...]), ...]
     rows = [[stem, names.get(stem, ""), ", ".join(sorted(set(used))) or "-"]
-            for stem, used in data]
+            for stem, used in sorted(data, key=lambda t: t[0])]
     _table(roots_ws, ["Root drawing", "Name", "USED ON (parent drawings if any)"],
            (26, 40, 60), rows, tab="green", empty="No root assemblies in this run",
            note=("About this sheet",
@@ -882,7 +887,7 @@ def _mismatch_sheet(mism_ws, ctx, names):
 def _titleblock_sheet(tb_ws, ctx, names):
     data = ctx.get("titleblock_mismatches", [])  # [(stem, field, filename, tb)]
     rows = [[stem, names.get(stem, "") or "-", field, fval, tval]
-            for stem, field, fval, tval in sorted(data)]
+            for stem, field, fval, tval in sorted(data, key=lambda t: t[0])]
     _table(tb_ws, ["Stem (current file)", "Name", "Field", "In filename", "In title block"],
            (30, 34, 12, 26, 26), rows, tab="amber", pills={3: "amber"},
            aligns=["left", "left", "center", "left", "left"],
@@ -899,8 +904,7 @@ def _files_sheet(files, ctx, names, live):
 
     def add(p, status):
         stem = canonical_stem(p.stem) or p.stem.upper()
-        parts = stem.split("_")
-        rev = parts[1] if len(parts) > 1 and parts[1] else "-"
+        rev = _rev_of(stem) or "-"
         rows.append([stem, names.get(stem, "") or "-", rev, status,
                      str(Path(_rel(p, out)).parent)])
         paths.append(p)
@@ -929,7 +933,7 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
              len(ctx.get("orphans", [])), ctx.get("report_txt", "")]
     hist_rows = _load_history(path, log) + [entry]
     _save_history(path, hist_rows, log)
-    rows = [list(r) for r in sorted(hist_rows[-HISTORY_MAX_RUNS:], reverse=True)]
+    rows = [list(r) for r in reversed(hist_rows[-HISTORY_MAX_RUNS:])]
     n = len(rows)
     trend = (" The trend chart appears from your second run." if n < 2 else "")
     _table(hist, ["Run time", "Mode", "PDFs scanned", "Copies", "Missing", "CHK",
