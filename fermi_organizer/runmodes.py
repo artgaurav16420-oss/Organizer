@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from .config import (canonical_stem, filename_title, TB_NUM_VAL_RE,
-                     is_processable_ref, MAX_DIR, TREE_MAX_DEPTH)
+                     is_processable_ref, MAX_DIR, MAX_PATH, TREE_MAX_DEPTH)
 from .extraction import (resolve_jobs, bom_task,
                          title_task, org_task, dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
@@ -789,6 +789,24 @@ def _current_folder_of(stem, organized, output, moved_dirs):
     return old_folder
 
 
+def _longest_dest_path(target_path, current):
+    """Longest file path the copy of `current` under `target_path` would
+    create, or None when the source cannot be listed.
+
+    place_files guards every target against MAX_PATH; the folder-level MAX_DIR
+    check alone does not bound descendant files, which fail mid-copy on
+    Windows and force partial-tree cleanup.
+    """
+    try:
+        entries = list(current.rglob("*"))
+    except OSError:
+        return None
+    if not entries:
+        return target_path
+    return max((target_path / e.relative_to(current) for e in entries),
+               key=lambda p: len(str(p)))
+
+
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
                          dry_run, log):
     """Copy organized child c's folder under target_folder; returns PDF copies.
@@ -816,8 +834,6 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     if not simulated and not _exists(current):
         log(f"  {c}: already moved, skipping")
         return 0
-    if _shared_folder_blocks_move(c, current, output, log):
-        return 0
     # Guard against destination collisions before adopting the folder.
     target_path = target_folder / child_folder.name
     if _exists(target_path):
@@ -832,10 +848,16 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         log(f"  WARNING: {c}: destination exists, skipping move (manual review): "
             f"{target_path.relative_to(output)}")
         return 0
+    # Copying cannot strand unrelated files the way a move of a shared folder
+    # would, so the shared-folder guard is move-only and never blocks a copy:
+    # a source folder holding foreign PDFs still lands whole under the target.
+    longest = _longest_dest_path(target_path, current)
+    if longest is not None and len(str(longest)) > MAX_PATH:
+        log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
+            f"{longest}")
+        return 0
     # Nested under a live parent: copy the whole subtree so the existing
-    # parent keeps its copy. Copying cannot strand unrelated files, so
-    # the shared-folder guard does not apply; a failed copy is guarded
-    # below.
+    # parent keeps its copy. A failed copy is guarded below.
     if dry_run:
         log(f"  [DRY-RUN] copy {current.relative_to(output)} -> {target_path.relative_to(output)}")
     else:
@@ -968,8 +990,6 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
         if not simulated and not _exists(current):
             log(f"  {c}: already moved, skipping")
             continue
-        if _shared_folder_blocks_move(c, current, output, log):
-            continue
         # Guard against destination collisions before adopting the folder.
         target_path = target_folder / child_folder.name
         if _exists(target_path):
@@ -1002,25 +1022,11 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
                 moved_dirs[current] = target_path
             moves += 1
             continue
-        # Nested under a live parent: copy the whole subtree so the existing
-        # parent keeps its copy. Copying cannot strand unrelated files, so
-        # the shared-folder guard does not apply; a failed copy is guarded
-        # below.
-        if dry_run:
-            log(f"  [DRY-RUN] copy {current.relative_to(output)} -> {target_path.relative_to(output)}")
-        else:
-            # symlinks=True copies links as links; the default would copy the
-            # link targets' contents, which may live outside the tree.
-            try:
-                shutil.copytree(str(current), str(target_path), symlinks=True)
-            except OSError as e:
-                log(f"  WARNING: copy failed for {c}: {e}")
-                # The target did not exist before this call, so a partial copy
-                # is ours to remove; leaving it would make later runs skip c.
-                shutil.rmtree(str(target_path), ignore_errors=True)
-                continue
-        copies += sum(1 for paths in organized.values() for p in paths
-                      if p.is_relative_to(current))
+        # Nested under a live parent: copy via the shared helper. The
+        # shared-folder guard above is move-only (copying cannot strand
+        # unrelated files), so a shared source still lands whole.
+        copies += _copy_org_child_tree(c, target_folder, organized,
+                                       moved_dirs, output, dry_run, log)
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
                           renames=renames, lock=lock)
     copies += _adopt_org_children_below(
