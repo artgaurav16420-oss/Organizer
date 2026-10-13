@@ -23,8 +23,9 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>\Output"
    ```
-5. Process subsequent PDF batches feeding an existing tree using incremental mode:
+5. Process subsequent PDF batches feeding an existing tree using incremental mode (always dry-run first, review, then execute):
    ```
+   python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>" --dry-run
    python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>"
    ```
 6. Handle multi-folder inputs by dry-running all folders first and reporting the plans together. After approval, execute sequentially with a full run for the first folder and incremental runs for subsequent folders.
