@@ -1951,3 +1951,22 @@ def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_p
     middle = out / "F10126109 New root" / "F10126110 Middle assembly"
     assert (middle / "F10126107 Child assembly" / "F10126107.pdf").is_file()
     assert not (out / "F10126107 Child assembly").exists()
+
+
+def test_adopt_one_moves_skipped_past_max_path(tmp_path, make_pdf, monkeypatch):
+    # shutil.move has no length guard: adopting a deep tree under a long
+    # parent must skip up front like copies do, not create over-limit paths.
+    from fermi_organizer import runmodes as _rm
+    monkeypatch.setattr(_rm, "MAX_PATH", 100)
+    out = tmp_path / "out"
+    top = out / "F10126107 Child assembly"
+    top.mkdir(parents=True)
+    make_pdf(top / "F10126107.pdf", ["NAME", "Child assembly"])
+    organized = {"F10126107": [top / "F10126107.pdf"]}
+    logged = []
+    copies, moves = _rm._adopt_one_org_child(
+        "F10126107", out / "NewParent", organized, {}, out, False,
+        logged.append)
+    assert (copies, moves) == (0, 0)
+    assert any("path too long" in m for m in logged)
+    assert top.is_dir()

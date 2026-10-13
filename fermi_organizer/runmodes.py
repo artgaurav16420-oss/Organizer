@@ -936,6 +936,11 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         # via the relocation tracking above.
         if _shared_folder_blocks_move(c, current, output, log):
             return 0, 0
+        longest = _longest_dest_path(target_path, current)
+        if longest is not None and len(str(longest)) > MAX_PATH:
+            log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
+                f"{longest}")
+            return 0, 0
         if dry_run:
             log(f"  [DRY-RUN] move {current.relative_to(output)} -> {target_path.relative_to(output)}")
             moved_dirs[current] = target_path
