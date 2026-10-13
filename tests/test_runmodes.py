@@ -1916,3 +1916,20 @@ def test_adopted_copy_estimate_counts_diamond_paths(tmp_path):
     est = runmodes._adopted_copy_estimate(
         ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
     assert est == {"NEWR": 4}
+def test_run_incremental_keeps_prior_batch_names(tmp_path, make_pdf):
+    # Batch-1 names must survive into batch-2's workbook context: shortened
+    # folders lose them from the tree fallback, so the incremental scan
+    # carries organized names forward (newer extraction still wins).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+    _write_standalone(make_pdf, in_dir)
+
+    logged = []
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["names"].get("F10126106") == "Test Parent"
+    assert ctx["names"].get("F10126107") == "Child part"
