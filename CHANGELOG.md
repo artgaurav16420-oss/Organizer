@@ -4,6 +4,15 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Workbook NAME coverage fixes
+- Incremental runs now carry organized names forward (`_scan_organized`
+  already extracted them and dropped them): prior-batch NAMEs survive into
+  later workbooks even when path shortening stripped them from folder names.
+- Same-drawing fallback in `_resolve_names`: reported-but-unscanned stems
+  (superseded CHK) reuse their DWG twin's NAME instead of showing `-`.
+  Blocked across different sheet tokens, so sibling sheets never inherit
+  each other's names; extracted names always win.
+
 ### Incremental placement completeness fix
 - A new non-root parent referencing already-organized children now gets copies
   of them in its folder (`_adopt_org_children_below`, mirroring

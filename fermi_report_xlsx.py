@@ -325,10 +325,55 @@ def _save_history(xlsx_path, rows, log=None):
         (log or print)(f"WARNING: run history not saved: {e}")
 
 
-def _resolve_names(names_raw, live):
-    """names_raw + base-stem fallback, for every tree/orphan stem and every key."""
+def _sheet_of(stem):
+    """Sheet suffix of a stem ('DWG2' in 'F10126106_A___DWG2'), or None."""
+    for part in stem.split("_")[1:]:
+        if part.startswith("DWG") and part[3:].isdigit():
+            return part
+    return None
+
+
+def _fallback_name(resolved, stem):
+    """Same-drawing NAME for a stem with no extracted entry.
+
+    Same base (and revision, when present) means the same part, so a
+    superseded CHK row can reuse its DWG twin's NAME. Blocked when both
+    stems carry different sheet tokens: sibling sheets have their own
+    content and names. Deterministic first-sorted-donor pick; extracted
+    names always win (this only fills gaps).
+    """
+    base = stem.split("_")[0]
+    parts = stem.split("_")
+    rev = parts[1] if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2 else ""
+    want_sheet = _sheet_of(stem)
+    cands = []
+    for cand in sorted(resolved):
+        if cand == stem or not resolved[cand]:
+            continue
+        if cand.split("_")[0] != base:
+            continue
+        cparts = cand.split("_")
+        crev = cparts[1] if len(cparts) > 1 and cparts[1].isalpha() and len(cparts[1]) <= 2 else ""
+        if rev and crev and rev != crev:
+            continue
+        got_sheet = _sheet_of(cand)
+        if want_sheet and got_sheet and want_sheet != got_sheet:
+            continue
+        cands.append((0 if crev == rev else 1, cand))
+    if not cands:
+        return ""
+    cands.sort()
+    return resolved[cands[0][1]]
+
+
+def _resolve_names(names_raw, live, extra=()):
+    """names_raw + base-stem fallback, for every tree/orphan stem and every key.
+
+    extra: reported-but-unscanned stems (CHK, missing refs) that also deserve
+    a family fallback entry.
+    """
     resolved = {}
-    stems = set(names_raw)
+    stems = set(names_raw) | set(extra)
     for p in live.get("tree", []):
         s = canonical_stem(p.stem)
         if s:
@@ -342,6 +387,12 @@ def _resolve_names(names_raw, live):
         v = names_raw.get(stem) or names_raw.get(stem.split("_")[0], "")
         if v:
             resolved[stem] = v
+    donors = dict(resolved)
+    for stem in sorted(stems):
+        if stem not in resolved:
+            v = _fallback_name(donors, stem)
+            if v:
+                resolved[stem] = v
     return resolved
 
 
@@ -382,7 +433,8 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     counters = ctx.get("counters", {})
     live = _scan_tree(ctx.get("output", ""))
     missing_pairs = sorted(set(ctx.get("missing", [])))
-    names = _resolve_names(ctx.get("names", {}) or {}, live)
+    extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
+    names = _resolve_names(ctx.get("names", {}) or {}, live, extra)
 
     _dash_sheet(dash, ctx, counters, live, missing_pairs)
     _missing_sheet(missing, missing_pairs, names)

@@ -294,6 +294,34 @@ def test_resolve_names_unresolved_and_empty_inputs():
     assert empty_resolved == {}
 
 
+def test_resolve_names_chk_reuses_dwg_twin():
+    # Superseded CHK stems are never scanned: same base+rev reuses the DWG
+    # twin's NAME instead of showing '-'.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10137247_B_DWG1": "TUBE, INTERFACE"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10137247_B_CHK"])
+    assert resolved["F10137247_B_CHK"] == "TUBE, INTERFACE"
+
+
+def test_resolve_names_blocks_cross_sheet_fallback():
+    # Sibling sheets have their own content: DWG2 never inherits DWG1's NAME.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert "F10126106_A___DWG2" not in resolved
+
+
+def test_resolve_names_extracted_name_always_wins():
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one",
+                 "F10126106_A___DWG2": "Sheet two"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert resolved["F10126106_A___DWG2"] == "Sheet two"
+
+
 def test_formula_injection_neutralized(tmp_path):
     # PDF-derived text starting with "=" must be stored as text, never as a
     # formula Excel evaluates on open (table rows + dashboard boxes).

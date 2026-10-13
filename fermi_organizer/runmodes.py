@@ -577,11 +577,12 @@ def _detect_supersede_pairs(new_index, old_new, organized, log):
 def _scan_organized(organized, all_stems, jobs, bom_names, log):
     """BOM + USED ON scan over organized PDFs (placement context). Logs the
     missing-reference block; returns (org_boms, org_used_on, org_unmatched,
-    org_watermarks, org_titleblocks, extraction warning count)."""
+    org_watermarks, org_titleblocks, org_names, extraction warning count)."""
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
     org_titleblocks = {}
+    org_names = {}
     warnings = 0
     log("--- Scanning BOM + USED ON (organized PDFs, for placement) ---")
     org_items = [(stem, pick_shallowest(organized[stem]))
@@ -599,6 +600,8 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
         if watermark:
             org_watermarks[stem] = watermark
         org_titleblocks[stem] = (pdf.stem, number, rev, name, scanned)
+        if name:
+            org_names[stem] = name
         org_boms[stem] = sorted({v for v, *_rest in entries})
         org_used_on[stem] = used
         for e in entries:
@@ -620,7 +623,7 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
         log("")
     log("")
     return (org_boms, org_used_on, org_unmatched, org_watermarks,
-            org_titleblocks, warnings)
+            org_titleblocks, org_names, warnings)
 
 
 def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
@@ -1130,6 +1133,13 @@ def _place_standalone_new_root(R, new_children, new_index, new_names,
         organized, moved_dirs, output, dry_run, log, lock=lock)
 
 
+def _merge_names(org_names, new_names):
+    """Prior-batch names plus this batch: newer extraction wins."""
+    names = dict(org_names)
+    names.update(new_names)
+    return names
+
+
 def _ctx_names(names_of, missing, bom_names):
     """Stem/value -> NAME for the workbook: names extracted from the PDFs this
     run, plus BOM names for missing references (the old NAME-line parse)."""
@@ -1542,15 +1552,17 @@ def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
 def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
                                 new_watermarks, new_titleblocks, unmatched, log):
     """Organized scan + snaps + watermark/title-block merge.
-    Returns (org_boms, org_used_on, watermarks, tb_mismatches, warnings)."""
+    Returns (org_boms, org_used_on, watermarks, tb_mismatches, org_names,
+    warnings)."""
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
     org_titleblocks = {}
+    org_names = {}
     warnings = 0
     if organized:
         org_boms, org_used_on, org_unmatched, org_watermarks, \
-            org_titleblocks, warnings = \
+            org_titleblocks, org_names, warnings = \
             _scan_organized(organized, all_stems, jobs, bom_names, log)
         _snap_boms(org_boms, all_stems, log)
         _snap_used_on(org_used_on, all_stems, log)
@@ -1564,7 +1576,8 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
     all_titleblocks = dict(org_titleblocks)
     all_titleblocks.update(new_titleblocks)
     tb_mismatches = _titleblock_mismatches(all_titleblocks, log)
-    return org_boms, org_used_on, watermarks, tb_mismatches, warnings
+    return org_boms, org_used_on, watermarks, tb_mismatches, org_names, \
+        warnings
 
 
 def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
@@ -1764,7 +1777,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           total_copies, total_moves, warning_count, unmatched,
                           chk_stems, new_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
-                          bom_names, superseded=(), planned=(),
+                          bom_names, org_names=None, superseded=(), planned=(),
                           scan_res=None, refused=False,
                           skipped=()) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
@@ -1808,7 +1821,8 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "titleblock_mismatches": tb_mismatches,
         "scanned": OCR.scanned_stems(),
         "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(new_names, unmatched, bom_names),
+        "names": _ctx_names(_merge_names(org_names or {}, new_names),
+                               unmatched, bom_names),
         "placement_refused": refused,
         "skipped_roots": list(skipped),
     }
@@ -1886,10 +1900,10 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     unmatched = _incremental_new_missing(new_boms, all_stems, bom_names,
                                          chk_stems, log)
 
-    org_boms, org_used_on, watermarks, tb_mismatches, org_warnings = \
-        _incremental_scan_organized(organized, all_stems, jobs, bom_names,
-                                    new_watermarks, new_titleblocks,
-                                    unmatched, log)
+    org_boms, org_used_on, watermarks, tb_mismatches, org_names, \
+        org_warnings = _incremental_scan_organized(
+            organized, all_stems, jobs, bom_names, new_watermarks,
+            new_titleblocks, unmatched, log)
     warning_count += org_warnings
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
                                                            all_stems, log)
@@ -1990,6 +2004,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                  chk_stems, new_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
+                                 org_names=org_names,
                                  superseded=archived_new | set(swapped_old),
                                  planned=planned,
                                  scan_res=reused_scan_res,
