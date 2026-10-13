@@ -76,6 +76,36 @@ def test_refresh_workbook_uses_explicit_run_time(tmp_path, monkeypatch):
 
     assert captured["run_time"] == "2026-10-08T01:02:03"
     assert captured["placement_refused"] is False
+    assert captured["skipped_roots"] == []
+
+
+def test_refresh_workbook_skipped_roots_dashboard_count(tmp_path):
+    from openpyxl import load_workbook
+
+    ctx = _minimal_ctx()
+    ctx.update({
+        "placement_refused": True,
+        "skipped_roots": [("F10126106", 2), ("F10126109", 3)],
+    })
+    logged = []
+
+    cli_module._refresh_workbook(ctx, tmp_path, tmp_path / "rep.txt",
+                                 "2026-10-08T01:02:03", False, False,
+                                 logged.append)
+
+    xlsx_path = tmp_path / "organize_fermi_report.xlsx"
+    assert xlsx_path.is_file()
+
+    wb = load_workbook(xlsx_path, data_only=True)
+    ws = wb["Dashboard"]
+
+    found_val = None
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(row=r, column=2).value == "Placement refused":
+            found_val = ws.cell(row=r, column=6).value
+            break
+
+    assert found_val == 2
 
 
 def test_refresh_workbook_logs_exception_type_and_traceback(tmp_path,

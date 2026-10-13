@@ -40,6 +40,7 @@ class WorkbookContext(TypedDict):
     report_txt: str
     names: dict
     placement_refused: bool
+    skipped_roots: list
 
 try:
     from openpyxl import Workbook
@@ -614,8 +615,10 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     # Two tiers: "action" categories have an explicit Download/Replace step;
     # everything else with a non-zero count is worth a look.
     action_labels = {"Placement refused", "Missing parts", "CHK unapproved"}
+    skipped = ctx.get("skipped_roots", [])
+    pref_count = len(skipped) if skipped else (1 if ctx.get("placement_refused") else 0)
     items = [
-        ("Placement refused", 1 if ctx.get("placement_refused") else 0, "red", None),
+        ("Placement refused", pref_count, "red", None),
         ("Missing parts", len(missing_pairs), "red", "Missing"),
         ("CHK unapproved", chk_n, "amber", "CHK"),
         ("Orphans (parent not seen)", orph_n, "orange", "Orphans"),
@@ -984,7 +987,8 @@ def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
 def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
                      orphans, report_txt, names=None, roots=None, mismatches=None,
                      used_on_bugs=None, titleblock_mismatches=None, scanned=None,
-                     watermarks=None, log=None, placement_refused=False):
+                     watermarks=None, log=None, placement_refused=False,
+                     skipped_roots=None):
     """Called by the organizer after every run (execute AND dry-run).
 
     Dry-runs into a fresh --output never create the folder; the workbook is
@@ -1010,5 +1014,6 @@ def refresh_from_run(output, run_mode, run_time, counters, missing, chk,
         "report_txt": os.path.basename(report_txt or ""),
         "names": names or {},
         "placement_refused": placement_refused,
+        "skipped_roots": skipped_roots or [],
     }
     return build_workbook(xlsx, ctx, log=log)
