@@ -50,6 +50,7 @@ try:
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.properties import PageSetupProperties
+    from openpyxl.utils.exceptions import InvalidFileException
     _OPENPYXL_OK = True
 except ImportError:
     _OPENPYXL_OK = False
@@ -337,15 +338,20 @@ def _fallback_name(resolved, stem):
     """Same-drawing NAME for a stem with no extracted entry.
 
     Same base (and revision, when present) means the same part, so a
-    superseded CHK row can reuse its DWG twin's NAME. Blocked when both
-    stems carry different sheet tokens: sibling sheets have their own
-    content and names. Deterministic first-sorted-donor pick; extracted
-    names always win (this only fills gaps).
+    superseded CHK row can reuse its DWG twin's NAME. Sheet suffixes must
+    match exactly - except for CHK requesters, which are the same drawing
+    as their rev twin: a plain stem is its own sheet, so a sibling sheet's
+    NAME would be the wrong content. Deterministic first-sorted-donor pick;
+    extracted names always win (this only fills gaps).
     """
     base = stem.split("_")[0]
     parts = stem.split("_")
     rev = parts[1] if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2 else ""
     want_sheet = _sheet_of(stem)
+    # A CHK is the same drawing as its rev twin regardless of sheet suffix;
+    # any other sheetless stem must match sheets exactly (a plain stem is its
+    # own sheet, so a sibling sheet's NAME would be the wrong content).
+    sheet_ok = "CHK" in parts[1:]
     cands = []
     for cand in sorted(resolved):
         if cand == stem or not resolved[cand]:
@@ -357,13 +363,44 @@ def _fallback_name(resolved, stem):
         if rev and crev and rev != crev:
             continue
         got_sheet = _sheet_of(cand)
-        if want_sheet and got_sheet and want_sheet != got_sheet:
+        if want_sheet != got_sheet and not sheet_ok:
             continue
         cands.append((0 if crev == rev else 1, cand))
     if not cands:
         return ""
     cands.sort()
     return resolved[cands[0][1]]
+
+
+def _prior_names(path):
+    """Stem->NAME read back from the previous workbook's Files sheet.
+
+    Names established by earlier runs (shortened out of folder names, or
+    from batches whose context is gone) persist across rebuilds; fresh
+    extraction always wins (merged under). Best-effort: a missing, corrupt
+    or foreign workbook yields {}.
+    """
+    out = {}
+    if not _OPENPYXL_OK:
+        return out
+    try:
+        from openpyxl import load_workbook
+        from zipfile import BadZipFile
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except (OSError, InvalidFileException, BadZipFile, KeyError, ValueError):
+        return out
+    try:
+        ws = wb["Files"]
+        for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
+            stem, name = (row + (None, None))[:2]
+            if not stem or not name or name == "-":
+                continue
+            key = canonical_stem(str(stem))
+            if key:
+                out.setdefault(key, str(name))
+    finally:
+        wb.close()
+    return out
 
 
 def _resolve_names(names_raw, live, extra=()):
@@ -434,7 +471,9 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     live = _scan_tree(ctx.get("output", ""))
     missing_pairs = sorted(set(ctx.get("missing", [])))
     extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
-    names = _resolve_names(ctx.get("names", {}) or {}, live, extra)
+    raw_names = _prior_names(path)
+    raw_names.update(ctx.get("names", {}) or {})
+    names = _resolve_names(raw_names, live, extra)
 
     _dash_sheet(dash, ctx, counters, live, missing_pairs)
     _missing_sheet(missing, missing_pairs, names)

@@ -313,6 +313,18 @@ def test_resolve_names_blocks_cross_sheet_fallback():
     assert "F10126106_A___DWG2" not in resolved
 
 
+def test_resolve_names_sheetless_plain_blocked_from_sheet():
+    # A plain stem is its own sheet: it must not inherit a sibling sheet's
+    # NAME (either direction) - only CHK requesters bypass sheet matching.
+    live = {"tree": [], "orph": []}
+    names_raw = {"F10126106_A___DWG1": "Sheet one"}
+    resolved = fx._resolve_names(names_raw, live,
+                                 extra=["F10126106",
+                                        "F10126106_A___DWG2"])
+    assert "F10126106" not in resolved
+    assert "F10126106_A___DWG2" not in resolved
+
+
 def test_resolve_names_extracted_name_always_wins():
     live = {"tree": [], "orph": []}
     names_raw = {"F10126106_A___DWG1": "Sheet one",
@@ -320,6 +332,29 @@ def test_resolve_names_extracted_name_always_wins():
     resolved = fx._resolve_names(names_raw, live,
                                  extra=["F10126106_A___DWG2"])
     assert resolved["F10126106_A___DWG2"] == "Sheet two"
+
+
+def test_prior_names_reads_files_sheet(tmp_path):
+    # Names established by earlier runs persist: Files stems map back,
+    # '-' placeholders and junk rows are skipped.
+    from openpyxl import Workbook
+    out = tmp_path / "organize_fermi_report.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Files"
+    ws.append(["Drawing (stem)", "Name"])
+    ws.append(["F10126106_A___DWG1", "Sheet one"])
+    ws.append(["F10126107", "-"])
+    ws.append(["not a stem row", "Junk"])
+    wb.save(out)
+    assert fx._prior_names(out) == {"F10126106_A___DWG1": "Sheet one"}
+
+
+def test_prior_names_missing_or_corrupt_yields_empty(tmp_path):
+    assert fx._prior_names(tmp_path / "nope.xlsx") == {}
+    bad = tmp_path / "bad.xlsx"
+    bad.write_bytes(b"not a workbook")
+    assert fx._prior_names(bad) == {}
 
 
 def test_formula_injection_neutralized(tmp_path):
