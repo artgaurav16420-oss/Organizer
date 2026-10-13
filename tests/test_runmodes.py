@@ -272,6 +272,42 @@ def test_run_incremental_adopts_stored_orphan(tmp_path, make_pdf):
     assert "Retired 1 orphan copy(ies) from _orphans/ (adopted into tree)" in text
 
 
+def test_run_incremental_copies_organized_child_under_new_nonroot(tmp_path, make_pdf):
+    # New non-root N references already-organized C: the copy must land under
+    # N's new folder too, not just under C's original parent (every claimant
+    # gets its own copy). Previously only new ROOTS routed organized children
+    # through _place_above_organized_children; non-roots silently skipped them.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST",
+        "F10126110 MIDDLE ASSEMBLY",
+        "NAME",
+        "New root",
+    ])
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST",
+        "F10126107 CHILD PART",
+        "NAME",
+        "Middle assembly",
+    ])
+
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    middle = out / "F10126109 New root" / "F10126110 Middle assembly"
+    assert (middle / "F10126110.pdf").is_file()
+    assert (middle / "F10126107 Child part" / "F10126107.pdf").is_file()
+    # The original parent keeps its copy.
+    assert (out / "F10126106 Test Parent" / "F10126107 Child part"
+            / "F10126107.pdf").is_file()
+
+
 def _write_organized_newer_rev(make_pdf, out):
     folder = out / "F10126109 B Assy"
     folder.mkdir(parents=True)

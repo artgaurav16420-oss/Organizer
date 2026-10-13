@@ -248,7 +248,8 @@ def test_place_above_organized_children_shared_folder_skips(tmp_path, dry_run,
 
     copies, moves = _place_above_organized_children(
         "F10126109", ["F10126107"], new_children, new_index, new_names,
-        organized, moved_dirs, out, dry_run, logged.append)
+        organized, moved_dirs, out, dry_run, logged.append,
+        org_children_of={})
 
     assert moves == 0
     assert moved_dirs == {}
@@ -284,7 +285,7 @@ def test_nested_child_copy_failure_leaves_no_partial_target(tmp_path, make_pdf,
         "F10126109", ["F10126107"], {"F10126109": set()},
         {"F10126109": new_pdf}, {"F10126109": "Higher assembly"},
         {"F10126107": [child_folder / "F10126107.pdf"]}, {}, out,
-        False, logged.append)
+        False, logged.append, org_children_of={})
 
     target = out / "F10126109 Higher assembly" / "F10126107 Child"
     assert not target.exists()
