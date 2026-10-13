@@ -1994,6 +1994,32 @@ def test_adopted_copy_estimate_weights_scale_diamond_top_level(tmp_path):
         ["NEWR1"], children, {"MIDD": ["F10126107"]}, organized, out,
         weights={"NEWR1": 2})
     assert est == {"NEWR1": 3}
+
+
+def test_adopted_copy_estimate_follows_supersede_moves(tmp_path):
+    # Supersede child moves relocate a nested organized folder without
+    # updating `organized`: the estimate must follow moved_dirs, else it
+    # counts zero files (rglob of the vanished path) while adoption copies
+    # the relocated tree and the post-swap cap fit undercounts.
+    out = tmp_path / "out"
+    new_home = out / "F10126200 New" / "F10126107 Child"
+    new_home.mkdir(parents=True)
+    (new_home / "F10126107.pdf").write_bytes(b"%PDF")
+    (new_home / "extra.pdf").write_bytes(b"%PDF")
+    old_folder = out / "LiveParent" / "F10126107 Child"
+    organized = {"F10126107": [old_folder / "F10126107.pdf"]}
+    moved_dirs = {old_folder: new_home}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], {"NEWR": []}, {"NEWR": ["F10126107"]},
+        organized, out, moved_dirs=moved_dirs)
+    assert est == {"NEWR": 2}
+    # Without the relocation map the vanished path falls back to the
+    # indexed tally (the stray is missed, but the cap cannot undercount
+    # to zero).
+    est_stale = runmodes._adopted_copy_estimate(
+        ["NEWR"], {"NEWR": []}, {"NEWR": ["F10126107"]},
+        organized, out)
+    assert est_stale == {"NEWR": 1}
 def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
     # A top-level organized root claimed by a new non-root is re-homed
     # (moved, not copied): no stale root folder is left behind, and later

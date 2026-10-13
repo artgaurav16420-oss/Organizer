@@ -1011,7 +1011,7 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
 
 
 def _adopted_copy_estimate(roots, children, org_children_of, organized,
-                           output, weights=None):
+                           output, weights=None, moved_dirs=None):
     """Per-root estimates of adopted organized-subtree copies (fan-out cap).
 
     The adoption passes copy organized children claimed anywhere in a root's
@@ -1024,10 +1024,14 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
     A top-level folder is moved by its first claimant and copied by the
     rest, so it contributes Copies-1 there: first-sorted-root order matches
     placement, and repeated placements of one root (weights) multiply its
-    instances first. Estimate only: folder resolution, MAX_DIR skips and
-    mid-run re-homes are resolved at copy time.
+    instances first. Folders relocated by supersede swaps/child moves are
+    resolved through moved_dirs (the pass copies the relocated tree); a
+    vanished folder falls back to the indexed tally so the cap cannot
+    undercount. Estimate only: folder resolution and MAX_DIR skips are
+    resolved at copy time.
     """
     weights = weights or {}
+    moved_dirs = moved_dirs or {}
     pdf_memo = {}
 
     def folder_pdfs(folder):
@@ -1039,7 +1043,7 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
             except OSError:
                 pdf_memo[key] = None
         n = pdf_memo[key]
-        if n is None:
+        if n is None or (n == 0 and not folder.is_dir()):
             n = sum(1 for ps in organized.values() for p in ps
                     if p.is_relative_to(folder))
         return n
@@ -1060,7 +1064,13 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
 
     def child_folder(c):
         paths = organized.get(c, [])
-        return pick_shallowest(paths).parent if paths else None
+        folder = pick_shallowest(paths).parent if paths else None
+        if folder is not None:
+            for old, new in moved_dirs.items():
+                if folder == old or folder.is_relative_to(old):
+                    folder = new / folder.relative_to(old)
+                    break
+        return folder
 
     nested = {}
     top_inst = {}
@@ -1741,7 +1751,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     # charge them per claimant too, or a small accepted graph could copy
     # large organized subtrees past the cap.
     extra = _adopted_copy_estimate(placeable, new_children, org_children_of,
-                                       organized, output, weights)
+                                       organized, output, weights,
+                                       moved_dirs)
     kept, skipped = fit_roots_within_cap(new_children, placeable, log,
                                          weights=weights, extra=extra)
     refused = bool(skipped)
