@@ -883,7 +883,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
             if not copied:
                 shutil.rmtree(str(target_path), ignore_errors=True)
     return sum(1 for paths in organized.values() for p in paths
-               if p.is_relative_to(current))
+               if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
 
 def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,

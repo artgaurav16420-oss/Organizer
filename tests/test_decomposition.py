@@ -396,6 +396,26 @@ def test_copy_org_child_tree_dry_run_accepts_moved_descendant(tmp_path, make_pdf
     assert any("[DRY-RUN] copy" in m for m in logged)
 
 
+def test_copy_org_child_tree_counts_relocated_source(tmp_path, make_pdf):
+    # After an ancestor move, the copy reads from the relocated folder
+    # while organized still indexes the old path: the count must follow
+    # the indexed tally, not drop to zero.
+    out = tmp_path / "out"
+    old_home = out / "OldRoot" / "F10126107 Child"
+    old_home.mkdir(parents=True)
+    make_pdf(old_home / "F10126107.pdf", ["NAME", "Child part"])
+    new_home = out / "NewHome" / "F10126107 Child"
+    new_home.mkdir(parents=True)
+    make_pdf(new_home / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [old_home / "F10126107.pdf"]}
+    moved_dirs = {out / "OldRoot": out / "NewHome"}
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "Target", organized,
+                                  moved_dirs, out, False, logged.append)
+    assert copies == 1
+    assert (out / "Target" / "F10126107 Child" / "F10126107.pdf").is_file()
+
+
 def test_copy_org_child_tree_lock_loss_stops_before_copy(tmp_path, make_pdf,
                                                           monkeypatch):
     # A steal racing placement must stop the adoption like it stops
