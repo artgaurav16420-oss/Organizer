@@ -336,6 +336,30 @@ def test_copy_org_child_tree_skips_overlong_descendant(tmp_path, make_pdf,
     assert not (out / "NewParent").exists()
 
 
+def test_copy_org_child_tree_non_oserror_cleans_partial_target(tmp_path, make_pdf,
+                                                                monkeypatch):
+    # Anything past OSError (KeyboardInterrupt, ...) must not leave a partial
+    # tree: cleanup runs from finally and the error still propagates.
+    # RuntimeError stands in (a real KeyboardInterrupt would abort pytest).
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+
+    def blow_up(src, dst, *a, **k):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "partial.pdf").write_bytes(b"")
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(shutil, "copytree", blow_up)
+    logged = []
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                             {}, out, False, logged.append)
+    assert not (out / "NewParent" / "F10126107 Child").exists()
+
+
 def test_copy_orphans_then_retire_adopted(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

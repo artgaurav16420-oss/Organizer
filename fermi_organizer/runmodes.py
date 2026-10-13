@@ -869,14 +869,19 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         _ensure_lock(lock, log)
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
+        copied = False
         try:
             shutil.copytree(str(current), str(target_path), symlinks=True)
+            copied = True
         except OSError as e:
             log(f"  WARNING: copy failed for {c}: {e}")
-            # The target did not exist before this call, so a partial copy
-            # is ours to remove; leaving it would make later runs skip c.
-            shutil.rmtree(str(target_path), ignore_errors=True)
             return 0
+        finally:
+            # The target did not exist before this call, so any failure past
+            # OSError (KeyboardInterrupt, ...) must not leave a partial tree
+            # that later runs mistake for a placed child.
+            if not copied:
+                shutil.rmtree(str(target_path), ignore_errors=True)
     return sum(1 for paths in organized.values() for p in paths
                if p.is_relative_to(current))
 
