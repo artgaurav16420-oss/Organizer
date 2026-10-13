@@ -1916,3 +1916,38 @@ def test_adopted_copy_estimate_counts_diamond_paths(tmp_path):
     est = runmodes._adopted_copy_estimate(
         ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
     assert est == {"NEWR": 4}
+def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
+    # A top-level organized root claimed by a new non-root is re-homed
+    # (moved, not copied): no stale root folder is left behind, and later
+    # claimants resolve the new home.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107.pdf", [
+        "FERMI PART LIST",
+        "F10126108 LONELY PART",
+        "NAME",
+        "Child assembly",
+    ])
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+    assert (out / "F10126107 Child assembly").is_dir()
+
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST",
+        "F10126110 MIDDLE ASSEMBLY",
+        "NAME",
+        "New root",
+    ])
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST",
+        "F10126107 CHILD ASSEMBLY",
+        "NAME",
+        "Middle assembly",
+    ])
+
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    middle = out / "F10126109 New root" / "F10126110 Middle assembly"
+    assert (middle / "F10126107 Child assembly" / "F10126107.pdf").is_file()
+    assert not (out / "F10126107 Child assembly").exists()
