@@ -1945,6 +1945,55 @@ def test_adopted_copy_estimate_multi_placement_scales(tmp_path):
         ["NEWR1"], {"NEWR1": []}, {"NEWR1": ["F10126107"]}, organized, out,
         weights={"NEWR1": 2})
     assert est == {"NEWR1": 1}
+
+
+def test_adopted_copy_estimate_diamond_top_level_moves_once(tmp_path):
+    # Diamond (D under both B and C) claiming a top-level folder: two
+    # placed instances, first moves, second copies -> 1 copy.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR": ["MIDB", "MIDC"], "MIDB": ["MIDD"], "MIDC": ["MIDD"],
+                "MIDD": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
+    assert est == {"NEWR": 1}
+
+
+def test_adopted_copy_estimate_diamond_top_level_multi_root(tmp_path):
+    # Two roots sharing one top-level child, first via a diamond (2 paths):
+    # first-sorted-root order matches placement, so R1 copies once (2-1)
+    # and R2 copies its single instance.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR1": ["MIDB", "MIDC"], "MIDB": ["MIDD"],
+                "MIDC": ["MIDD"], "MIDD": [], "NEWR2": ["MIDD2"],
+                "MIDD2": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1", "NEWR2"], children,
+        {"MIDD": ["F10126107"], "MIDD2": ["F10126107"]}, organized, out)
+    assert est == {"NEWR1": 1, "NEWR2": 1}
+
+
+def test_adopted_copy_estimate_weights_scale_diamond_top_level(tmp_path):
+    # Multi-placement root (weights=2) with a diamond (2 paths) claiming a
+    # top-level folder: 4 instances, first moves, rest copy -> 3 copies.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR1": ["MIDB", "MIDC"], "MIDB": ["MIDD"],
+                "MIDC": ["MIDD"], "MIDD": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1"], children, {"MIDD": ["F10126107"]}, organized, out,
+        weights={"NEWR1": 2})
+    assert est == {"NEWR1": 3}
 def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
     # A top-level organized root claimed by a new non-root is re-homed
     # (moved, not copied): no stale root folder is left behind, and later
@@ -1999,3 +2048,29 @@ def test_adopt_one_moves_skipped_past_max_path(tmp_path, make_pdf, monkeypatch):
     assert (copies, moves) == (0, 0)
     assert any("path too long" in m for m in logged)
     assert top.is_dir()
+
+
+def test_adopt_one_copy_branch_skipped_past_max_path(tmp_path, make_pdf,
+                                                     monkeypatch):
+    # The copy branch (nested child) shares the same up-front MAX_PATH guard
+    # as the move branch: an over-limit descendant is skipped, never copied.
+    import shutil as _shutil
+    from fermi_organizer import runmodes as _rm
+    monkeypatch.setattr(_rm, "MAX_PATH", 100)
+    out = tmp_path / "out"
+    nested = out / "LiveParent" / "F10126107 Child"
+    nested.mkdir(parents=True)
+    make_pdf(nested / "F10126107.pdf", ["NAME", "Child assembly"])
+    organized = {"F10126107": [nested / "F10126107.pdf"]}
+
+    calls = []
+    monkeypatch.setattr(_shutil, "copytree",
+                        lambda *a, **k: calls.append((a, k)))
+    logged = []
+    copies, moves = _rm._adopt_one_org_child(
+        "F10126107", out / "NewParent", organized, {}, out, False,
+        logged.append)
+    assert (copies, moves) == (0, 0)
+    assert calls == []
+    assert any("path too long" in m for m in logged)
+    assert not (out / "NewParent").exists()
