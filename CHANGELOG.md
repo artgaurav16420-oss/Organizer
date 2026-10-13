@@ -26,6 +26,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   roots routed organized children into place; non-roots silently skipped them,
   leaving BOM-listed children out of their folder (9 parents, ~15 copies on
   the SSR2+HBCM corpora). Nested under a live parent means copy, never move.
+- A copy of a relocated organized folder counts its indexed PDFs: after an
+  ancestor move the copy reads from the new home while `organized` still
+  indexes the old path, which used to report zero copies for a successful
+  copy.
 
 ### Excel report performance, security, and layout improvements
 - Optimized column auto-fitting (`_autofit`) using row-major `ws.iter_rows()` to eliminate random-access cell dictionary lookups.

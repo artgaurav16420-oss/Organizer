@@ -1916,6 +1916,192 @@ def test_adopted_copy_estimate_counts_diamond_paths(tmp_path):
     est = runmodes._adopted_copy_estimate(
         ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
     assert est == {"NEWR": 4}
+
+
+def test_adopted_copy_estimate_top_level_moves_once(tmp_path):
+    # A top-level folder is moved by its first claimant and copied by the
+    # rest: two roots claiming one 3-PDF top-level child estimate 0 + 3.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    for name in ("F10126107.pdf", "extra1.pdf", "extra2.pdf"):
+        (child / name).write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1", "NEWR2"], {"NEWR1": [], "NEWR2": []},
+        {"NEWR1": ["F10126107"], "NEWR2": ["F10126107"]}, organized, out)
+    assert est == {"NEWR1": 0, "NEWR2": 3}
+
+
+def test_adopted_copy_estimate_multi_placement_scales(tmp_path):
+    # A root placed under two organized parents adopts twice: the first
+    # placement moves the top-level child, the second copies it.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1"], {"NEWR1": []}, {"NEWR1": ["F10126107"]}, organized, out,
+        weights={"NEWR1": 2})
+    assert est == {"NEWR1": 1}
+
+
+def test_adopted_copy_estimate_diamond_top_level_moves_once(tmp_path):
+    # Diamond (D under both B and C) claiming a top-level folder: two
+    # placed instances, first moves, second copies -> 1 copy.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR": ["MIDB", "MIDC"], "MIDB": ["MIDD"], "MIDC": ["MIDD"],
+                "MIDD": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], children, {"MIDD": ["F10126107"]}, organized, out)
+    assert est == {"NEWR": 1}
+
+
+def test_adopted_copy_estimate_diamond_top_level_multi_root(tmp_path):
+    # Two roots sharing one top-level child, first via a diamond (2 paths):
+    # first-sorted-root order matches placement, so R1 copies once (2-1)
+    # and R2 copies its single instance.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR1": ["MIDB", "MIDC"], "MIDB": ["MIDD"],
+                "MIDC": ["MIDD"], "MIDD": [], "NEWR2": ["MIDD2"],
+                "MIDD2": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1", "NEWR2"], children,
+        {"MIDD": ["F10126107"], "MIDD2": ["F10126107"]}, organized, out)
+    assert est == {"NEWR1": 1, "NEWR2": 1}
+
+
+def test_adopted_copy_estimate_weights_scale_diamond_top_level(tmp_path):
+    # Multi-placement root (weights=2) with a diamond (2 paths) claiming a
+    # top-level folder: 4 instances, first moves, rest copy -> 3 copies.
+    out = tmp_path / "out"
+    child = out / "F10126107 Child"
+    child.mkdir(parents=True)
+    (child / "F10126107.pdf").write_bytes(b"%PDF")
+    organized = {"F10126107": [child / "F10126107.pdf"]}
+    children = {"NEWR1": ["MIDB", "MIDC"], "MIDB": ["MIDD"],
+                "MIDC": ["MIDD"], "MIDD": []}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR1"], children, {"MIDD": ["F10126107"]}, organized, out,
+        weights={"NEWR1": 2})
+    assert est == {"NEWR1": 3}
+
+
+def test_adopted_copy_estimate_follows_supersede_moves(tmp_path):
+    # Supersede child moves relocate a nested organized folder without
+    # updating `organized`: the estimate must follow moved_dirs, else it
+    # counts zero files (rglob of the vanished path) while adoption copies
+    # the relocated tree and the post-swap cap fit undercounts.
+    out = tmp_path / "out"
+    new_home = out / "F10126200 New" / "F10126107 Child"
+    new_home.mkdir(parents=True)
+    (new_home / "F10126107.pdf").write_bytes(b"%PDF")
+    (new_home / "extra.pdf").write_bytes(b"%PDF")
+    old_folder = out / "LiveParent" / "F10126107 Child"
+    organized = {"F10126107": [old_folder / "F10126107.pdf"]}
+    moved_dirs = {old_folder: new_home}
+    est = runmodes._adopted_copy_estimate(
+        ["NEWR"], {"NEWR": []}, {"NEWR": ["F10126107"]},
+        organized, out, moved_dirs=moved_dirs)
+    assert est == {"NEWR": 2}
+    # Without the relocation map the vanished path falls back to the
+    # indexed tally (the stray is missed, but the cap cannot undercount
+    # to zero).
+    est_stale = runmodes._adopted_copy_estimate(
+        ["NEWR"], {"NEWR": []}, {"NEWR": ["F10126107"]},
+        organized, out)
+    assert est_stale == {"NEWR": 1}
+def test_run_incremental_rehomes_top_level_child_of_new_nonroot(tmp_path, make_pdf):
+    # A top-level organized root claimed by a new non-root is re-homed
+    # (moved, not copied): no stale root folder is left behind, and later
+    # claimants resolve the new home.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107.pdf", [
+        "FERMI PART LIST",
+        "F10126108 LONELY PART",
+        "NAME",
+        "Child assembly",
+    ])
+    run_full(in_dir, out, False, lambda msg: None, jobs=1)
+    assert (out / "F10126107 Child assembly").is_dir()
+
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST",
+        "F10126110 MIDDLE ASSEMBLY",
+        "NAME",
+        "New root",
+    ])
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST",
+        "F10126107 CHILD ASSEMBLY",
+        "NAME",
+        "Middle assembly",
+    ])
+
+    logged = []
+    run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    middle = out / "F10126109 New root" / "F10126110 Middle assembly"
+    assert (middle / "F10126107 Child assembly" / "F10126107.pdf").is_file()
+    assert not (out / "F10126107 Child assembly").exists()
+
+
+def test_adopt_one_moves_skipped_past_max_path(tmp_path, make_pdf, monkeypatch):
+    # shutil.move has no length guard: adopting a deep tree under a long
+    # parent must skip up front like copies do, not create over-limit paths.
+    from fermi_organizer import runmodes as _rm
+    monkeypatch.setattr(_rm, "MAX_PATH", 100)
+    out = tmp_path / "out"
+    top = out / "F10126107 Child assembly"
+    top.mkdir(parents=True)
+    make_pdf(top / "F10126107.pdf", ["NAME", "Child assembly"])
+    organized = {"F10126107": [top / "F10126107.pdf"]}
+    logged = []
+    copies, moves = _rm._adopt_one_org_child(
+        "F10126107", out / "NewParent", organized, {}, out, False,
+        logged.append)
+    assert (copies, moves) == (0, 0)
+    assert any("path too long" in m for m in logged)
+    assert top.is_dir()
+
+
+def test_adopt_one_copy_branch_skipped_past_max_path(tmp_path, make_pdf,
+                                                     monkeypatch):
+    # The copy branch (nested child) shares the same up-front MAX_PATH guard
+    # as the move branch: an over-limit descendant is skipped, never copied.
+    import shutil as _shutil
+    from fermi_organizer import runmodes as _rm
+    monkeypatch.setattr(_rm, "MAX_PATH", 100)
+    out = tmp_path / "out"
+    nested = out / "LiveParent" / "F10126107 Child"
+    nested.mkdir(parents=True)
+    make_pdf(nested / "F10126107.pdf", ["NAME", "Child assembly"])
+    organized = {"F10126107": [nested / "F10126107.pdf"]}
+
+    calls = []
+    monkeypatch.setattr(_shutil, "copytree",
+                        lambda *a, **k: calls.append((a, k)))
+    logged = []
+    copies, moves = _rm._adopt_one_org_child(
+        "F10126107", out / "NewParent", organized, {}, out, False,
+        logged.append)
+    assert (copies, moves) == (0, 0)
+    assert calls == []
+    assert any("path too long" in m for m in logged)
+    assert not (out / "NewParent").exists()
+
+
 def test_run_incremental_keeps_prior_batch_names(tmp_path, make_pdf):
     # Batch-1 names must survive into batch-2's workbook context: shortened
     # folders lose them from the tree fallback, so the incremental scan
