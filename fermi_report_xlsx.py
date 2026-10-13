@@ -338,10 +338,11 @@ def _fallback_name(resolved, stem):
     """Same-drawing NAME for a stem with no extracted entry.
 
     Same base (and revision, when present) means the same part, so a
-    superseded CHK row can reuse its DWG twin's NAME. Sheet suffixes must
-    match exactly - except for CHK requesters, which are the same drawing
-    as their rev twin: a plain stem is its own sheet, so a sibling sheet's
-    NAME would be the wrong content. Deterministic first-sorted-donor pick;
+    superseded CHK row can reuse its DWG twin's NAME. Revisions must match
+    exactly - except for CHK requesters, which are the same drawing as
+    their rev twin. Sheet suffixes must match exactly - except for CHK
+    requesters: a plain stem is its own sheet, so a sibling sheet's NAME
+    would be the wrong content. Deterministic first-sorted-donor pick;
     extracted names always win (this only fills gaps).
     """
     base = stem.split("_")[0]
@@ -360,7 +361,7 @@ def _fallback_name(resolved, stem):
             continue
         cparts = cand.split("_")
         crev = cparts[1] if len(cparts) > 1 and cparts[1].isalpha() and len(cparts[1]) <= 2 else ""
-        if rev and crev and rev != crev:
+        if rev != crev and not sheet_ok:
             continue
         got_sheet = _sheet_of(cand)
         if want_sheet != got_sheet and not sheet_ok:
@@ -391,6 +392,10 @@ def _prior_names(path):
         return out
     try:
         ws = wb["Files"]
+    except KeyError:
+        wb.close()
+        return out
+    try:
         for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
             stem, name = (row + (None, None))[:2]
             if not stem or not name or name == "-":
@@ -407,7 +412,9 @@ def _resolve_names(names_raw, live, extra=()):
     """names_raw + base-stem fallback, for every tree/orphan stem and every key.
 
     extra: reported-but-unscanned stems (CHK, missing refs) that also deserve
-    a family fallback entry.
+    a family fallback entry. The base-key lookup carries no sheet info, so it
+    only serves sheetless (or CHK) requesters - a sheeted sibling has its own
+    NAME (same sheet rule as _fallback_name, CHK exempt).
     """
     resolved = {}
     stems = set(names_raw) | set(extra)
@@ -421,7 +428,12 @@ def _resolve_names(names_raw, live, extra=()):
             stems.add(s)
 
     for stem in stems:
-        v = names_raw.get(stem) or names_raw.get(stem.split("_")[0], "")
+        v = names_raw.get(stem) or ""
+        if not v:
+            base_name = names_raw.get(stem.split("_")[0], "")
+            if base_name and ("CHK" in stem.split("_")[1:]
+                              or _sheet_of(stem) is None):
+                v = base_name
         if v:
             resolved[stem] = v
     donors = dict(resolved)

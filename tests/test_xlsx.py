@@ -325,6 +325,46 @@ def test_resolve_names_sheetless_plain_blocked_from_sheet():
     assert "F10126106_A___DWG2" not in resolved
 
 
+def test_fallback_name_requires_exact_rev_match():
+    # An unrevisioned stem must not inherit a later revision's NAME, and
+    # mismatched revisions never mix - only CHK requesters bypass the match.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_B": "Rev B name"}, live,
+                                 extra=["F10126106"])
+    assert "F10126106" not in resolved
+    resolved = fx._resolve_names({"F10126106_A": "Rev A name"}, live,
+                                 extra=["F10126106_B"])
+    assert "F10126106_B" not in resolved
+
+
+def test_fallback_name_chk_requester_exempt_from_rev_match():
+    # A CHK is the same drawing as its rev twin: an unrevisioned CHK may
+    # reuse a revved donor's NAME.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106_B": "Rev B name"}, live,
+                                 extra=["F10126106_CHK"])
+    assert resolved["F10126106_CHK"] == "Rev B name"
+
+
+def test_resolve_names_bare_base_key_not_leaked_to_sheeted_sibling():
+    # A prior-run bare-stem NAME must not leak to sheeted siblings via the
+    # base-key lookup: each sheet has its own NAME.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_A___DWG2"])
+    assert resolved["F10126106"] == "Base name"
+    assert "F10126106_A___DWG2" not in resolved
+
+
+def test_resolve_names_chk_requester_may_reuse_bare_base_key():
+    # CHK requesters are the same drawing as their twin: exempt from the
+    # sheet rule, including the base-key lookup.
+    live = {"tree": [], "orph": []}
+    resolved = fx._resolve_names({"F10126106": "Base name"}, live,
+                                 extra=["F10126106_A___DWG2_CHK"])
+    assert resolved["F10126106_A___DWG2_CHK"] == "Base name"
+
+
 def test_resolve_names_extracted_name_always_wins():
     live = {"tree": [], "orph": []}
     names_raw = {"F10126106_A___DWG1": "Sheet one",
@@ -355,6 +395,18 @@ def test_prior_names_missing_or_corrupt_yields_empty(tmp_path):
     bad = tmp_path / "bad.xlsx"
     bad.write_bytes(b"not a workbook")
     assert fx._prior_names(bad) == {}
+
+
+def test_prior_names_workbook_without_files_sheet_returns_empty(tmp_path):
+    # A valid workbook from another tool has no Files sheet: the best-effort
+    # lookup yields {} instead of aborting the rebuild with KeyError.
+    from openpyxl import Workbook
+    out = tmp_path / "foreign.xlsx"
+    wb = Workbook()
+    wb.active.title = "Summary"
+    wb.active.append(["a", "b"])
+    wb.save(out)
+    assert fx._prior_names(out) == {}
 
 
 def test_formula_injection_neutralized(tmp_path):
