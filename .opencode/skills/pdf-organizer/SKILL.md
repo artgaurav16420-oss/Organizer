@@ -14,7 +14,7 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 ## Decision flow
 
 1. Resolve input and output paths. By default, specify `--output "<input>\Output"` to keep the organized tree separate from the input folder; omit `--output` only if an in-place run inside the input folder is explicitly requested.
-2. Always perform a dry run first to generate and review the plan without copying files:
+2. Always perform a dry run first to generate and review the plan without copying files. For status queries, `--dry-run` re-scans PDFs and updates `organize_fermi_report.xlsx` and its history sidecar without modifying original PDFs:
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>\Output" --dry-run
    ```
@@ -28,7 +28,7 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
    python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>" --dry-run
    python -m fermi_organizer.cli "<input_2>" --incremental --output "<existing_Output>"
    ```
-6. Handle multi-folder inputs by dry-running all folders first and reporting the plans together. After approval, execute sequentially with a full run for the first folder and incremental runs for subsequent folders.
+6. Handle multi-folder inputs by dry-running all folders first and reporting plans together (incremental dry-runs evaluate against current tree state, so drawings with parents in earlier unexecuted batches temporarily show as orphans). After approval, execute sequentially with a full run for the first folder and incremental runs for subsequent folders.
 7. Use command timeouts of at least 10 minutes for multi-thousand-file folders. Do not treat a quiet scan phase under `--- Scanning BOM tables ---` as a hang.
 
 ## Flags
@@ -47,8 +47,8 @@ Operate the Fermi lab PDF drawing organizer safely and correctly. Never edit or 
 | Code | Meaning | Action |
 |---|---|---|
 | `0` | Normal completion. Missing BOM references, unapproved `CHK` files, and orphans are reported but still exit 0. | Review the printed run summary and generated report artifacts (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`). |
-| `1` | Startup failure or invalid arguments. Triggered when the input path is missing or not a directory, no PDFs are found, the output folder cannot be created on a real run, or `.fermi_organizer.lock` is held by another process (`ERROR: ... lock ...`). No report or workbook is written. | Check the input/output paths and permissions, or wait for any concurrent run holding the lock to complete. Do not retry without resolving the underlying path or lock issue. |
-| `2` | Non-successful completion. Caused either by over-cap placement refusal (planned fan-out exceeds 10,000 copies; oversized root assemblies are skipped while rest is placed, or placement is skipped entirely if no roots fit; report `.txt` and workbook `.xlsx` ARE written) or by run-lock loss mid-run (lock stolen mid-run; report `.txt` and workbook `.xlsx` ARE NOT written). | Inspect the output folder for the report `.txt` and workbook `.xlsx`. If both artifacts exist, placement refusal occurred: check the log for skipped root assemblies and consult the user before re-running. If artifacts are missing, the lock was lost mid-run: ensure no concurrent process interfered and re-run. |
+| `1` | Startup failure. Triggered when the input path is missing or not a directory, no PDFs are found, the output folder cannot be created on a real run, or `.fermi_organizer.lock` is held by another process (`ERROR: ... lock ...`). No report or workbook is written. | Check the input/output paths and permissions, or wait for any concurrent run holding the lock to complete. Do not retry without resolving the underlying path or lock issue. |
+| `2` | Non-successful completion or argument error. Caused by malformed CLI flags (`argparse` error), over-cap placement refusal (planned fan-out exceeds 10,000 copies; report `.txt` and workbook `.xlsx` ARE written), or run-lock loss mid-run (lock stolen mid-run; report `.txt` and workbook `.xlsx` ARE NOT written). | Check console output and the output folder for this run's timestamped report `.txt` and workbook `.xlsx`. If written, placement refusal occurred (consult user before re-running); if missing, mid-run lock loss occurred (ensure no concurrent process interfered and re-run). |
 
 Placement refusal log lines and Dashboard behavior:
 - Partial refusal log line: `WARNING: placement partially refused - <N> oversized root(s) skipped (<names>); the rest <was placed|would be placed> (bounded orphan/archive copies are still handled); review the BOM graph (report + workbook still written)`
