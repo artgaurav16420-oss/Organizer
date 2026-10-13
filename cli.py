@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""CLI entry point for the Fermi PDF organizer (split-layout version)."""
+import argparse
+import os
+import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+from .extraction import (OCR, resolve_jobs)
+from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
+from .fsops import (RunLockedError, LockLostError, release_run_lock,
+                    abandon_run_lock, run_lock_lost)
+from .report_glue import names_from_tree
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Organize Fermi lab PDF drawings into nested folders based on BOM tables."
+    )
+    parser.add_argument("folder", help="Folder containing Fermi PDF drawings")
+    parser.add_argument("--output", help="Output folder for organized structure (default: same as input)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the plan without copying drawings; report + .xlsx are still "
+                             "written (a missing --output folder is created for the workbook only)")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Process only stems not already in the output tree plus stored "
+                             "_orphans/ (input scan is recursive); existing subfolders stay put "
+                             "except supersede swaps and parent-adoption moves")
+    parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
+    parser.add_argument("--jobs", type=int, default=0,
+                        help="Parallel extraction workers (0=auto = CPU count, 1=serial)")
+    parser.add_argument("--rekey-titleblock", action="store_true",
+                        help="Trust the title block over the filename: re-key a misnamed text PDF to its "
+                             "title-block drawing number (only when that drawing is not already present)")
+    return parser
+
+
+def _log_ocr_startup(log):
+    if OCR.enabled and OCR.ensure_tesseract():
+        major = int(OCR.version.split(".")[0]) if OCR.version else None
+        ver_txt = f", v{OCR.version}" if OCR.version else ""
+        log(f"OCR: enabled (tesseract: {OCR.tesseract_path}{ver_txt})")
+        if major is not None and major < 5:
+            log(f"OCR: WARNING: tesseract v{major} is older than v5; "
+                "scanned-page accuracy may suffer")
+    else:
+        reason = OCR.reason or "tesseract not found"
+        log("OCR: disabled" if not OCR.enabled else
+            f"OCR: unavailable ({reason}; scanned PDFs stay orphans)")
+
+
+def run_mode_label(dry_run, incremental):
+    if incremental:
+        return "INCREMENTAL (DRY-RUN)" if dry_run else "INCREMENTAL"
+    return "DRY-RUN" if dry_run else "EXECUTE"
+
+
+def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, incremental, log):
+    try:
+        import fermi_report_xlsx as fx
+    except ImportError as e:
+        log(f"  WARNING: Excel report skipped (module unavailable: {e})")
+        return
+    try:
+        names = dict(ctx["names"])
+        for base, name in names_from_tree(output).items():
+            names.setdefault(base, name)
+        # Explicit remap: RunContext uses used_on_mismatches, refresh_from_run wants mismatches.
+        mismatches: list[tuple[str, str, list[str]]] = ctx["used_on_mismatches"]
+        xlsx = fx.refresh_from_run(
+            output=str(output), run_mode=run_mode_label(dry_run, incremental),
+            run_time=run_time, counters=ctx["counters"], missing=ctx["missing"],
+            chk=ctx["chk"], orphans=ctx["orphans"],
+            report_txt=report_path if output.is_dir() else None,
+            names=names, roots=ctx["roots"],
+            mismatches=mismatches,
+            used_on_bugs=ctx["used_on_bugs"],
+            titleblock_mismatches=ctx["titleblock_mismatches"],
+            scanned=ctx["scanned"], watermarks=ctx["watermarks"], log=log,
+            placement_refused=ctx.get("placement_refused", False),
+            skipped_roots=ctx.get("skipped_roots", []))
+        if xlsx:
+            log(f"  Excel report saved to: {xlsx}")
+    except Exception as e:
+        log(f"  WARNING: Excel report not updated: {type(e).__name__}: {e}")
+        for line in traceback.format_exc().rstrip().splitlines():
+            log(f"    {line}")
+
+
+def main():
+    """Parse args, run the full/incremental organizer, write report + workbook."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    folder = Path(args.folder).resolve()
+    if not folder.is_dir():
+        print(f"ERROR: not a directory: {folder}")
+        sys.exit(1)
+
+    output = Path(args.output).resolve() if args.output else folder
+    if not output.is_dir() and not args.dry_run:
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"ERROR: could not create output folder {output}: {e}")
+            sys.exit(1)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = output / f"organize_fermi_pdfs_report_{timestamp}.txt"
+    log_lines = []
+
+    def log(msg):
+        print(msg)
+        log_lines.append(msg)
+
+    run_time = datetime.now().isoformat(timespec="seconds")
+    log(f"Fermi PDF organizer - {run_time}")
+    log(f"Source folder: {folder}")
+    if output != folder:
+        log(f"Output folder: {output}")
+    OCR.reset(enabled=not args.no_ocr)
+    _log_ocr_startup(log)
+    if args.incremental and not args.output and (folder / "Output").is_dir():
+        log(f"WARNING: {folder / 'Output'} exists. Use --output to target it.")
+    if not args.incremental and output == folder:
+        log("WARNING: in-place run - organized folders inside the input "
+            "are re-scanned by later full runs; use --output to keep the "
+            "tree separate")
+    if os.name == "nt" and str(output).startswith("\\\\"):
+        log("WARNING: output is on a network share (UNC path): the run lock "
+            "is not reliable there - coordinate runs manually, never run two "
+            "against this output (mapped drive letters to a share are no "
+            "safer, they just cannot be detected - see Known limits)")
+    log(f"Mode: {run_mode_label(args.dry_run, args.incremental)}")
+    jobs = resolve_jobs(args.jobs)
+    log(f"  Extraction workers: {jobs} (override with --jobs N)")
+    log("")
+
+    try:
+        if args.incremental:
+            ctx, held = run_incremental(folder, output, args.dry_run, log, jobs,
+                                        rekey=args.rekey_titleblock,
+                                        hold_lock=True)
+        else:
+            ctx, held = run_full(folder, output, args.dry_run, log, jobs,
+                                 rekey=args.rekey_titleblock, hold_lock=True)
+    except NoPDFsFoundError:
+        sys.exit(1)
+    except LockLostError as e:
+        # Stolen mid-run: the tree may hold partial writes, hence exit 2
+        # (same as placement-refused) rather than the clean-refusal exit 1.
+        print(f"ERROR: {e}")
+        sys.exit(2)
+    except RunLockedError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+    # The lock spans the shared-file post-work too — but re-verify it first:
+    # a steal during the run leaves the report/workbook writes to the other
+    # run. Discard post-work (never clobber) and exit 2 like a mid-run loss.
+    if run_lock_lost(held):
+        log("  ERROR: run lock lost during the run (stolen while paused?) - "
+            "discarding report/workbook writes to avoid clobbering the other run")
+        abandon_run_lock(held)
+        sys.exit(2)
+
+    try:
+        skipped = ctx.get("skipped_roots", [])
+        if skipped:
+            names = ", ".join(r for r, _ in skipped[:5])
+            more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+            verb = "would be placed" if args.dry_run else "was placed"
+            log("  WARNING: placement partially refused - "
+                f"{len(skipped)} oversized root(s) skipped ({names}{more}); "
+                f"the rest {verb} (bounded orphan/archive copies are still "
+                "handled); review the BOM graph (report + workbook still "
+                "written)")
+        elif ctx.get("placement_refused"):
+            log("  WARNING: placement refused - folder placement skipped (bounded "
+                "orphan/archive copies still ran); review the "
+                "BOM graph (report + workbook still written)")
+
+        if OCR.enabled and OCR.events:
+            log("")
+            log("--- OCR (scanned pages) ---")
+            for line in OCR.report_lines():
+                log(line)
+
+        if output.is_dir():
+            try:
+                report_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+                log(f"  Report saved to:     {report_path}")
+            except OSError as e:
+                log(f"  WARNING: report not saved ({report_path}): {e}")
+        else:
+            log(f"  Report NOT saved (output folder missing): {output}")
+
+        # Live Excel workbook (after every run, dry-run included)
+        _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
+                          args.incremental, log)
+    finally:
+        # The lock spans the shared-file post-work too: report + workbook are
+        # read-modify-write files, so a second run must not enter until they
+        # are done. run_* acquired it; only the CLI holder releases it here.
+        release_run_lock(held)
+
+    # Refusal is a non-success outcome: distinct exit code so scripts notice
+    # without reading the log. Report + workbook are already written above.
+    if ctx.get("placement_refused"):
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
