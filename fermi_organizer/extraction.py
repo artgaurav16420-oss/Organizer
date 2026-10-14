@@ -20,10 +20,11 @@ if hasattr(pymupdf, "no_recommend_layout"):
     pymupdf.no_recommend_layout()
 
 from .config import (canonical_stem,
-                     TB_REV_VAL_RE, TB_NUM_VAL_RE,
+                     TB_REV_VAL_RE, TB_NUM_VAL_RE, TB_NUM_FULL_RE,
                      TB_REV_DX_LEFT, TB_REV_DX_RIGHT, TB_REV_DY_BOTTOM,
                      TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT, TB_NUM_DY_BOTTOM,
                      TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM,
+                     TB_NUM_LABEL_X_FRAC,
                      FERMI_RE, FERMI_RE_SEARCH,
                      FERMI_HEADER_RE, OCR_MIN_CHARS, OCR_MAIN_DPI, OCR_STRIP_DPI,
                      OCR_VAL_RE, OCR_CORR, ITEM_RE, BAD_DESC_RE, SIZE_RE,
@@ -38,6 +39,7 @@ from .config import (canonical_stem,
                      OCR_USED_ON_DX_RIGHT, OCR_USED_ON_DY_BOTTOM,
                      OCR_NAME_DX_LEFT, OCR_NAME_DY_TOP, OCR_NAME_DX_RIGHT,
                      OCR_NAME_DY_BOTTOM, OCR_NAME_LINE_TOL,
+                     OCR_PART_NAME_GAP_MAX,
                      OCR_FERMI_SCAN_DX_LEFT, OCR_FERMI_SCAN_DX_RIGHT,
                      OCR_HDR_ROW_TOL, OCR_ITEM_FERMI_GAP_MAX, OCR_HDR_ROW_GAP,
                      OCR_FERMI_COL_DX_LEFT, OCR_FERMI_COL_DX_RIGHT,
@@ -285,19 +287,22 @@ class _OcrContext:
                                      used_anchor[0] + OCR_USED_ON_DX_RIGHT,
                                      used_anchor[1] + OCR_USED_ON_DY_BOTTOM)
                     used = _ocr_strip_tokens(page, rect, psm="6")
-                if not used:
+                if not used or not name:
                     # Scaled-down scans: the small title-block labels are often
                     # missed at full-page DPI - re-OCR the bottom-right corner
-                    # at high zoom.
+                    # at high zoom. Run when USED ON OR NAME is missing: the
+                    # zoom pass often reads a NAME the full-page pass dropped
+                    # (it previously ran only for a missing USED ON).
                     try:
                         clip = pymupdf.Rect(page.rect.width * 0.55,
                                          page.rect.height * 0.85,
                                          page.rect.width, page.rect.height)
                         zoom_words = _ocr_words_zoom(page, clip, 8, "6")
                         z_used, z_name, _ = _title_fields_from_words(zoom_words)
-                        if z_used:
+                        if z_used and not used:
                             used = z_used
-                            name = z_name or name
+                        if z_name and not name:
+                            name = z_name
                     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
                         if issues is not None:
                             issues.append(f"{page_label}: title-block zoom OCR failed: {e}")
@@ -456,17 +461,20 @@ def _find_used_anchor(words):
 
 
 def _find_name_anchor(words):
-    """Last standalone NAME label (a PART word to its left marks the header row)."""
+    """Last standalone NAME label (an adjacent PART word marks the header row)."""
     name_anchor = None
     for w in words:
         t = re.sub(r"[^A-Z]", "", w[4].upper())
         if t == "NAME":
-            # the parts-list header row reads "ITEM | FERMI # | PART NAME";
-            # only a standalone NAME (no PART before it on the same visual row)
-            # is the title-block NAME label.
-            left = [w2 for w2 in words
-                    if w2[0] < w[0] and abs(w2[1] - w[1]) < OCR_ROW_TOL]
-            if any(w2[4].upper().startswith("PART") for w2 in left):
+            # the parts-list header row reads "ITEM | FERMI # | PART NAME":
+            # reject only when a PART word sits immediately to NAME's left (the
+            # header pair). A left-column note line ("PART TO BE FREE OF ALL
+            # SHARP EDGES") can land on the same visual row far to the left and
+            # must not hide the title-block NAME label.
+            if any(w2[4].upper().startswith("PART")
+                   and 0 <= w[0] - w2[2] <= OCR_PART_NAME_GAP_MAX
+                   and abs(w2[1] - w[1]) < OCR_ROW_TOL
+                   for w2 in words):
                 continue
             name_anchor = w
     return name_anchor
@@ -494,13 +502,27 @@ def _name_from_anchor(words, name_anchor):
     if name_anchor is None:
         return None
     nx, ny1 = name_anchor[0], name_anchor[3]
-    picked = [w for w in words
-              if w is not name_anchor
-              and nx - OCR_NAME_DX_LEFT <= w[0] <= nx + OCR_NAME_DX_RIGHT
-              and ny1 - OCR_NAME_DY_TOP <= w[1] <= ny1 + OCR_NAME_DY_BOTTOM
-              and len(re.sub(r"[^A-Za-z]", "", w[4])) >= 2
-              and not _ocr_tok(w[4])
-              and w[4].upper().strip(",:;") not in _BAD_NAME_WORDS]
+    win_top = ny1 - OCR_NAME_DY_TOP
+    win_bottom = ny1 + OCR_NAME_DY_BOTTOM
+
+    def _candidate(w):
+        return (w is not name_anchor
+                and nx - OCR_NAME_DX_LEFT <= w[0] <= nx + OCR_NAME_DX_RIGHT
+                and len(re.sub(r"[^A-Za-z]", "", w[4])) >= 2
+                and not _ocr_tok(w[4])
+                and w[4].upper().strip(",:;") not in _BAD_NAME_WORDS)
+
+    # Strict pass first: the value's top edge must sit inside the window. This
+    # keeps every drawing that already reads a NAME byte-identical.
+    picked = [w for w in words if _candidate(w)
+              and win_top <= w[1] <= win_bottom]
+    if not picked:
+        # Fallback for a value vertically centred in a tall cell: its OCR box
+        # starts above the label's bottom edge (and can reach well below it),
+        # so accept any word whose span overlaps the window. Without this a
+        # legible NAME was dropped to a bare drawing-number folder (F10209823).
+        picked = [w for w in words if _candidate(w)
+                  and w[1] <= win_bottom and w[3] >= win_top]
     picked.sort(key=lambda w: (round(w[1]), w[0]))
     if picked:
         # NAME is a single line; anything in the next visual row (SCALE,
@@ -1544,14 +1566,20 @@ def _ocr_drawing_number(raw):
 
     Handles 'F10197062', corrections ('Floos2259' -> F10052259), and the
     leading F dropped by Tesseract ('10197062' -> F10197062).
+
+    Only a full-length FERMI number is accepted ('F' + 8 digits, or 'FC' + 7).
+    Tesseract splits a cramped title-block number into fragments ('F', '1Q1',
+    '19580'); a shorter fragment must never be fabricated into a wrong number
+    (F10119580 -> F19580). Rejecting it makes the field read as unreadable
+    rather than as a false mismatch against the filename.
     """
     t = raw.strip().upper()
-    if TB_NUM_VAL_RE.match(t):
+    if TB_NUM_FULL_RE.match(t):
         return t
     v = _ocr_tok(t)
-    if v and TB_NUM_VAL_RE.match(v):
+    if v and TB_NUM_FULL_RE.match(v):
         return v
-    if re.fullmatch(r"\d{5,8}", t):
+    if re.fullmatch(r"\d{8}", t):
         return "F" + t
     return None
 
@@ -1568,7 +1596,8 @@ def _ocr_number_rank(raw):
 
 
 def _title_value_under(words, label, val_re, dx_left, dx_right,
-                       dy_top, dy_bottom, wide=False, convert=None, rank=None):
+                       dy_top, dy_bottom, wide=False, convert=None, rank=None,
+                       label_x_min=None):
     """Value word near the bottom-most `label` word (title block).
 
     The bottom-most label is the title block field; the same label in the
@@ -1576,9 +1605,15 @@ def _title_value_under(words, label, val_re, dx_left, dx_right,
     value just below the label (`wide=False`); OCR word boxes can be offset by
     a row, so OCR uses a generous symmetric window (`wide=True`). `convert`
     maps raw OCR words to a value (None rejects); `rank` orders candidates
-    (lower wins, then distance to the label, then x).
+    (lower wins, then distance to the label, then x). `label_x_min` (word-space
+    x) is the start of the title-block column: when the label word appears more
+    than once (the title block plus a note on the left that repeats it, e.g.
+    "MANUFACTURER'S PART NUMBER F10154728"), only labels in that column are
+    considered - even if that leaves none.
     """
     labs = [w for w in words if w[4].strip().upper() == label]
+    if label_x_min is not None and len(labs) > 1:
+        labs = [w for w in labs if w[0] >= label_x_min]
     if not labs:
         return None
     lab = max(labs, key=lambda w: w[1])
@@ -1621,13 +1656,18 @@ def extract_title_block(doc, issues=None):
                 issues.append(f"title-block OCR failed: {e}")
             return None, None
 
+        # Words are ISO-normalized, so the label region is measured in word
+        # space (page points / scale): notes on the left often repeat 'NUMBER'.
+        num_x_min = page.rect.width / OCR.doc_scale(page) * TB_NUM_LABEL_X_FRAC
+
         def from_words(ws):
             return (
                 _title_value_under(ws, "NUMBER", TB_NUM_VAL_RE,
                                    TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT,
                                    TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM, wide=True,
                                    convert=_ocr_drawing_number,
-                                   rank=_ocr_number_rank),
+                                   rank=_ocr_number_rank,
+                                   label_x_min=num_x_min),
                 _title_value_under(ws, "REV", TB_REV_VAL_RE,
                                    TB_REV_DX_LEFT, TB_REV_DX_RIGHT,
                                    TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM, wide=True),
@@ -1654,7 +1694,8 @@ def extract_title_block(doc, issues=None):
         words = page.get_text("words")
         number = _title_value_under(words, "NUMBER", TB_NUM_VAL_RE,
                                     TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT,
-                                    2, TB_NUM_DY_BOTTOM)
+                                    2, TB_NUM_DY_BOTTOM,
+                                    label_x_min=page.rect.width * TB_NUM_LABEL_X_FRAC)
         rev = _title_value_under(words, "REV", TB_REV_VAL_RE,
                                  TB_REV_DX_LEFT, TB_REV_DX_RIGHT,
                                  2, TB_REV_DY_BOTTOM)

@@ -4,6 +4,62 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Title block check: OCR number notes and scanned near-misses
+- The drawing-number label must sit in the right half of the sheet, so note
+  text on the left ("MANUFACTURER'S PART NUMBER F10154728") no longer hijacks
+  the field (`F10007338`, `F10007339`, `F10007343`, `F10007348`).
+- A scanned (OCR) number that differs from the filename by a single character
+  is treated as an OCR misread rather than a misnamed file (`F10134728`,
+  `F10157448`). Text-layer reads are unaffected and stay exact.
+
+### OCR title-block number: reject split fragments
+- The OCR title-block reader now accepts only a full-length FERMI number
+  (`F` + 8 digits, or `FC` + 7). Tesseract splitting a cramped number
+  (`F10119580` -> tokens `F`, `1Q1`, `19580`) no longer fabricates `F19580`,
+  so the Title block check stops reporting bogus number mismatches
+  (`F10128056`, `F10119580`, `F10142926`, `F10144043`, `F10144047`,
+  `F10042432`). Such a field now reads as unreadable instead of wrong.
+
+### Title block check: no revision row for a misnamed file
+- When a file's drawing number disagrees with its title block, the Title
+  block check sheet (and log) no longer also reports a revision row for that
+  drawing - the filename revision is meaningless once the number is wrong.
+  Revision rows are unchanged for correctly numbered files.
+
+### Workbook Files sheet is tree-only
+- The `Files` sheet now lists only the organized tree (`Active` / `CHK`);
+  parked `_orphans/` files are no longer repeated there and live solely on the
+  `Orphans` sheet. The `PDF FILES IN TREE (LIVE)` count was already tree-only.
+
+### OCR title-block NAME: note-row guard and zoom retry
+- `_find_name_anchor` now rejects a `NAME` label only when a `PART` word sits
+  **immediately to its left** (the parts-list `PART NAME` header pair) instead
+  of any `PART` word on the same visual row. A left-column note ("PART TO BE
+  FREE OF ALL SHARP EDGES") no longer hides the title-block label and drops a
+  legible NAME (`F10144038` "FLAT RAIL SUPPORT BLOCK", `F10144048`
+  "CYLINDRICAL RAIL SUPPORT BLOCK - 1").
+- The title-block zoom re-OCR now also runs when a NAME is missing (previously
+  only for a missing USED ON), recovering small NAME labels the full-page pass
+  misses (`F10112629`, `F10007335`, `F10128174`, ...).
+
+### OCR title-block NAME on tall cells
+- The OCR NAME reader now retries with a vertical-overlap window when the
+  strict top-edge window finds nothing, so a value centred in a tall
+  title-block cell (its OCR box starting above the `NAME` label's bottom
+  edge) is read. Drawings that already read a NAME keep their exact result -
+  the strict pass wins, so a tall box cannot hijack the row. The scanned
+  `F10209823` (`HB650 PROD CM - PIPING PROCUREMENT`) had fallen back to a bare
+  drawing-number folder despite a legible NAME.
+
+### Incremental root classification matches full mode
+- The incremental Roots sheet/count no longer includes parentless BOM-less
+  standalones (which are parked in `_orphans/`) or new stems placed under an
+  already organized parent. Reported roots now use the same rule as full mode
+  (`_classify_roots`: no parent + at least one child edge), via the new
+  `_incremental_roots`. Previously the internal placement worklist (every
+  parentless new stem) was reported as roots, so a drawing could appear in
+  both Roots and Orphans (e.g. `F10038961`). Placement itself is unchanged.
+
 ### Workbook NAME coverage fixes
 - Incremental runs now carry organized names forward (`_scan_organized`
   already extracted them and dropped them): prior-batch NAMEs survive into

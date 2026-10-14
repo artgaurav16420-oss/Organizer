@@ -13,7 +13,7 @@ from .extraction import (resolve_jobs, bom_task,
                          title_task, org_task, dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
-                    collect_reachable, snap_ref)
+                    collect_reachable, snap_ref, _edit1)
 from .naming import build_folder_names, folder_name_for
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
@@ -141,17 +141,29 @@ def _titleblock_mismatches(titleblocks, log):
 
     titleblocks: {stem: (filename stem, drawing number, revision, NAME, scanned)}.
     Reports the drawing number (misnamed file), the revision (stale or absent
-    in the filename), and the title (only when the filename carries a title
+    in the filename - skipped when the number already mismatches), and the
+    title (only when the filename carries a title
     and it shares no token with the title-block NAME). Returns
     [(stem, field, filename_value, titleblock_value)] sorted.
+
+    A scanned (OCR) number that differs from the filename by a single character
+    is treated as an OCR misread, not a misnamed file: the filename is the CAD
+    export name and is authoritative, and one glyph off is not distinguishable
+    from noise on these sheets.
     """
     out = []
-    for stem, (fname, number, rev, name, _scanned) in sorted(titleblocks.items()):
+    for stem, (fname, number, rev, name, scanned) in sorted(titleblocks.items()):
         parts = stem.split("_")
         srev = parts[1] if len(parts) > 1 and len(parts[1]) == 1 else ""
-        if number and number != parts[0]:
+        number_mismatch = bool(number) and number != parts[0]
+        if number_mismatch and scanned and _edit1(number, parts[0]):
+            number_mismatch = False
+        if number_mismatch:
             out.append((stem, "number", parts[0], number))
-        if rev is not None:
+        # A misnamed file (filename number != title-block number) is already
+        # flagged; its filename revision is meaningless, so don't also report
+        # a revision row for the same drawing.
+        if rev is not None and not number_mismatch:
             crev = "" if rev == "-" else rev
             if crev != srev:
                 out.append((stem, "revision", srev or "-", crev or "-"))
@@ -1737,18 +1749,36 @@ def _incremental_placeable(R, new_boms, new_children, org_parents_of,
                 or org_parents_of.get(R) or org_children_of.get(R))
 
 
+def _incremental_roots(new_stems, new_parents, org_parents_of, org_children_of,
+                       new_boms, new_children):
+    """Top-level assemblies arriving in this incremental run.
+
+    Same rule as full mode's ``_classify_roots``: a stem is a root only when
+    nothing is its parent - neither a new stem nor an already organized one -
+    and it has at least one child edge (its own BOM/children, or an organized
+    child it references). A parentless BOM-less standalone is an orphan in
+    ``_orphans/``, never a root, exactly as in a full run."""
+    return sorted(
+        s for s in new_stems
+        if not new_parents.get(s) and not org_parents_of.get(s)
+        and (new_boms.get(s) or new_children.get(s) or org_children_of.get(s)))
+
+
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
                        log, rekeyed, total_copies, total_moves, lock=None):
-    """Placement decisions for new roots.
+    """Placement decisions for the parentless new stems (the placement worklist).
 
-    Returns (new_roots, copies, moves, placement_refused, skipped_roots). The
-    per-run fan-out check trims oversized roots before any placement, so a
-    partial refusal still places the rest; skipped roots are reported, never
-    placed. BOM-less standalone roots are still parked (bounded by the root
-    count, not by the graph fan-out), matching full mode - except on a full
-    refusal, which places and parks nothing, as before."""
+    Returns (worklist, copies, moves, placement_refused, skipped_roots), where
+    worklist is every parentless new stem - including BOM-less standalones that
+    are only parked and stems placed under an organized parent. Reported roots
+    are the ``_incremental_roots`` subset instead. The per-run fan-out check
+    trims oversized roots before any placement, so a partial refusal still
+    places the rest; skipped roots are reported, never placed. BOM-less
+    standalone roots are still parked (bounded by the root count, not by the
+    graph fan-out), matching full mode - except on a full refusal, which places
+    and parks nothing, as before."""
     new_roots = sorted(s for s in new_stems if not new_parents.get(s))
     log("--- Placement decisions ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
@@ -2020,12 +2050,18 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
     # places nothing, exactly as before.
-    (new_roots, total_copies, total_moves, place_refused,
+    (worklist, total_copies, total_moves, place_refused,
      skipped) = _incremental_place(
         new_stems, new_parents, org_parents_of, org_children_of, new_children,
         new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
         output, dry_run, log, rekeyed, total_copies, total_moves,
         lock=lock)
+    # Reported roots mirror full mode (see _incremental_roots): parentless
+    # BOM-less standalones and stems placed under an organized parent are not
+    # roots. A fully refused run placed nothing, so it reports none.
+    reported_roots = [] if not worklist else _incremental_roots(
+        new_stems, new_parents, org_parents_of, org_children_of,
+        new_boms, new_children)
     # A pre-check drop stays refused even when the backstop drops nothing
     # further (cycle breaking can only shrink the plan between the two).
     refused = refused or place_refused
@@ -2037,7 +2073,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # for placements that never happened.
     skipped_stems = {r for r, _ in skipped}
     planned = set()
-    for _r in new_roots:
+    for _r in worklist:
         if _r in skipped_stems:
             continue
         if not _incremental_placeable(_r, new_boms, new_children,
@@ -2054,7 +2090,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # Finalize retires adopted orphans (deletes), so the lock is re-checked.
     _ensure_lock(lock, log)
     return _incremental_finalize(stored_orphans, output, dry_run, log,
-                                 scanned_new, organized, new_roots,
+                                 scanned_new, organized, reported_roots,
                                  new_children, removed, total_copies,
                                  total_moves, warning_count, unmatched,
                                  chk_stems, new_used_on, incr_mism,

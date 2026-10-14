@@ -160,6 +160,41 @@ def test_build_workbook_sheet_cells(tmp_path):
     assert hist["H2"].value == "report.txt"
 
 
+def test_files_sheet_lists_tree_only_not_orphans(tmp_path):
+    # The Files sheet is the organized tree; parked _orphans/ files belong on
+    # the Orphans sheet and must not be repeated here.
+    out = tmp_path / "out"
+    (out / "F10126106 Assembly").mkdir(parents=True)
+    (out / "F10126106 Assembly" / "F10126106.pdf").write_bytes(b"%PDF")
+    orph = out / "_orphans"
+    orph.mkdir()
+    (orph / "F10126108.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 2, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": ["F10126108"], "roots": [],
+        "mismatches": [], "report_txt": "", "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    files = wb["Files"]
+    stems = [v for v in (files.cell(row=r, column=1).value
+                         for r in range(2, files.max_row + 1)) if v]
+    assert stems == ["F10126106"]
+    statuses = [files.cell(row=r, column=4).value
+                for r in range(2, files.max_row + 1)]
+    assert "ORPHAN (parked)" not in statuses
+    # The parked orphan is still reported on its own sheet.
+    assert wb["Orphans"]["A2"].value == "F10126108"
+
+
 def test_build_workbook_scanned_and_watermark_sheets(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

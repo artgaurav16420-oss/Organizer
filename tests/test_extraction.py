@@ -302,6 +302,13 @@ def test_ocr_drawing_number_variants():
     assert extraction._ocr_drawing_number("10197062") == "F10197062"
     assert extraction._ocr_drawing_number("1") is None
     assert extraction._ocr_drawing_number("SHEET") is None
+    # Tesseract splits a cramped title-block number into fragments; a shorter
+    # fragment must not be fabricated into a wrong number (F10119580 -> F19580).
+    assert extraction._ocr_drawing_number("19580") is None
+    assert extraction._ocr_drawing_number("F19580") is None
+    assert extraction._ocr_drawing_number("F23056") is None
+    assert extraction._ocr_drawing_number("F0042432") is None
+    assert extraction._ocr_drawing_number("1012805") is None
 
 
 def test_title_value_under_ocr_wide_window_and_candidate_rank():
@@ -328,6 +335,131 @@ def test_title_value_under_ocr_wide_window_and_candidate_rank():
         words2, "NUMBER", TB_NUM_VAL_RE, -40, 170, 40, 40, wide=True,
         convert=extraction._ocr_drawing_number, rank=extraction._ocr_number_rank)
     assert v2 == "F10197062"
+
+
+def test_title_value_under_label_region_excludes_left_notes():
+    from fermi_organizer.config import TB_NUM_VAL_RE
+    # A note on the left repeats 'NUMBER' lower than the title-block label; the
+    # label_x_min guard must ignore it and use the title block (right side).
+    words = [
+        (300, 400, 360, 410, "NUMBER", 0, 0, 0),     # note, left, lower
+        (405, 400, 500, 410, "F10154728", 0, 0, 0),  # note's value
+        (800, 300, 860, 310, "NUMBER", 0, 0, 0),     # title block, right
+        (805, 320, 900, 330, "F10134728", 0, 0, 0),
+    ]
+    v = extraction._title_value_under(
+        words, "NUMBER", TB_NUM_VAL_RE, -40, 170, 40, 40, wide=True,
+        convert=extraction._ocr_drawing_number,
+        rank=extraction._ocr_number_rank, label_x_min=600)
+    assert v == "F10134728"
+    # Without the guard the bottom-most (note) label hijacks the field.
+    v2 = extraction._title_value_under(
+        words, "NUMBER", TB_NUM_VAL_RE, -40, 170, 40, 40, wide=True,
+        convert=extraction._ocr_drawing_number,
+        rank=extraction._ocr_number_rank)
+    assert v2 == "F10154728"
+
+
+def test_name_from_anchor_accepts_tall_value_box():
+    # The NAME value can be vertically centred in a tall title-block cell: its
+    # OCR box then starts ABOVE the label's bottom edge (and reaches well
+    # below it). The window must test vertical overlap, not the word's top
+    # edge alone, or the value is dropped (F10209823 regressed to a bare
+    # drawing-number folder this way).
+    words = [
+        (3002.0, 2271.0, 3020.0, 2279.0, "NAME", 0, 0, 0),
+        (3051.0, 2270.0, 3086.0, 2316.0, "HB650", 0, 0, 0),
+        (3090.0, 2270.0, 3118.0, 2316.0, "PROD", 0, 0, 0),
+        (3122.0, 2270.0, 3144.0, 2316.0, "CM", 0, 0, 0),
+        (3158.0, 2270.0, 3195.0, 2316.0, "PIPING", 0, 0, 0),
+        (3201.0, 2270.0, 3292.0, 2316.0, "PROCUREMENT", 0, 0, 0),
+    ]
+    anchor = extraction._find_name_anchor(words)
+    assert anchor is not None
+    assert extraction._name_from_anchor(words, anchor) == (
+        "HB650 PROD CM PIPING PROCUREMENT")
+
+
+def test_name_from_anchor_ignores_words_below_the_window():
+    # A word clearly past the window (the SCALE / DRAWING NUMBER chips under
+    # the NAME cell) stays out.
+    words = [
+        (3002.0, 2271.0, 3020.0, 2279.0, "NAME", 0, 0, 0),
+        (3051.0, 2270.0, 3086.0, 2316.0, "HB650", 0, 0, 0),
+        (3100.0, 2360.0, 3160.0, 2375.0, "SCALE", 0, 0, 0),
+    ]
+    anchor = extraction._find_name_anchor(words)
+    assert extraction._name_from_anchor(words, anchor) == "HB650"
+
+
+def test_name_from_anchor_strict_row_wins_over_tall_noise():
+    # The overlap fallback must not hijack a drawing that already reads a NAME
+    # on the strict row: a tall box reaching into the window from above is only
+    # considered when the strict pass finds nothing (f10157448-style names must
+    # stay byte-identical).
+    words = [
+        (3002.0, 2271.0, 3020.0, 2279.0, "NAME", 0, 0, 0),
+        (2990.0, 2100.0, 3030.0, 2280.0, "er", 0, 0, 0),           # overlap-only
+        (3060.0, 2285.0, 3260.0, 2295.0, "REAL VALUE", 0, 0, 0),   # strict row
+    ]
+    anchor = extraction._find_name_anchor(words)
+    assert extraction._name_from_anchor(words, anchor) == "REAL VALUE"
+
+
+def test_find_name_anchor_keeps_label_with_distant_part_note():
+    # A left-column note ("PART TO BE FREE OF ALL SHARP EDGES") can land on the
+    # same visual row as the title-block NAME label. Only an *adjacent* PART
+    # word (the "PART NAME" header pair) may hide the label (F10144038).
+    words = [
+        (100.0, 729.0, 140.0, 739.0, "PART", 0, 0, 0),   # note, far left
+        (300.0, 730.0, 360.0, 740.0, "EDGES", 0, 0, 0),
+        (823.0, 729.6, 850.0, 740.0, "NAME", 0, 0, 0),   # title-block label
+    ]
+    anchor = extraction._find_name_anchor(words)
+    assert anchor is not None
+    assert anchor[4] == "NAME"
+
+
+def test_find_name_anchor_rejects_adjacent_part_name_header():
+    # The parts-list column header "PART NAME" must still be rejected.
+    words = [
+        (500.0, 200.0, 560.0, 210.0, "PART", 0, 0, 0),
+        (566.0, 200.0, 610.0, 210.0, "NAME", 0, 0, 0),
+    ]
+    assert extraction._find_name_anchor(words) is None
+
+
+def test_analyze_page_zoom_recovers_name_when_used_on_present(
+        tmp_path, make_pdf, monkeypatch):
+    # The title-block zoom re-OCR must also run when NAME is missing though
+    # USED ON was read - the full-page pass misses the small NAME label
+    # (F10112629). OCR is simulated, so no Tesseract is needed.
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
+    page = fitz.open(str(pdf))[0]
+
+    full_words = [
+        (100.0, 500.0, 140.0, 510.0, "USED", 0, 0, 0),
+        (146.0, 500.0, 170.0, 510.0, "ON", 0, 0, 0),
+        (180.0, 500.0, 240.0, 510.0, "F10126107", 0, 0, 0),
+    ]
+    zoom_words = [
+        (823.0, 729.0, 850.0, 740.0, "NAME", 0, 0, 0),
+        (836.0, 746.0, 880.0, 756.0, "FLAT", 0, 0, 0),
+        (930.0, 746.0, 970.0, 756.0, "RAIL", 0, 0, 0),
+        (979.0, 746.0, 1030.0, 756.0, "SUPPORT", 0, 0, 0),
+        (1057.0, 746.0, 1110.0, 756.0, "BLOCK", 0, 0, 0),
+    ]
+    extraction.OCR.reset(enabled=True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+    monkeypatch.setattr(extraction.OCR, "words_cached",
+                        lambda *a, **k: full_words)
+    monkeypatch.setattr(extraction, "_ocr_words_zoom",
+                        lambda *a, **k: zoom_words)
+
+    used, name, _bom = extraction.OCR.analyze_page(page, [], "F10126106")
+
+    assert used == ["F10126107"]
+    assert name == "FLAT RAIL SUPPORT BLOCK"
 
 
 def test_ocr_context_reset_clears_state_and_unique_doc_key_fallback():

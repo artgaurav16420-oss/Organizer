@@ -926,9 +926,7 @@ def _files_sheet(files, ctx, names, live):
     for p in sorted(live["tree"], key=lambda q: str(q).lower()):
         stem = canonical_stem(p.stem) or p.stem.upper()
         add(p, "CHK (unapproved)" if stem in chk_set else "Active")
-    for p in sorted(live["orph"], key=lambda q: str(q).lower()):
-        add(p, "ORPHAN (parked)")
-    pal = {"Active": "green", "CHK (unapproved)": "amber", "ORPHAN (parked)": "orange"}
+    pal = {"Active": "green", "CHK (unapproved)": "amber"}
     _table(files, ["Drawing (stem)", "Name", "Revision", "Status", "Folder (relative to output)"],
            (26, 40, 10, 20, 60), rows, tab="blue",
            aligns=["left", "left", "center", "center", "left"],
@@ -936,8 +934,9 @@ def _files_sheet(files, ctx, names, live):
            link_first=lambda i, row: _file_uri(paths[i]),
            empty="No PDFs in the output tree yet", max_width=110,
            note=("About this sheet",
-                 "Live scan of the output folder. Click a drawing to open its PDF; use "
-                 "the filter arrows to slice by status or revision.", "blue"))
+                 "Live scan of the organized tree (parked orphans live on the "
+                 "Orphans sheet). Click a drawing to open its PDF; use the "
+                 "filter arrows to slice by status or revision.", "blue"))
 
 
 def _history_sheet(hist, ctx, counters, missing_pairs, path, log):

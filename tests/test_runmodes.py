@@ -1132,6 +1132,26 @@ def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     assert "storing in _orphans/" in "\n".join(logged)
 
 
+def test_incremental_roots_match_full_mode(tmp_path, make_pdf):
+    # A parentless BOM-less standalone is an orphan, never a root: the
+    # incremental Roots list/count must match full mode instead of counting
+    # every parentless new stem (the internal placement worklist).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+
+    full = run_full(in_dir, tmp_path / "out_full", False, lambda m: None, jobs=1)
+    incr = run_incremental(in_dir, tmp_path / "out_incr", False,
+                           lambda m: None, jobs=1)
+
+    assert full["counters"]["roots"] == 1
+    assert incr["counters"]["roots"] == full["counters"]["roots"]
+    assert incr["roots"] == full["roots"] == [("F10126106", [])]
+    assert incr["orphans"] == full["orphans"] == ["F10126108"]
+
+
 def test_swap_revision_counts_only_actual_writes(tmp_path):
     new_pdf = tmp_path / "F10126107_A.pdf"
     new_pdf.write_bytes(b"new")
@@ -1421,12 +1441,13 @@ def test_run_full_reports_titleblock_mismatches(tmp_path, make_pdf):
 
     mism = ctx["titleblock_mismatches"]
     assert ("F10126106_A_DWG1", "number", "F10126106", "F10126107") in mism
-    assert ("F10126106_A_DWG1", "revision", "A", "B") in mism
+    # The misnamed file's filename revision is not also reported.
+    assert not any(m[1] == "revision" for m in mism)
     assert ("F10126108", "name", "KIT, SOMETHING ELSE",
             "Completely Different") in mism
     text = "\n".join(logged)
-    assert "Title block check (3 mismatch(es))" in text
-    assert "F10126106_A_DWG1: revision: filename 'A', title block 'B'" in text
+    assert "Title block check (2 mismatch(es))" in text
+    assert "F10126106_A_DWG1: revision:" not in text
 
 
 def test_rekey_misnamed_pure_rules():
@@ -1848,14 +1869,47 @@ def test_titleblock_mismatches_pure_rules():
     }
     logged.clear()
     res = _titleblock_mismatches(tb_multi, logged.append)
+    # A number mismatch (misnamed file) suppresses the revision row for the
+    # same drawing - the filename revision is meaningless then.
     expected = [
         ("F10126106_A", "number", "F10126106", "F10126107"),
-        ("F10126106_A", "revision", "A", "B"),
         ("F10126108", "name", "WRONG NAME", "OTHER TITLE"),
     ]
     assert res == expected
     text = "\n".join(logged)
-    assert "Title block check (3 mismatch(es))" in text
+    assert "Title block check (2 mismatch(es))" in text
+
+
+def test_titleblock_number_mismatch_suppresses_revision_row():
+    # A misnamed file reports the number only; its filename revision is
+    # meaningless. A correctly-named file still reports its revision.
+    misnamed = {"F10126106_A": ("F10126106_A", "F10126107", "B", None, False)}
+    logged = []
+    res = _titleblock_mismatches(misnamed, logged.append)
+    assert res == [("F10126106_A", "number", "F10126106", "F10126107")]
+    assert "revision" not in "\n".join(logged)
+
+    named = {"F10126106_A": ("F10126106_A", "F10126106", "B", None, False)}
+    res = _titleblock_mismatches(named, lambda m: None)
+    assert res == [("F10126106_A", "revision", "A", "B")]
+
+
+def test_titleblock_scanned_single_char_number_misread_suppressed():
+    # A scanned sheet whose OCR number differs from the filename by one glyph is
+    # read as an OCR misread, not a misnamed file (the filename is the CAD
+    # export name and is authoritative).
+    scanned = {"F10134728___DWG1": ("F10134728___DWG1", "F10154728", None, None, True)}
+    assert _titleblock_mismatches(scanned, lambda m: None) == []
+
+    # A text-layer read of the same number is exact, so it is still reported.
+    text = {"F10134728___DWG1": ("F10134728___DWG1", "F10154728", None, None, False)}
+    res = _titleblock_mismatches(text, lambda m: None)
+    assert res == [("F10134728___DWG1", "number", "F10134728", "F10154728")]
+
+    # More than one character apart is still a real mismatch, even when scanned.
+    far = {"F10134728___DWG1": ("F10134728___DWG1", "F10128174", None, None, True)}
+    res2 = _titleblock_mismatches(far, lambda m: None)
+    assert res2 == [("F10134728___DWG1", "number", "F10134728", "F10128174")]
 
 
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
