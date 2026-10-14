@@ -360,6 +360,17 @@ def test_title_value_under_label_region_excludes_left_notes():
     assert v2 == "F10154728"
 
 
+def test_name_plausible_rejects_short_ocr_fragments():
+    # A 1-2 letter NAME is OCR noise from a mangled cell (the zoom pass reads
+    # the real value); three letters is a real, terse name like 'LUG'.
+    assert not extraction._name_plausible(None)
+    assert not extraction._name_plausible("")
+    assert not extraction._name_plausible("a")
+    assert not extraction._name_plausible("er")
+    assert extraction._name_plausible("LUG")
+    assert extraction._name_plausible("SSR/650 CM LIFTING INTERFACE ASSY")
+
+
 def test_name_from_anchor_accepts_tall_value_box():
     # The NAME value can be vertically centred in a tall title-block cell: its
     # OCR box then starts ABOVE the label's bottom edge (and reaches well

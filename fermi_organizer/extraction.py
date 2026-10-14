@@ -287,12 +287,16 @@ class _OcrContext:
                                      used_anchor[0] + OCR_USED_ON_DX_RIGHT,
                                      used_anchor[1] + OCR_USED_ON_DY_BOTTOM)
                     used = _ocr_strip_tokens(page, rect, psm="6")
-                if not used or not name:
+                name_missing = not _name_plausible(name)
+                if not used or name_missing:
                     # Scaled-down scans: the small title-block labels are often
                     # missed at full-page DPI - re-OCR the bottom-right corner
                     # at high zoom. Run when USED ON OR NAME is missing: the
                     # zoom pass often reads a NAME the full-page pass dropped
-                    # (it previously ran only for a missing USED ON).
+                    # (it previously ran only for a missing USED ON). A 1-2
+                    # letter NAME counts as missing: it is noise from a mangled
+                    # cell (F10134685 read 'er' for 'SSR/650 CM LIFTING
+                    # INTERFACE ASSY'), and the zoom pass reads it cleanly.
                     try:
                         clip = pymupdf.Rect(page.rect.width * 0.55,
                                          page.rect.height * 0.85,
@@ -301,7 +305,7 @@ class _OcrContext:
                         z_used, z_name, _ = _title_fields_from_words(zoom_words)
                         if z_used and not used:
                             used = z_used
-                        if z_name and not name:
+                        if z_name and name_missing:
                             name = z_name
                     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
                         if issues is not None:
@@ -532,6 +536,18 @@ def _name_from_anchor(words, name_anchor):
     if picked:
         return " ".join(w[4] for w in picked)
     return None
+
+
+def _name_plausible(name):
+    """True when an OCR NAME looks like a real part name, not a stray fragment.
+
+    A 1-2 letter read ('er') is OCR noise from a mangled title-block cell - the
+    real value reads cleanly at zoom - so the caller re-OCRs the corner. A short
+    but real name ('LUG') has three letters and is left untouched.
+    """
+    if not name:
+        return False
+    return len(re.sub(r"[^A-Za-z]", "", name)) >= 3
 
 
 def _join_split_f_tokens(words):

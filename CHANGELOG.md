@@ -4,6 +4,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### OCR title-block NAME: retry when the read is a stray fragment
+- A 1-2 letter NAME (OCR noise from a mangled cell) is now treated as missing,
+  so the title-block zoom re-OCR fires and reads the real value (`F10134685`
+  read `er` for `SSR/650 CM LIFTING INTERFACE ASSY`). A three-letter real name
+  (`LUG`) is left untouched.
+
 ### Title block check: OCR number notes and scanned near-misses
 - The drawing-number label must sit in the right half of the sheet, so note
   text on the left ("MANUFACTURER'S PART NUMBER F10154728") no longer hijacks
