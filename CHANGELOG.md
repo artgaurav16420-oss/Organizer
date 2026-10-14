@@ -4,6 +4,22 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Full and incremental share one decision layer
+- Both modes now compute their reported decisions (roots/orphans, missing refs,
+  USED ON bugs, USED ON mismatches) from one merged view of the tree using the
+  same functions, so the two modes cannot report different things. Cyclic
+  merged graphs are broken before the root/orphan split, mirroring full mode's
+  order. Removed the forked `_incremental_roots` and
+  `_collect_used_on_bugs_incremental`; added `_collect_missing` and
+  `tests/test_mode_parity.py`, which fails if a decision is forked again.
+  Known, deliberate asymmetries (counters, `scanned`, `chk`, `orphans`, cycle
+  section, the no-new-PDF early exit) are recorded in
+  `docs/adr/0001-shared-run-mode-decisions.md`.
+- **Behaviour change (incremental):** the Roots sheet/count and the USED ON
+  check's mismatch table now cover the whole tree rather than only the stems
+  arriving in that run, matching full mode. The incremental summary line
+  "New graph roots:" is now "Root assemblies:" (same value and wording as full).
+
 ### Incremental missing list matches full mode after OCR snap
 - Incremental computed the "missing reference(s) from organized drawing(s)"
   list from un-snapped BOMs, so a misread that snaps to a real stem

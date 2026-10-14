@@ -84,6 +84,27 @@ def _log_missing_refs(header, refs, bom_names, log):
             log(f"  NAME {val}: {bom_names[val]}")
 
 
+def _collect_missing(boms, stems, bom_names, header, log):
+    """Refs in `boms` that match no stem, logged as one block.
+
+    The single implementation of the missing-reference check for full and
+    incremental runs (callers pass their own header suffix and keep their own
+    blank-line/FC/CHK bookkeeping). `boms` must already be OCR-snapped, or a
+    misread that snaps to a real stem is reported missing too. Returns
+    [(referencing stem, ref)] in sorted order; logs nothing when empty.
+    """
+    missing = []
+    for stem, vals in sorted(boms.items()):
+        for v in vals:
+            if not is_processable_ref(v):
+                continue
+            if not match_pdfs(v, stems):
+                missing.append((stem, v))
+    if missing:
+        _log_missing_refs(f"Skipped {len(missing)} {header}", missing, bom_names, log)
+    return missing
+
+
 def _log_chk_block(chk_stems, log):
     log(f"--- UNAPPROVED DRAWINGS (CHK) ({len(chk_stems)}) - "
         f"download approved DWG from Teamcenter: ---")
@@ -484,29 +505,6 @@ def _classify_roots(index, parents, bom_of, children):
     return roots, orphans
 
 
-def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_on,
-                                     all_stems, log):
-    """Report USED ON bugs for an incremental run (BOM is the only truth)."""
-    bom_children = defaultdict(set)
-    for boms in (new_boms, org_boms):
-        for parent, vals in boms.items():
-            for v in vals:
-                if not is_processable_ref(v):
-                    continue
-                for c in match_pdfs(v, all_stems):
-                    if c != parent:
-                        bom_children[parent].add(c)
-    used_on_of = dict(org_used_on)
-    used_on_of.update(new_used_on)
-    bugs = find_used_on_bugs(bom_children, used_on_of, all_stems)
-    if bugs:
-        _log_used_on_bugs(bugs, log)
-    return bugs
-
-
-# ---------------------------------------------------------------------------
-# Incremental state: candidate set, revision conflicts, supersede swaps
-# ---------------------------------------------------------------------------
 def _in_place_tree_copy(p, stem, output):
     """(In-place runs) True when a scanned PDF looks like an organized copy:
     it sits inside the exact stem/base folder or a '{base} NAME' folder, the
@@ -627,16 +625,10 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
     _snap_used_on(org_used_on, all_stems, log)
     # Missing refs are reported across ALL drawings (new + organized), so the
     # Teamcenter download list in the report/workbook is complete every run.
-    org_unmatched = []
-    for ostem, vals in sorted(org_boms.items()):
-        for v in vals:
-            if not is_processable_ref(v):
-                continue
-            if not match_pdfs(v, all_stems):
-                org_unmatched.append((ostem, v))
+    org_unmatched = _collect_missing(
+        org_boms, all_stems, bom_names,
+        "missing reference(s) from organized drawing(s):", log)
     if org_unmatched:
-        _log_missing_refs(f"Skipped {len(org_unmatched)} missing reference(s) from organized drawing(s):",
-                          org_unmatched, bom_names, log)
         log("")
     log("")
     return (org_boms, org_used_on, org_unmatched, org_watermarks,
@@ -1276,7 +1268,6 @@ def _full_build_edges(bom_of, index, bom_names, log):
     """BOM edges + missing/FC logs. Returns (children, parents, unmatched)."""
     children = defaultdict(set)
     parents = defaultdict(set)
-    unmatched = []
     skipped_fc = set()
     for stem, raw_values in sorted(bom_of.items()):
         for val in raw_values:
@@ -1285,20 +1276,16 @@ def _full_build_edges(bom_of, index, bom_names, log):
                 continue
             if not is_processable_ref(val):
                 continue
-            matches = match_pdfs(val, index)
-            if not matches:
-                unmatched.append((stem, val))
-                continue
-            for m in matches:
+            for m in match_pdfs(val, index):
                 if m == stem:
                     continue
                 children[stem].add(m)
                 parents[m].add(stem)
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
+    unmatched = _collect_missing(bom_of, index, bom_names,
+                                 "BOM reference(s) with no matching PDF:", log)
     if unmatched:
-        _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
-                          unmatched, bom_names, log)
         log("")
     return children, parents, unmatched
 
@@ -1601,16 +1588,8 @@ def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
     skipped_fc = sorted({v for vals in new_boms.values() for v in vals if v.startswith("FC")})
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
-    unmatched = []
-    for nstem, vals in sorted(new_boms.items()):
-        for v in vals:
-            if not is_processable_ref(v):
-                continue
-            if not match_pdfs(v, all_stems):
-                unmatched.append((nstem, v))
-    if unmatched:
-        _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
-                          unmatched, bom_names, log)
+    unmatched = _collect_missing(new_boms, all_stems, bom_names,
+                                 "BOM reference(s) with no matching PDF:", log)
     log("")
     # Unapproved CHK drawings among the new PDFs: approved DWG should be
     # downloaded from Teamcenter (same base drawing number, no CHK suffix)
@@ -1713,27 +1692,29 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
 
 
 def _incremental_graph(new_boms, org_boms, new_used_on, org_used_on,
-                       new_names, all_stems, new_stems, org_stems, log):
-    """Graph edges + USED ON cross-checks + cycles + relationship notes."""
+                       all_stems, new_stems, org_stems, log,
+                       *, merged_children, merged_used_on, merged_names):
+    """Graph edges + USED ON cross-checks + cycles + relationship notes.
+
+    Placement maps stay delta-scoped (``new_*`` / ``org_*_of``); the two
+    *reported* cross-checks run on the merged tree with the same functions full
+    mode uses, so the two modes report identical USED ON sections.
+    """
     _, org_parents_of = _graph_edges(org_boms, new_stems)
     org_children_of, _ = _graph_edges(new_boms, org_stems)
     new_children, new_parents = _graph_edges(new_boms, new_stems)
     # BOM is the only source of truth for parent-child edges; USED ON is a
     # cross-check only. Report children whose USED ON names a parent the
     # parent's BOM does not list as USED ON bugs (never placement edges).
-    used_on_bugs = _collect_used_on_bugs_incremental(
-        new_boms, org_boms, new_used_on, org_used_on, all_stems, log)
+    used_on_bugs = find_used_on_bugs(merged_children, merged_used_on, all_stems)
+    if used_on_bugs:
+        _log_used_on_bugs(used_on_bugs, log)
     # USED ON consistency (BOM-derived edges only): parent BOM lists the part
-    # but the part USED ON omits the parent.
-    incr_bom_edges, _ = _graph_edges(new_boms, all_stems)
-    org_edges, _ = _graph_edges(org_boms, new_stems)
-    for ostem, children_set in org_edges.items():
-        incr_bom_edges[ostem] |= children_set
-    used_all = dict(org_used_on)
-    used_all.update(new_used_on)
-    incr_mism = find_used_on_mismatches(incr_bom_edges, used_all)
+    # but the part USED ON omits the parent. Whole merged tree, plus the merged
+    # name map, so the sheet and the report's NAME lines match a full run.
+    incr_mism = find_used_on_mismatches(merged_children, merged_used_on)
     if incr_mism:
-        _log_used_on_mismatches(incr_mism, new_names, log)
+        _log_used_on_mismatches(incr_mism, merged_names, log)
     removed = _log_cycle_detection("--- Cycle detection (new PDFs) ---",
                                    new_children, new_parents, log)
     _log_relationship_notes(new_stems, new_parents, org_parents_of, org_children_of, log)
@@ -1753,21 +1734,6 @@ def _incremental_placeable(R, new_boms, new_children, org_parents_of,
                 or org_parents_of.get(R) or org_children_of.get(R))
 
 
-def _incremental_roots(new_stems, new_parents, org_parents_of, org_children_of,
-                       new_boms, new_children):
-    """Top-level assemblies arriving in this incremental run.
-
-    Same rule as full mode's ``_classify_roots``: a stem is a root only when
-    nothing is its parent - neither a new stem nor an already organized one -
-    and it has at least one child edge (its own BOM/children, or an organized
-    child it references). A parentless BOM-less standalone is an orphan in
-    ``_orphans/``, never a root, exactly as in a full run."""
-    return sorted(
-        s for s in new_stems
-        if not new_parents.get(s) and not org_parents_of.get(s)
-        and (new_boms.get(s) or new_children.get(s) or org_children_of.get(s)))
-
-
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
@@ -1777,7 +1743,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     Returns (worklist, copies, moves, placement_refused, skipped_roots), where
     worklist is every parentless new stem - including BOM-less standalones that
     are only parked and stems placed under an organized parent. Reported roots
-    are the ``_incremental_roots`` subset instead. The per-run fan-out check
+    are computed separately from the merged tree with full mode's rule (see
+    ``_classify_roots`` in ``_run_incremental_inner``). The per-run fan-out check
     trims oversized roots before any placement, so a partial refusal still
     places the rest; skipped roots are reported, never placed. BOM-less
     standalone roots are still parked (bounded by the root count, not by the
@@ -1866,7 +1833,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
 def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           organized, new_roots, new_children, removed,
                           total_copies, total_moves, warning_count, unmatched,
-                          chk_stems, new_used_on, incr_mism, used_on_bugs,
+                          chk_stems, roots_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
                           bom_names, org_names=None, superseded=(), planned=(),
                           scan_res=None, refused=False,
@@ -1886,7 +1853,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "--- Summary ---",
         f"  New PDFs scanned:     {scanned_new}",
         f"  Already organized:    {len(organized)}",
-        f"  New graph roots:      {len(new_roots)}",
+        f"  Root assemblies:     {len(new_roots)}",
         f"  BOM edges kept:       {sum(len(v) for v in new_children.values())}",
         f"  Cycles broken:        {len(removed)}",
         f"  PDF copies written:   {total_copies}",
@@ -1906,7 +1873,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "missing": unmatched,
         "chk": chk_stems,
         "orphans": _live_orphan_stems(output),
-        "roots": [(r, sorted(set(new_used_on.get(r, [])))) for r in new_roots],
+        "roots": [(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
         "used_on_mismatches": incr_mism,
         "used_on_bugs": used_on_bugs,
         "titleblock_mismatches": tb_mismatches,
@@ -2046,10 +2013,35 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                    new_stems, org_stems, all_stems, sup_dir,
                                    output, dry_run, log, total_copies,
                                    lock=lock)
+    # One merged view of the tree this run reports on (new + already organized).
+    # Every reported decision below - roots, USED ON bugs, USED ON mismatches -
+    # is computed from it with the same functions full mode uses, so the two
+    # modes cannot drift. Placement keeps its own delta inputs (new_* /
+    # org_*_of): those drive the executor, not the report. Safe here because
+    # nothing after this point mutates the stem/bom maps.
+    merged_stems = new_stems | org_stems
+    merged_boms = {**org_boms, **new_boms}
+    merged_used_on = {**org_used_on, **new_used_on}
+    merged_children, merged_parents = _graph_edges(merged_boms, merged_stems)
+
     new_children, new_parents, org_parents_of, org_children_of, used_on_bugs, \
         incr_mism, removed = _incremental_graph(
-            new_boms, org_boms, new_used_on, org_used_on, new_names,
-            all_stems, new_stems, org_stems, log)
+            new_boms, org_boms, new_used_on, org_used_on,
+            all_stems, new_stems, org_stems, log,
+            merged_children=merged_children, merged_used_on=merged_used_on,
+            merged_names=_merge_names(org_names or {}, new_names))
+    # Break merged-graph cycles only now, exactly like full mode: the report
+    # cross-checks above run on the unbroken merged graph, and the break exists
+    # for the root/orphan split. Silent, so the "Cycle detection (new PDFs)"
+    # section keeps reporting new-graph breaks only (the pre-cap break above is
+    # silent for the same reason).
+    break_cycles(merged_children, merged_parents, lambda msg: None)
+    # Reported roots use full mode's rule and scope: every stem of the merged
+    # tree with no parent and at least one child edge. A refused run still
+    # reports the tree's roots exactly as full mode does (it reports the plan,
+    # not what it managed to place).
+    reported_roots, _merged_orphans = _classify_roots(
+        merged_stems, merged_parents, merged_boms, merged_children)
 
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
@@ -2060,12 +2052,11 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
         output, dry_run, log, rekeyed, total_copies, total_moves,
         lock=lock)
-    # Reported roots mirror full mode (see _incremental_roots): parentless
-    # BOM-less standalones and stems placed under an organized parent are not
-    # roots. A fully refused run placed nothing, so it reports none.
-    reported_roots = [] if not worklist else _incremental_roots(
-        new_stems, new_parents, org_parents_of, org_children_of,
-        new_boms, new_children)
+    # Reported roots use the SAME rule and scope as full mode: every stem of
+    # the merged tree (new + already organized) with no parent and at least one
+    # child edge. Organically parentless BOM-less standalones are orphans, not
+    # roots, and a refused run still reports the tree's roots exactly as full
+    # mode does (it reports the plan, not what it managed to place).
     # A pre-check drop stays refused even when the backstop drops nothing
     # further (cycle breaking can only shrink the plan between the two).
     refused = refused or place_refused
@@ -2097,7 +2088,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                  scanned_new, organized, reported_roots,
                                  new_children, removed, total_copies,
                                  total_moves, warning_count, unmatched,
-                                 chk_stems, new_used_on, incr_mism,
+                                 chk_stems, merged_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
                                  org_names=org_names,

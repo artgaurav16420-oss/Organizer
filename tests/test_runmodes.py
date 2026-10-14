@@ -499,13 +499,14 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
                         "used_on_mismatches", "used_on_bugs",
                         "titleblock_mismatches", "scanned", "watermarks",
                         "names", "placement_refused", "skipped_roots"}
-    assert ctx["counters"] == {"scanned": 2, "roots": 1, "copies": 2,
+    assert ctx["counters"] == {"scanned": 2, "roots": 2, "copies": 2,
                                "cycles": 0, "warnings": 0}
     assert ctx["skipped_roots"] == []
     assert ctx["missing"] == []
     assert ctx["chk"] == []
     assert ctx["orphans"] == []
-    assert ctx["roots"] == [("F10126109", [])]
+    # Whole-tree roots, exactly as a full run over the same tree would report.
+    assert ctx["roots"] == [("F10126106", []), ("F10126109", [])]
     assert ctx["used_on_mismatches"] == [("F10126109", "F10126108", [])]
     assert ctx["used_on_bugs"] == []
     assert ctx["names"]["F10126108"] == "Standalone part"
@@ -706,12 +707,14 @@ def test_run_incremental_full_refusal_places_and_parks_nothing(
 
     assert ctx["placement_refused"] is True
     assert ctx["skipped_roots"] == [("F10126106", 2)]
-    assert ctx["roots"] == []
-    assert ctx["counters"]["roots"] == 0
+    # Roots mirror full mode even on a refused run: it reports the tree's plan,
+    # not what it managed to place.
+    assert ctx["roots"] == [("F10126106", [])]
+    assert ctx["counters"]["roots"] == 1
     assert not any(out.rglob("*.pdf"))
     text = "\n".join(logged)
     assert "placing 0 of 1" in text
-    assert "New graph roots:      0" in text
+    assert "Root assemblies:     1" in text
 
 
 def test_run_incremental_precheck_ignores_phantom_cycle_fanout(
@@ -1150,6 +1153,19 @@ def test_incremental_roots_match_full_mode(tmp_path, make_pdf):
     assert incr["counters"]["roots"] == full["counters"]["roots"]
     assert incr["roots"] == full["roots"] == [("F10126106", [])]
     assert incr["orphans"] == full["orphans"] == ["F10126108"]
+
+    # Second phase: an incremental run over an ALREADY ORGANIZED tree must still
+    # report the whole tree's roots, not just the arriving stems - a full run
+    # over the same input is the reference.
+    out = tmp_path / "out_live"
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126108 STANDALONE PART", "NAME", "New assembly"])
+    incr2 = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+    full2 = run_full(in_dir, tmp_path / "out_full2", False, lambda m: None, jobs=1)
+
+    assert incr2["roots"] == full2["roots"] == [("F10126106", []), ("F10126109", [])]
+    assert incr2["counters"]["roots"] == full2["counters"]["roots"] == 2
 
 
 def test_swap_revision_counts_only_actual_writes(tmp_path):
@@ -1934,6 +1950,27 @@ def test_incremental_missing_refs_match_full_after_ocr_snap(tmp_path, make_pdf):
 
     assert "F0156241" not in {ref for _, ref in full["missing"]}
     assert "F0156241" not in {ref for _, ref in inc["missing"]}
+
+
+def test_collect_missing_filters_and_reports():
+    from fermi_organizer.runmodes import _collect_missing
+
+    boms = {"F10126106": ["F10126107", "F00459093", "FC0003392", "notaref"]}
+    logged = []
+    missing = _collect_missing(boms, {"F10126106", "F10126107"},
+                               {"F00459093": "NUT BACKING PLATE"},
+                               "ref(s):", logged.append)
+    assert missing == [("F10126106", "F00459093")]
+    text = "\n".join(logged)
+    assert "Skipped 1 ref(s):" in text
+    assert "F10126106 -> F00459093" in text
+    assert "NAME F00459093: NUT BACKING PLATE" in text
+
+    # Nothing missing -> no log at all (callers keep their own blank lines).
+    logged2 = []
+    assert _collect_missing({"S": ["F10126107"]}, {"S", "F10126107"}, {},
+                            "ref(s):", logged2.append) == []
+    assert logged2 == []
 
 
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
