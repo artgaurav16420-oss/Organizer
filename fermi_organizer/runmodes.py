@@ -524,7 +524,7 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
-    (organized, sup_dir, stored_orphans, new_index, chk_stems).
+    (organized, sup_dir, stored_orphans, new_index).
     Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
     to avoid redundant filesystem scans. `in_place` (output IS the input
     folder) keeps only tree-shaped copies as organized, so new arrivals at
@@ -552,11 +552,7 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
             # same stem arrived both at top level and in _orphans - top level wins
             continue
         new_index[o] = p
-    # Unapproved CHK drawings among the new arrivals, captured BEFORE revision
-    # filtering (a CHK whose DWG exists is filtered to _superseded below, but the
-    # user still needs the Teamcenter lookup in the report)
-    chk_stems = [s for s in sorted(new_index) if is_chk_stem(s)]
-    return organized, sup_dir, stored_orphans, new_index, chk_stems
+    return organized, sup_dir, stored_orphans, new_index
 
 
 def _detect_supersede_pairs(new_index, old_new, organized, log):
@@ -1227,10 +1223,6 @@ def _full_prepare_index(folder, output, jobs, log):
     if not index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
-    # Unapproved CHK drawings present at scan time (before revision filtering):
-    # a CHK is reported even when an approved DWG of the same base exists, since
-    # the DWG superseded it and the user still needs the Teamcenter lookup.
-    chk_stems = [s for s in sorted(index) if is_chk_stem(s)]
     index, old = split_superseded(index)
     if old:
         _log_superseded_preface(old, log)
@@ -1240,6 +1232,12 @@ def _full_prepare_index(folder, output, jobs, log):
     # shallowest) BEFORE extraction, so BOM/NAME/title block come from the
     # copy that will actually be placed.
     index, watermarked_dupes = _resolve_duplicates(index, duplicates, jobs, log)
+    # Report only CHK drawings that stay live in the tree: a CHK whose base has
+    # an approved/higher revision is superseded (archived to _superseded/) and the
+    # approved drawing is already in the tree, so listing the CHK would ask the
+    # user to fetch a drawing they already have. Computed after the split so the
+    # list reflects the tree, not the raw input.
+    chk_stems = [s for s in sorted(index) if is_chk_stem(s)]
     return index, chk_stems, old, watermarked_dupes
 
 
@@ -1480,11 +1478,20 @@ def _incremental_prepare(folder, output, dry_run, log):
         raise NoPDFsFoundError("No PDFs found in folder.")
     scan_res = scan_output_tree(output)
     in_place = Path(folder).resolve() == Path(output).resolve()
-    organized, sup_dir, stored_orphans, new_index, chk_stems = \
+    organized, sup_dir, stored_orphans, new_index = \
         _collect_incremental_candidates(scan_index, output, scan_res=scan_res,
                                         in_place=in_place)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
+    # Report only CHK drawings that stay live in the tree (whole-tree scope, like
+    # the other reported decisions). A CHK whose base has an approved/higher
+    # revision is archived to _superseded/ below and the approved drawing is
+    # already in the tree, so listing the CHK would ask the user to fetch a
+    # drawing they already have. Organized CHK superseded by this batch drop out
+    # as well.
+    superseded_by_batch = {o for _s, o in supersede_pairs}
+    chk_stems = [s for s in sorted((set(organized) | set(new_index))
+                                   - superseded_by_batch) if is_chk_stem(s)]
     new_duplicates = {stem: paths for stem, paths in top_duplicates.items()
                       if stem in new_index}
     if old_new:

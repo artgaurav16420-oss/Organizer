@@ -4,6 +4,19 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### CHK list reports only unapproved drawings still live in the tree
+- A CHK drawing is now listed only while it is live in the tree. A CHK whose base
+  has an approved/higher revision is archived to `_superseded/` and the approved
+  drawing is already in the tree, so listing it asked the operator to download a
+  drawing they already had. The list is computed after revision filtering
+  (`split_superseded`), and incremental now covers the whole live tree rather
+  than only the incoming batch. Previously the reported set depended on the run
+  mode and batch order: an incremental run could list the archived CHK copies
+  while hiding the CHK drawings that were still live and unresolved.
+- **Behaviour change:** a full run over inputs whose CHK drawings all have
+  approved revisions now reports zero CHK entries (previously every CHK in the
+  input), and incremental reports the live CHK of the whole tree.
+
 ### Full and incremental share one decision layer
 - Both modes now compute their reported decisions (roots/orphans, missing refs,
   USED ON bugs, USED ON mismatches) from one merged view of the tree using the

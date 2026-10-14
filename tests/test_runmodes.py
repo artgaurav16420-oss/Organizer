@@ -1973,6 +1973,63 @@ def test_collect_missing_filters_and_reports():
     assert logged2 == []
 
 
+def test_chk_reported_only_when_live_in_tree(tmp_path, make_pdf):
+    # A CHK whose base has an approved revision is superseded (archived to
+    # _superseded/) and the approved drawing is in the tree, so it is NOT
+    # reported. A CHK with no approved counterpart stays live and IS reported.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106_A_DWG1.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Approved"])
+    make_pdf(in_dir / "F10126106__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved twin"])
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["chk"] == ["F10126107__CHK"]
+    assert (out / "_superseded" / "F10126106__CHK.pdf").is_file()
+    assert not (out / "F10126106__CHK.pdf").exists()
+
+
+def test_incremental_reports_chk_already_live_in_tree(tmp_path, make_pdf):
+    # Whole-tree scope: a batch that contains no CHK at all must still report the
+    # CHK drawings sitting live in the tree.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+    assert full["chk"] == ["F10126107__CHK"]
+
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "New arrival"])
+    incr = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert incr["chk"] == ["F10126107__CHK"]
+
+
+def test_incremental_stops_reporting_chk_once_approved_arrives(tmp_path, make_pdf):
+    # The approved revision arriving in a later batch supersedes the organized
+    # CHK, so the next run stops reporting it - the approved drawing is now in
+    # the tree and there is nothing to fetch from Teamcenter.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+    assert full["chk"] == ["F10126107__CHK"]
+
+    make_pdf(in_dir / "F10126107_A_DWG1.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Now approved"])
+    incr = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert incr["chk"] == []
+
+
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

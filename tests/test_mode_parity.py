@@ -9,8 +9,6 @@ Excluded by design (see docs/adr/0001-shared-run-mode-decisions.md):
   * counters / summary lines - inherently delta-oriented for incremental
     ("New PDFs scanned", "PDF copies written") vs whole-tree for full.
   * `scanned` - run-scoped OCR events, not a tree property.
-  * `chk` - full reports CHK across the whole input; incremental reports CHK
-    arrivals only (the Teamcenter "download these" list for this batch).
   * `orphans` - full derives them from the input classification, incremental
     from a live `_orphans/` scan (which also sees earlier runs' parks).
 """
@@ -21,6 +19,7 @@ def _decision_sets(ctx):
     return {
         "roots": sorted(ctx["roots"]),
         "missing": sorted(ctx["missing"]),
+        "chk": sorted(ctx["chk"]),
         "used_on_bugs": sorted(ctx["used_on_bugs"]),
         "used_on_mismatches": sorted(ctx["used_on_mismatches"]),
         "titleblock_mismatches": sorted(ctx["titleblock_mismatches"]),
@@ -42,6 +41,10 @@ def _write_fixture(make_pdf, in_dir):
     make_pdf(in_dir / "F10126111.pdf", ["NAME", "Bugged part", "USED ON", "F10126106"])
     # Parentless BOM-less standalone -> parked orphan, never a root.
     make_pdf(in_dir / "F10126108.pdf", ["NAME", "Standalone part"])
+    # Unapproved CHK with no approved twin -> stays live in the tree, so both
+    # modes must report it (and stop once an approved revision arrives).
+    make_pdf(in_dir / "F10126113__CHK.pdf", [
+        "FERMI PART LIST", "F10126108 STANDALONE PART", "NAME", "Unapproved"])
 
 
 def test_full_and_incremental_report_same_decisions(tmp_path, make_pdf):
@@ -63,9 +66,12 @@ def test_full_and_incremental_report_same_decisions(tmp_path, make_pdf):
     assert _decision_sets(incr) == _decision_sets(full)
 
     # ...and the sets are non-trivial, so parity is not vacuous.
-    assert full["roots"] == [("F10126106", []), ("F10126109", [])]
+    assert full["roots"] == [("F10126106", []), ("F10126109", []),
+                             ("F10126113__CHK", [])]
+    assert full["chk"] == ["F10126113__CHK"]
     assert full["used_on_mismatches"] == [("F10126106", "F10126107", []),
                                           ("F10126106", "F10156241", []),
-                                          ("F10126109", "F10126108", [])]
+                                          ("F10126109", "F10126108", []),
+                                          ("F10126113__CHK", "F10126108", [])]
     assert full["used_on_bugs"] == [("F10126106", "F10126111")]
     assert full["missing"] == []
