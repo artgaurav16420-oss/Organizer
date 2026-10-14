@@ -1912,6 +1912,30 @@ def test_titleblock_scanned_single_char_number_misread_suppressed():
     assert res2 == [("F10134728___DWG1", "number", "F10134728", "F10128174")]
 
 
+def test_incremental_missing_refs_match_full_after_ocr_snap(tmp_path, make_pdf):
+    # A BOM misread (F0156241) snaps to the real stem F10156241. Full mode snaps
+    # before its missing check; incremental built the organized-drawing missing
+    # list from un-snapped BOMs, so the same ref showed up missing only there.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F0156241 CHILD PART", "NAME", "Parent"])
+    make_pdf(in_dir / "F10156241.pdf", [
+        "FERMI PART LIST", "F10156241", "NAME", "Child"])
+    out = tmp_path / "out"
+
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    # A new PDF so the incremental run has work to do and therefore scans the
+    # organized tree (with no new PDF it short-circuits and never gets there).
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST", "F10126110", "NAME", "New part"])
+    inc = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert "F0156241" not in {ref for _, ref in full["missing"]}
+    assert "F0156241" not in {ref for _, ref in inc["missing"]}
+
+
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

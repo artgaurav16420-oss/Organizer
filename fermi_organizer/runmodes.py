@@ -620,6 +620,11 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
             if len(e) == 4 and e[0] not in bom_names:
                 bom_names[e[0]] = e[3]
         log(f"  {stem}: {len(entries)} BOM row(s), {len(org_boms[stem])} unique FERMI# ({method})")
+    # OCR near-miss refs: correct against the known stems before the missing
+    # check, or a misread that snaps to a real stem (F0156241 -> F10156241) is
+    # also listed as missing. Full mode snaps before its missing check.
+    _snap_boms(org_boms, all_stems, log)
+    _snap_used_on(org_used_on, all_stems, log)
     # Missing refs are reported across ALL drawings (new + organized), so the
     # Teamcenter download list in the report/workbook is complete every run.
     org_unmatched = []
@@ -1629,8 +1634,7 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
         org_boms, org_used_on, org_unmatched, org_watermarks, \
             org_titleblocks, org_names, warnings = \
             _scan_organized(organized, all_stems, jobs, bom_names, log)
-        _snap_boms(org_boms, all_stems, log)
-        _snap_used_on(org_used_on, all_stems, log)
+        # (_scan_organized snaps org_boms/org_used_on before its missing check.)
         unmatched.extend(org_unmatched)
         if org_watermarks:
             _log_watermarks(org_watermarks, log)

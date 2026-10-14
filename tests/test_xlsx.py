@@ -195,6 +195,60 @@ def test_files_sheet_lists_tree_only_not_orphans(tmp_path):
     assert wb["Orphans"]["A2"].value == "F10126108"
 
 
+def test_file_link_is_relative_and_fits_hyperlink_limit(tmp_path):
+    # _file_link is pure path math: no need to create the deep tree on disk.
+    out = tmp_path / "out"
+    deep = out
+    for part in ("F10119081 SSR2 CAVITY ASSY", "F10118801 WELDMENT, SSR2 JACKETED CAVITY",
+                 "F10118539 WELDMENT, SSR2 CAVITY", "F10119290 WLDMNT, ENDWALL SUB-ASSY 1",
+                 "F10118615 INNER COUPLING RING"):
+        deep = deep / part
+    pdf = deep / "F10118615_A_DWG1.pdf"
+
+    rel = fx._file_link(pdf, out)
+    assert rel == ("F10119081 SSR2 CAVITY ASSY/F10118801 WELDMENT, SSR2 JACKETED CAVITY/"
+                   "F10118539 WELDMENT, SSR2 CAVITY/F10119290 WLDMNT, ENDWALL SUB-ASSY 1/"
+                   "F10118615 INNER COUPLING RING/F10118615_A_DWG1.pdf")
+    assert not rel.startswith("file:")
+    assert len(rel) < 255
+    # A file outside the output folder falls back to the absolute URI.
+    outside = tmp_path / "elsewhere.pdf"
+    assert fx._file_link(outside, out).startswith("file://")
+
+
+def test_files_sheet_links_deep_tree_rows(tmp_path):
+    # Deep space/comma-heavy rows must still be clickable: a relative target
+    # stays under Excel's 255-char hyperlink limit where a file:/// URI
+    # (percent-encoded) does not. Short on-disk names keep tmp_path under
+    # Windows MAX_PATH; the link is what this checks.
+    out = tmp_path / "out"
+    d = out / "A B SSR2 CAVITY ASSY" / "C, D WELDMENT" / "E, F INNER RING"
+    d.mkdir(parents=True)
+    (d / "F10126106_A_DWG1.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [],
+        "mismatches": [], "report_txt": "", "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    files = wb["Files"]
+    linked = [files.cell(row=r, column=1)
+              for r in range(2, files.max_row + 1) if files.cell(row=r, column=1).value]
+    assert linked
+    assert all(c.hyperlink is not None for c in linked)
+    assert linked[0].hyperlink.target.endswith("F10126106_A_DWG1.pdf")
+    assert not linked[0].hyperlink.target.startswith("file:")
+
+
 def test_build_workbook_scanned_and_watermark_sheets(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

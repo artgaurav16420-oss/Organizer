@@ -176,6 +176,21 @@ def _file_uri(path):
         return None
 
 
+def _file_link(path, output):
+    """Short, portable hyperlink target for a file under `output`.
+
+    The workbook is written into the output root, so a relative target - which
+    Excel resolves against the workbook's folder - both survives moving or
+    copying the tree and fits Excel's 255-character hyperlink limit. A
+    'file:///...%20...' URI percent-encodes every space and comma and pushes
+    deep paths past that limit (51 files were left unlinked).
+    """
+    try:
+        return Path(path).relative_to(Path(output)).as_posix()
+    except (ValueError, TypeError):
+        return _file_uri(path)
+
+
 def _rel(path, output):
     try:
         return str(Path(path).relative_to(Path(output)))
@@ -517,7 +532,7 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     _scanned_sheet(scanned_ws, ctx, names)
     _watermark_sheet(watermark_ws, ctx, names)
     _orphans_sheet(orph, ctx, names, live)
-    _superseded_sheet(superseded, live)
+    _superseded_sheet(superseded, live, ctx.get("output", ""))
     _roots_sheet(roots_ws, ctx, names)
     _mismatch_sheet(mism_ws, ctx, names)
     _titleblock_sheet(tb_ws, ctx, names)
@@ -809,7 +824,8 @@ def _orphans_sheet(orph, ctx, names, live=None):
             for s in stems]
     _table(orph, ["Stem (current file)", "Name", "Status", "Note"], (30, 38, 14, 60), rows,
            tab="orange", pills={3: "orange"}, aligns=["left", "left", "center", "left"],
-           link_first=lambda i, row: _file_uri(paths[row[0]]) if row[0] in paths else None,
+           link_first=lambda i, row: _file_link(paths[row[0]], ctx.get("output", ""))
+           if row[0] in paths else None,
            empty="No orphans - every part has a parent",
            note=("About this sheet",
                  "Orphans are stored under _orphans/ so a future incremental run can "
@@ -817,7 +833,7 @@ def _orphans_sheet(orph, ctx, names, live=None):
                  "orange"))
 
 
-def _superseded_sheet(superseded, live):
+def _superseded_sheet(superseded, live, output):
     ordered = sorted(live["sup"], key=lambda q: q.name.lower())
     rows = []
     for p in ordered:
@@ -826,7 +842,7 @@ def _superseded_sheet(superseded, live):
                      "older revision / unapproved CHK / superseded in place"])
     _table(superseded, ["File in _superseded/", "Base", "Status", "Note"], (44, 18, 14, 52),
            rows, tab="grey", pills={3: "grey"}, aligns=["left", "left", "center", "left"],
-           link_first=lambda i, row: _file_uri(ordered[i]),
+           link_first=lambda i, row: _file_link(ordered[i], output),
            empty="Nothing superseded yet",
            note=("About this sheet",
                  "Older revisions, unapproved CHK prints and in-place superseded "
@@ -931,7 +947,7 @@ def _files_sheet(files, ctx, names, live):
            (26, 40, 10, 20, 60), rows, tab="blue",
            aligns=["left", "left", "center", "center", "left"],
            pills={4: lambda row: pal[row[3]]},
-           link_first=lambda i, row: _file_uri(paths[i]),
+           link_first=lambda i, row: _file_link(paths[i], out),
            empty="No PDFs in the output tree yet", max_width=110,
            note=("About this sheet",
                  "Live scan of the organized tree (parked orphans live on the "

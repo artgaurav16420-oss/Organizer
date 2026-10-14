@@ -4,6 +4,21 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Incremental missing list matches full mode after OCR snap
+- Incremental computed the "missing reference(s) from organized drawing(s)"
+  list from un-snapped BOMs, so a misread that snaps to a real stem
+  (`F0156241` -> `F10156241`) was reported missing only in incremental runs
+  (full mode snaps before its missing check). The snap now runs before the
+  organized-drawing missing check, so both modes report the same refs.
+
+### Workbook file links are relative
+- File cells on the `Files`, `Orphans` and `Superseded` sheets now use a
+  relative hyperlink target instead of a `file:///...` URI. Excel resolves it
+  against the workbook's folder, so links survive moving or copying the tree,
+  and deep space/comma-heavy paths stay under Excel's 255-character hyperlink
+  limit (a `file:///` URI percent-encodes spaces and commas, which left 51 of
+  516 Files rows unlinked).
+
 ### OCR title-block NAME: retry when the read is a stray fragment
 - A 1-2 letter NAME (OCR noise from a mangled cell) is now treated as missing,
   so the title-block zoom re-OCR fires and reads the real value (`F10134685`
