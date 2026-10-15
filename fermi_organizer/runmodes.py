@@ -9,8 +9,8 @@ from typing import TypedDict
 
 from .config import (canonical_stem, filename_title, TB_NUM_VAL_RE,
                      is_processable_ref, MAX_DIR, MAX_PATH, TREE_MAX_DEPTH)
-from .extraction import (resolve_jobs, bom_task,
-                         title_task, org_task, dup_meta_task, run_parallel, OCR)
+from .extraction import (resolve_jobs, title_task, org_task, survey_task,
+                         dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
                     collect_reachable, snap_ref, _edit1)
@@ -418,13 +418,18 @@ def _scan_boms(items, jobs, log, require_desc):
     watermarks = {}
     titleblocks = {}
     warnings = 0
-    results = run_parallel(bom_task, [str(p) for _, p in items],
+    used_on_of = {}
+    used_names = {}
+    # survey_task opens each PDF once; BOM, USED ON, name, etc. all come from
+    # that single pass. The USED ON figures are stashed for the (non-reopening)
+    # second section below.
+    results = run_parallel(survey_task, [str(p) for _, p in items],
                            jobs, OCR.enabled)
     for (stem, pdf), res in zip(items, results, strict=True):
         if res[0] == "error":
             log(f"  {stem}: ERROR reading PDF: {res[1]}")
             continue
-        _, entries, method, issues, watermark, number, rev, name, scanned = res
+        _, entries, method, used, issues, watermark, number, rev, name, scanned = res
         for msg in issues:
             log(f"  {stem}: EXTRACTION WARNING: {msg}")
         warnings += len(issues)
@@ -436,14 +441,38 @@ def _scan_boms(items, jobs, log, require_desc):
         for e in entries:
             if len(e) == 4 and e[0] not in bom_names and (e[3] or not require_desc):
                 bom_names[e[0]] = e[3]
+        used_on_of[stem] = used
+        if name:
+            used_names[stem] = name
         log(f"  {stem}: {len(raw_values)} unique FERMI# ({method})")
     log("")
-    return bom_of, bom_names, watermarks, titleblocks, warnings
+    return bom_of, bom_names, watermarks, titleblocks, warnings, \
+        used_on_of, used_names
 
 
-def _scan_used_on(items, jobs, header, log):
+def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
     """USED ON + NAME extraction. Logs header + per-PDF lines + blank.
-    Returns (used_on_of, names_of)."""
+    Returns (used_on_of, names_of).
+
+    When `used_on_cache` is given (survey_task already opened these PDFs), no
+    second extraction pool is started: the cached figures are re-reported for
+    the USED ON section (see _scan_boms).
+    """
+    if used_on_cache is not None:
+        used_on_of = {}
+        names_of = {}
+        log(header)
+        for (stem, _pdf) in items:
+            if stem not in used_on_cache:
+                continue
+            used = used_on_cache.get(stem) or []
+            used_on_of[stem] = used
+            if names_cache and names_cache.get(stem):
+                names_of[stem] = names_cache[stem]
+            if used:
+                log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
+        log("")
+        return used_on_of, names_of
     used_on_of = {}
     names_of = {}
     log(header)
@@ -548,6 +577,11 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
                       if (s := canonical_stem(p.stem))}
     new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
     for o, p in stored_orphans.items():
+        if o in organized:
+            # A same-stem copy already lives in the tree: the parked one is a
+            # (possibly watermarked) duplicate handled by orphan retirement,
+            # not re-placed as a new candidate.
+            continue
         if o in new_index:
             # same stem arrived both at top level and in _orphans - top level wins
             continue
@@ -1350,15 +1384,23 @@ def _full_prepare_index(folder, output, jobs, log):
 
 def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     """BOM scan + opt-in re-key + watermark/title-block logs + OCR snap.
-    Returns the scan results plus the extraction warning count."""
+    Returns the scan results plus the extraction warning count and the
+    single-pass USED ON figures (so the USED ON section reuses them)."""
     log("--- Scanning BOM tables ---")
-    bom_of, bom_names, watermarks, titleblocks, warnings = _scan_boms(
-        sorted(index.items()), jobs, log, require_desc=True)
+    bom_of, bom_names, watermarks, titleblocks, warnings, used_on_of, \
+        used_names = _scan_boms(
+            sorted(index.items()), jobs, log, require_desc=True)
     rekeyed = {}
     if rekey:
         index, bom_of, watermarks, titleblocks, rekeyed = _rekey_misnamed(
             index, bom_of, watermarks, titleblocks, set(index), log)
         chk_stems = [rekeyed.get(s, s) for s in chk_stems]
+        # Keep the single-pass USED ON figures aligned with re-keyed stems.
+        for old, new in rekeyed.items():
+            if old in used_on_of:
+                used_on_of[new] = used_on_of.pop(old)
+            if old in used_names:
+                used_names[new] = used_names.pop(old)
     _log_watermarks(watermarks, log)
     # Filename vs title block: number, revision, title (report only; with
     # --rekey-titleblock a misnamed file is re-keyed first).
@@ -1366,7 +1408,7 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(bom_of, index, log)
     return (index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed,
-            chk_stems, warnings)
+            chk_stems, warnings, used_on_of, used_names)
 
 
 def _full_build_edges(bom_of, index, bom_names, log):
@@ -1395,10 +1437,12 @@ def _full_build_edges(bom_of, index, bom_names, log):
     return children, parents, unmatched
 
 
-def _full_scan_used_on(index, jobs, log):
+def _full_scan_used_on(index, jobs, log, used_on_of=None, names_of=None):
     """USED ON + NAME scan + OCR snap + missing-NAME log."""
     used_on_of, names_of = _scan_used_on(sorted(index.items()), jobs,
-                                         "--- Scanning USED ON fields ---", log)
+                                         "--- Scanning USED ON fields ---", log,
+                                         used_on_cache=used_on_of,
+                                         names_cache=names_of)
     _snap_used_on(used_on_of, index, log)
     _log_missing_names(index, names_of, log)
     return used_on_of, names_of
@@ -1549,7 +1593,8 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     sweep_stale_claims(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, output, jobs, log)
     index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems, \
-        warning_count = _full_scan_boms(index, jobs, log, rekey, chk_stems)
+        warning_count, _used_on_of, _used_names = _full_scan_boms(
+            index, jobs, log, rekey, chk_stems)
 
     children, parents, unmatched = _full_build_edges(bom_of, index, bom_names, log)
 
@@ -1557,7 +1602,9 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     if chk_stems:
         _log_chk_block(chk_stems, log)
 
-    used_on_of, names_of = _full_scan_used_on(index, jobs, log)
+    used_on_of, names_of = _full_scan_used_on(index, jobs, log,
+                                            used_on_of=_used_on_of,
+                                            names_of=_used_names)
 
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
@@ -1676,8 +1723,9 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
     new_index, watermarked_dupes = _resolve_duplicates(
         new_index, new_duplicates, jobs, log)
     log("--- Scanning BOM tables (new PDFs) ---")
-    new_boms, bom_names, new_watermarks, new_titleblocks, warnings = _scan_boms(
-        sorted(new_index.items()), jobs, log, require_desc=False)
+    new_boms, bom_names, new_watermarks, new_titleblocks, warnings, \
+        new_used_on, new_names = _scan_boms(
+            sorted(new_index.items()), jobs, log, require_desc=False)
     all_stems = new_stems | org_stems
     rekeyed = {}
     if rekey:
@@ -1689,12 +1737,18 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
             scanned_new = len(new_index)
             chk_stems = [rekeyed.get(s, s) for s in chk_stems]
             all_stems = new_stems | org_stems
+        for old, new in rekeyed.items():
+            if old in new_used_on:
+                new_used_on[new] = new_used_on.pop(old)
+            if old in new_names:
+                new_names[new] = new_names.pop(old)
     _log_watermarks(new_watermarks, log)
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(new_boms, all_stems, log)
     return (new_index, watermarked_dupes, new_boms, bom_names,
             new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
-            scanned_new, all_stems, chk_stems, warnings)
+            scanned_new, all_stems, chk_stems, warnings, new_used_on,
+            new_names)
 
 
 def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
@@ -1742,10 +1796,13 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
         warnings
 
 
-def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
+def _incremental_scan_new_used_on(new_index, jobs, all_stems, log,
+                                  cached_used_on=None, cached_names=None):
     """USED ON + NAME scan for new PDFs + OCR snap."""
-    new_used_on, new_names = _scan_used_on(sorted(new_index.items()), jobs,
-                                           "--- Scanning USED ON fields (new PDFs) ---", log)
+    new_used_on, new_names = _scan_used_on(
+        sorted(new_index.items()), jobs,
+        "--- Scanning USED ON fields (new PDFs) ---", log,
+        used_on_cache=cached_used_on, names_cache=cached_names)
     _snap_used_on(new_used_on, all_stems, log)
     return new_used_on, new_names
 
@@ -2100,7 +2157,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
     new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
         new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
-        all_stems, chk_stems, warning_count = _incremental_scan_new_boms(
+        all_stems, chk_stems, warning_count, _new_used_on, _new_names = \
+        _incremental_scan_new_boms(
             new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
     # Archive the watermarked duplicates that lost the pre-scan resolution.
     _ensure_lock(lock, log)
@@ -2116,7 +2174,9 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             new_titleblocks, unmatched, log)
     warning_count += org_warnings
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
-                                                           all_stems, log)
+                                                           all_stems, log,
+                                                           cached_used_on=_new_used_on,
+                                                           cached_names=_new_names)
 
     # Cap check BEFORE any supersede swaps/moves: a refused run must not
     # mutate the tree. Uses the pre-merge new graph (cycle-broken, like the

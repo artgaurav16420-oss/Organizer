@@ -4,6 +4,24 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Performance: single PDF open per phase
+- `survey_task` extracts BOM, USED ON, title block, name, watermark and
+  scanned state from one opened PDF document instead of separate BOM and
+  USED ON passes. The run reports USED ON from the single-pass cache without
+  reopening PDFs, cutting extraction-side filesystem/PDF-open work while
+  keeping the golden dry-run log byte-for-byte.
+- `canonical_stem`/`filename_title` are now memoized; `scan_output_tree` uses
+  `os.walk` instead of recursive glob.
+- `report_glue.names_from_tree` uses `os.walk` and `_staged_copy` uses a
+  1 MiB copy buffer.
+
+### Order-independent orphan adoption
+- A parked watermarked `_orphans/` copy is now retired when a clean live
+  same-stem copy exists in the tree, even when the PDF bytes differ only
+  by the watermark. Split-run order no longer changes the final tree;
+  generic differing (non-watermarked) parked copies keep their
+  byte-safety behaviour so a newer input is not discarded.
+
 ### A title-block number is not a parts-list row
 - On a scanned sheet, the OCR parts-list matcher counted the F-numbers aligned
   in the `FERMI#` header's column and took whatever it found as rows. On a sheet

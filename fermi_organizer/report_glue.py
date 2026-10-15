@@ -5,6 +5,7 @@ run_full / run_incremental; the human-readable .txt log is user-facing only
 and never parsed. `names_from_tree` remains the one structural fallback:
 organized tree folders are named 'BASE NAME'.
 """
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -20,7 +21,12 @@ def names_from_tree(output):
     if not o.is_dir():
         return names
     # root folders first (most authoritative), then nested folders
-    for d in sorted(o.rglob("*/")):
+    dirs = []
+    if o.is_dir():
+        for dp, dn, _ in os.walk(o):
+            for name in dn:
+                dirs.append(Path(dp) / name)
+    for d in sorted(dirs):
         if is_system_dir(d.name) or " " not in d.name:
             continue
         rel = d.relative_to(o)

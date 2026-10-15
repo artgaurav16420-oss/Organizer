@@ -2004,6 +2004,50 @@ def dup_meta_task(pdf_path):
     return out + (OCR.event_delta(before),)
 
 
+def survey_task(pdf_path):
+    """Open one PDF and extract BOM, USED ON, title block, name, watermark,
+    scanned state, and issues in a single pass.
+
+    Returns a consolidated tuple:
+      ("ok", entries, method, used, issues, watermark, number, rev, name,
+       scanned) + (OCR event delta,)
+    or ("error", message, None, ..., None) + (OCR event delta,) on failure.
+
+    Used by the organizer so each PDF is opened at most once per phase; the
+    legacy ``bom_task``/``title_task``/``org_task`` wrappers slice this.
+    """
+    before = set(OCR.events)
+    try:
+        issues = []
+        size_msg = _pdf_size_issue(pdf_path)
+        if size_msg is not None:
+            issues.append(size_msg)
+            out = ("ok", [], "skipped", [], issues, None, None, None,
+                   None, False)
+        else:
+            with _open_pdf(pdf_path) as doc:
+                pages_msg = _doc_pages_issue(doc)
+                if pages_msg is not None:
+                    issues.append(pages_msg)
+                    out = ("ok", [], "skipped", [], issues, None, None,
+                           None, None, False)
+                else:
+                    entries, method = extract_bom_from_doc(doc, issues)
+                    entries = _strip_self_bom(entries, pdf_path)
+                    watermark = detect_watermark(doc, issues)
+                    number, rev = extract_title_block(doc, issues)
+                    name = extract_drawing_name(doc)
+                    scanned = _doc_is_scanned(doc)
+                    used = _strip_self_ref(extract_used_on(doc), pdf_path)
+                    out = ("ok", entries, method, used, issues, watermark,
+                           number, rev, name, scanned)
+    except (RuntimeError, OSError, ValueError,
+            subprocess.SubprocessError) as e:
+        out = ("error", str(e), None, None, None, None, None, None,
+               None, None)
+    return out + (OCR.event_delta(before),)
+
+
 def resolve_jobs(n=None):
     """Worker count: n > 0 as given; 0/None/invalid = CPU count (4 if unknown)."""
     try:

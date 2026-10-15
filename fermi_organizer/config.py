@@ -1,4 +1,5 @@
 """Shared constants and regexes for the Fermi PDF organizer."""
+import functools
 import re
 
 FERMI_VAL_RE = re.compile(r"^F(?!C)[0-9][0-9A-Za-z]*$")
@@ -35,6 +36,7 @@ PART_NAME_RE = re.compile(r"(?<![A-Z0-9])F(?:C)?\d{5,8}(?![0-9])[A-Z0-9_-]*",
                           re.IGNORECASE)
 
 
+@functools.lru_cache(maxsize=None)
 def canonical_stem(name):
     """Canonical uppercase stem for a PDF filename (no extension), or None.
 
@@ -49,6 +51,7 @@ def canonical_stem(name):
     return stem if PART_STEM_RE.match(stem) else None
 
 
+@functools.lru_cache(maxsize=None)
 def filename_title(name):
     """Title text after the part token in a filename, or None.
 
