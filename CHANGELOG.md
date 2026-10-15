@@ -4,6 +4,17 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### A title-block USED ON value is not a parts-list row
+- On a scanned sheet whose parts list is empty, the OCR parts-list matcher
+  counted the F-numbers aligned in the `FERMI#` header's column and took the
+  only one it found - the title block's own `USED ON` value, i.e. a *parent* -
+  as a child row. That invented a BOM edge and a phantom entry on the Missing
+  sheet: `F10133759` (a flange, no parts list) reported `F10133744` missing.
+  The word path now applies the guard the text path already had
+  (`_fermi_line_is_title_block`): a number this page declares as its parent is
+  never a row of it. Parts-list rows are read after the USED ON recovery, so a
+  value recovered by the title-block zoom/strip passes counts too.
+
 ### Folder names no longer depend on the batch order
 - Both modes now plan folder names **once per run over the whole tree** and name
   every placement *and* every organized-child adoption from that one map. Two

@@ -277,7 +277,6 @@ class _OcrContext:
             words = self.words_cached(page, issues, page_label)
             if words:
                 used, name, used_anchor = _title_fields_from_words(words)
-                bom = _partslist_from_words(page, words)
                 # Tesseract's full-page pass sometimes never reads the USED ON
                 # value, though it reads the label.  Strip re-OCR the label region
                 # (same trick as the parts-list rows).
@@ -310,6 +309,10 @@ class _OcrContext:
                     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
                         if issues is not None:
                             issues.append(f"{page_label}: title-block zoom OCR failed: {e}")
+                # Read the parts-list rows only now: the recovered USED ON
+                # values are what tell a title-block parent number apart from a
+                # real row (see _partslist_from_words).
+                bom = _partslist_from_words(page, words, used)
                 result = (used, name, bom)
                 if not ev["used_on"] and used:
                     ev["used_on"] = list(used)
@@ -805,8 +808,18 @@ def _dedupe_row_candidates(cand_rows):
     return rows
 
 
-def _partslist_from_words(page, words):
-    """Parts-list FERMI values: label-anchored column + per-row strip re-OCR."""
+def _partslist_from_words(page, words, used_on=()):
+    """Parts-list FERMI values: label-anchored column + per-row strip re-OCR.
+
+    `used_on` is this page's title-block USED ON list: those numbers are the
+    drawing's parents, so none of them is a parts-list row. A sheet whose parts
+    list is empty has no row tokens in the header's column at all, and then the
+    only aligned F-number on whichever side the header won can be the title-block
+    value itself - which invented a BOM edge, and a missing reference, out of a
+    parent number (F10133759, a flange with no parts list, read its own
+    'USED ON F10133744' as a child). This is the word path's counterpart to the
+    text path's _fermi_line_is_title_block guard.
+    """
     if not words:
         return []
     words = _join_split_f_tokens(words)
@@ -816,19 +829,20 @@ def _partslist_from_words(page, words):
     _, item_x, fer_x, fer_x1, hdr_y1, hdr_y, side = hdr_best
     rows = _dedupe_row_candidates(
         _partslist_candidate_rows(words, item_x, fer_x, fer_x1, hdr_y, side))
+    parents = set(used_on or ())
     vals = []
     for y0, y1, w in rows:
         v = _ocr_tok(w[4])
         if v:
             # The row's own token is reliable; a strip rect can span
             # neighbouring rows on dense scaled-down scans.
-            if v not in vals:
+            if v not in parents and v not in vals:
                 vals.append(v)
             continue
         rect = pymupdf.Rect(item_x - OCR_ITEM_COL_DX_LEFT, y0 - OCR_ROW_STRIP_DY_TOP,
                          fer_x1 + OCR_FERMI_COL_DX_RIGHT, y1 + OCR_ROW_STRIP_DY_BOTTOM)
         for sv in dict.fromkeys(_ocr_strip_tokens(page, rect)):
-            if sv not in vals:
+            if sv not in parents and sv not in vals:
                 vals.append(sv)
     return vals
 

@@ -278,6 +278,48 @@ def test_ocr_partslist_rows_exclude_rcd_and_read_bottom_up(monkeypatch):
                                                              "F10197132"]
 
 
+def test_ocr_partslist_ignores_titleblock_used_on_of_empty_parts_list(
+        tmp_path, make_pdf, monkeypatch):
+    # F10133759 is a flange with an EMPTY parts list. Its ITEM / FERMI# / PART
+    # NAME header is still drawn, and the only F-number aligned in that column
+    # is the title block's own USED ON value (a PARENT). It used to be read as a
+    # parts-list row, inventing both a BOM edge and a missing reference out of a
+    # parent number. Geometry is the real sheet's (1190.6 x 841.9 pts).
+    words = [
+        (550, 658, 578, 667, "ITEM", 0, 0, 0),
+        (621, 658, 659, 667, "FERMI", 0, 0, 0),
+        (669, 658, 675, 667, "#", 0, 0, 0),
+        (877, 658, 900, 667, "PART", 0, 0, 0),
+        (924, 658, 947, 667, "NAME", 0, 0, 0),
+        (600, 735, 640, 745, "USED", 0, 0, 0),
+        (646, 735, 668, 745, "ON", 0, 0, 0),
+        (700, 738, 780, 748, "F10133744", 0, 0, 0),
+    ]
+    hdr = extraction._partslist_header(words)
+    assert hdr is not None and hdr[6] == "below"  # the trap is set
+
+    used, _name, _used_anchor = extraction._title_fields_from_words(words)
+    assert used == ["F10133744"]
+    # The title block declares it a parent: not a row of this drawing.
+    assert extraction._partslist_from_words(None, words, used) == []
+    # ...and nothing else claims it, so a real row still reads (the filter is
+    # not a blanket ban on the number).
+    assert extraction._partslist_from_words(None, words, []) == ["F10133744"]
+
+    pdf = make_pdf(tmp_path / "F10133759.pdf", ["NAME", "Part"])
+    page = fitz.open(str(pdf))[0]
+    extraction.OCR.reset(enabled=True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+    monkeypatch.setattr(extraction.OCR, "words_cached", lambda *a, **k: words)
+    monkeypatch.setattr(extraction, "_ocr_words_zoom", lambda *a, **k: [])
+
+    page_used, _page_name, page_bom = extraction.OCR.analyze_page(
+        page, [], "F10133759")
+
+    assert page_used == ["F10133744"]
+    assert page_bom == []
+
+
 def test_iso_page_scale_and_ocr_render_dpi():
     import types
     from fermi_organizer.extraction import iso_page_scale, _ocr_render_dpi
