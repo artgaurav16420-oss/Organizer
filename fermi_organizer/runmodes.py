@@ -9,11 +9,11 @@ from typing import TypedDict
 
 from .config import (canonical_stem, filename_title, TB_NUM_VAL_RE,
                      is_processable_ref, MAX_DIR, MAX_PATH, TREE_MAX_DEPTH)
-from .extraction import (resolve_jobs, bom_task,
-                         title_task, org_task, dup_meta_task, run_parallel, OCR)
+from .extraction import (resolve_jobs, title_task, org_task, survey_task,
+                         dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
-                    collect_reachable, snap_ref)
+                    collect_reachable, snap_ref, _edit1)
 from .naming import build_folder_names, folder_name_for
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
@@ -84,6 +84,27 @@ def _log_missing_refs(header, refs, bom_names, log):
             log(f"  NAME {val}: {bom_names[val]}")
 
 
+def _collect_missing(boms, stems, bom_names, header, log):
+    """Refs in `boms` that match no stem, logged as one block.
+
+    The single implementation of the missing-reference check for full and
+    incremental runs (callers pass their own header suffix and keep their own
+    blank-line/FC/CHK bookkeeping). `boms` must already be OCR-snapped, or a
+    misread that snaps to a real stem is reported missing too. Returns
+    [(referencing stem, ref)] in sorted order; logs nothing when empty.
+    """
+    missing = []
+    for stem, vals in sorted(boms.items()):
+        for v in vals:
+            if not is_processable_ref(v):
+                continue
+            if not match_pdfs(v, stems):
+                missing.append((stem, v))
+    if missing:
+        _log_missing_refs(f"Skipped {len(missing)} {header}", missing, bom_names, log)
+    return missing
+
+
 def _log_chk_block(chk_stems, log):
     log(f"--- UNAPPROVED DRAWINGS (CHK) ({len(chk_stems)}) - "
         f"download approved DWG from Teamcenter: ---")
@@ -141,17 +162,29 @@ def _titleblock_mismatches(titleblocks, log):
 
     titleblocks: {stem: (filename stem, drawing number, revision, NAME, scanned)}.
     Reports the drawing number (misnamed file), the revision (stale or absent
-    in the filename), and the title (only when the filename carries a title
+    in the filename - skipped when the number already mismatches), and the
+    title (only when the filename carries a title
     and it shares no token with the title-block NAME). Returns
     [(stem, field, filename_value, titleblock_value)] sorted.
+
+    A scanned (OCR) number that differs from the filename by a single character
+    is treated as an OCR misread, not a misnamed file: the filename is the CAD
+    export name and is authoritative, and one glyph off is not distinguishable
+    from noise on these sheets.
     """
     out = []
-    for stem, (fname, number, rev, name, _scanned) in sorted(titleblocks.items()):
+    for stem, (fname, number, rev, name, scanned) in sorted(titleblocks.items()):
         parts = stem.split("_")
         srev = parts[1] if len(parts) > 1 and len(parts[1]) == 1 else ""
-        if number and number != parts[0]:
+        number_mismatch = bool(number) and number != parts[0]
+        if number_mismatch and scanned and _edit1(number, parts[0]):
+            number_mismatch = False
+        if number_mismatch:
             out.append((stem, "number", parts[0], number))
-        if rev is not None:
+        # A misnamed file (filename number != title-block number) is already
+        # flagged; its filename revision is meaningless, so don't also report
+        # a revision row for the same drawing.
+        if rev is not None and not number_mismatch:
             crev = "" if rev == "-" else rev
             if crev != srev:
                 out.append((stem, "revision", srev or "-", crev or "-"))
@@ -385,13 +418,18 @@ def _scan_boms(items, jobs, log, require_desc):
     watermarks = {}
     titleblocks = {}
     warnings = 0
-    results = run_parallel(bom_task, [str(p) for _, p in items],
+    used_on_of = {}
+    used_names = {}
+    # survey_task opens each PDF once; BOM, USED ON, name, etc. all come from
+    # that single pass. The USED ON figures are stashed for the (non-reopening)
+    # second section below.
+    results = run_parallel(survey_task, [str(p) for _, p in items],
                            jobs, OCR.enabled)
     for (stem, pdf), res in zip(items, results, strict=True):
         if res[0] == "error":
             log(f"  {stem}: ERROR reading PDF: {res[1]}")
             continue
-        _, entries, method, issues, watermark, number, rev, name, scanned = res
+        _, entries, method, used, issues, watermark, number, rev, name, scanned = res
         for msg in issues:
             log(f"  {stem}: EXTRACTION WARNING: {msg}")
         warnings += len(issues)
@@ -403,14 +441,38 @@ def _scan_boms(items, jobs, log, require_desc):
         for e in entries:
             if len(e) == 4 and e[0] not in bom_names and (e[3] or not require_desc):
                 bom_names[e[0]] = e[3]
+        used_on_of[stem] = used
+        if name:
+            used_names[stem] = name
         log(f"  {stem}: {len(raw_values)} unique FERMI# ({method})")
     log("")
-    return bom_of, bom_names, watermarks, titleblocks, warnings
+    return bom_of, bom_names, watermarks, titleblocks, warnings, \
+        used_on_of, used_names
 
 
-def _scan_used_on(items, jobs, header, log):
+def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
     """USED ON + NAME extraction. Logs header + per-PDF lines + blank.
-    Returns (used_on_of, names_of)."""
+    Returns (used_on_of, names_of).
+
+    When `used_on_cache` is given (survey_task already opened these PDFs), no
+    second extraction pool is started: the cached figures are re-reported for
+    the USED ON section (see _scan_boms).
+    """
+    if used_on_cache is not None:
+        used_on_of = {}
+        names_of = {}
+        log(header)
+        for (stem, _pdf) in items:
+            if stem not in used_on_cache:
+                continue
+            used = used_on_cache.get(stem) or []
+            used_on_of[stem] = used
+            if names_cache and names_cache.get(stem):
+                names_of[stem] = names_cache[stem]
+            if used:
+                log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
+        log("")
+        return used_on_of, names_of
     used_on_of = {}
     names_of = {}
     log(header)
@@ -472,29 +534,6 @@ def _classify_roots(index, parents, bom_of, children):
     return roots, orphans
 
 
-def _collect_used_on_bugs_incremental(new_boms, org_boms, new_used_on, org_used_on,
-                                     all_stems, log):
-    """Report USED ON bugs for an incremental run (BOM is the only truth)."""
-    bom_children = defaultdict(set)
-    for boms in (new_boms, org_boms):
-        for parent, vals in boms.items():
-            for v in vals:
-                if not is_processable_ref(v):
-                    continue
-                for c in match_pdfs(v, all_stems):
-                    if c != parent:
-                        bom_children[parent].add(c)
-    used_on_of = dict(org_used_on)
-    used_on_of.update(new_used_on)
-    bugs = find_used_on_bugs(bom_children, used_on_of, all_stems)
-    if bugs:
-        _log_used_on_bugs(bugs, log)
-    return bugs
-
-
-# ---------------------------------------------------------------------------
-# Incremental state: candidate set, revision conflicts, supersede swaps
-# ---------------------------------------------------------------------------
 def _in_place_tree_copy(p, stem, output):
     """(In-place runs) True when a scanned PDF looks like an organized copy:
     it sits inside the exact stem/base folder or a '{base} NAME' folder, the
@@ -514,7 +553,7 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
-    (organized, sup_dir, stored_orphans, new_index, chk_stems).
+    (organized, sup_dir, stored_orphans, new_index).
     Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
     to avoid redundant filesystem scans. `in_place` (output IS the input
     folder) keeps only tree-shaped copies as organized, so new arrivals at
@@ -538,15 +577,16 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
                       if (s := canonical_stem(p.stem))}
     new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
     for o, p in stored_orphans.items():
+        if o in organized:
+            # A same-stem copy already lives in the tree: the parked one is a
+            # (possibly watermarked) duplicate handled by orphan retirement,
+            # not re-placed as a new candidate.
+            continue
         if o in new_index:
             # same stem arrived both at top level and in _orphans - top level wins
             continue
         new_index[o] = p
-    # Unapproved CHK drawings among the new arrivals, captured BEFORE revision
-    # filtering (a CHK whose DWG exists is filtered to _superseded below, but the
-    # user still needs the Teamcenter lookup in the report)
-    chk_stems = [s for s in sorted(new_index) if is_chk_stem(s)]
-    return organized, sup_dir, stored_orphans, new_index, chk_stems
+    return organized, sup_dir, stored_orphans, new_index
 
 
 def _detect_supersede_pairs(new_index, old_new, organized, log):
@@ -608,18 +648,17 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
             if len(e) == 4 and e[0] not in bom_names:
                 bom_names[e[0]] = e[3]
         log(f"  {stem}: {len(entries)} BOM row(s), {len(org_boms[stem])} unique FERMI# ({method})")
+    # OCR near-miss refs: correct against the known stems before the missing
+    # check, or a misread that snaps to a real stem (F0156241 -> F10156241) is
+    # also listed as missing. Full mode snaps before its missing check.
+    _snap_boms(org_boms, all_stems, log)
+    _snap_used_on(org_used_on, all_stems, log)
     # Missing refs are reported across ALL drawings (new + organized), so the
     # Teamcenter download list in the report/workbook is complete every run.
-    org_unmatched = []
-    for ostem, vals in sorted(org_boms.items()):
-        for v in vals:
-            if not is_processable_ref(v):
-                continue
-            if not match_pdfs(v, all_stems):
-                org_unmatched.append((ostem, v))
+    org_unmatched = _collect_missing(
+        org_boms, all_stems, bom_names,
+        "missing reference(s) from organized drawing(s):", log)
     if org_unmatched:
-        _log_missing_refs(f"Skipped {len(org_unmatched)} missing reference(s) from organized drawing(s):",
-                          org_unmatched, bom_names, log)
         log("")
     log("")
     return (org_boms, org_used_on, org_unmatched, org_watermarks,
@@ -811,13 +850,19 @@ def _longest_dest_path(target_path, current):
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
-                         dry_run, log, lock=None):
+                         dry_run, log, lock=None, folder_names=None):
     """Copy organized child c's folder under target_folder; returns PDF copies.
 
     Nested under a live parent means COPY, never move: moving would hollow
     out the existing parent, and later claimants would find nothing (every
     claimant gets its own copy, matching place_files). A failed copy is
     guarded, with partial-tree cleanup so later runs don't trip over it.
+
+    The copy is named from this run's folder-name plan, not from the name it
+    carries on disk: an on-disk name is whatever the run that created it first
+    chose, so reusing it would make the tree depend on the order the batches
+    arrived in, and could leave the copy past the path limit and silently
+    skipped.
     """
     child_paths = organized.get(c, [])
     if not child_paths:
@@ -841,7 +886,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         log(f"  {c}: already moved, skipping")
         return 0
     # Guard against destination collisions before adopting the folder.
-    target_path = target_folder / child_folder.name
+    target_path = target_folder / ((folder_names or {}).get(c) or child_folder.name)
     if _exists(target_path):
         same = False
         try:
@@ -889,14 +934,70 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
 
+def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_dirs,
+                           lock=None):
+    """Rename live folders whose name differs from this run's plan.
+
+    The plan is computed from the merged tree, so it is the name a full rebuild
+    of the same drawings would give every folder. A folder created by an earlier
+    run over a smaller tree can still carry the name that fitted then - usually
+    the longer one - and that is the only reason two trees built from the same
+    drawings in different batch orders were not identical. Renaming to the plan
+    makes the tree a function of its contents instead of of its history.
+
+    Guarded like every other tree mutation: a colliding destination or an
+    over-long target is logged and skipped, never fatal. Returns the number of
+    folders renamed."""
+    renamed = 0
+    for stem in sorted(folder_names):
+        paths = organized.get(stem)
+        if not paths:
+            continue
+        wanted = folder_names[stem]
+        for path in list(paths):
+            folder = path.parent
+            # Follow earlier relocations: an ancestor claimed earlier this run
+            # may already have moved the folder.
+            for old, new in moved_dirs.items():
+                if folder == old or folder.is_relative_to(old):
+                    folder = new / folder.relative_to(old)
+                    break
+            if folder.name == wanted:
+                continue
+            target = folder.parent / wanted
+            if len(str(target)) > MAX_PATH:
+                log(f"  WARNING: {stem}: folder name not normalized "
+                    f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
+                continue
+            if _exists(target):
+                log(f"  WARNING: {stem}: folder name not normalized "
+                    f"(destination exists, manual review): {target.relative_to(output)}")
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] rename {folder.name} -> {wanted}")
+            else:
+                _ensure_lock(lock, log)
+                try:
+                    folder.rename(target)
+                except OSError as e:
+                    log(f"  WARNING: {stem}: rename failed ({target}): {e}")
+                    continue
+            moved_dirs[folder] = target
+            renamed += 1
+    if renamed:
+        log(f"Normalized {renamed} folder name(s) to this run's plan")
+    return renamed
+
+
 def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
-                         dry_run, log, lock=None):
+                         dry_run, log, lock=None, folder_names=None):
     """Adopt one organized child under target_folder; returns (copies, moves).
 
     Top-level folders are re-homed (moved, so no stale root is left behind;
     the shared-folder guard applies since a move relocates foreign PDFs).
     Nested folders are copied via _copy_org_child_tree (shared sources land
-    whole). Later claimants resolve the new home through moved_dirs.
+    whole). Later claimants resolve the new home through moved_dirs. The
+    destination folder is named from this run's plan (see _copy_org_child_tree).
     """
     child_paths = organized.get(c, [])
     if not child_paths:
@@ -920,7 +1021,7 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         log(f"  {c}: already moved, skipping")
         return 0, 0
     # Guard against destination collisions before adopting the folder.
-    target_path = target_folder / child_folder.name
+    target_path = target_folder / ((folder_names or {}).get(c) or child_folder.name)
     if _exists(target_path):
         same = False
         try:
@@ -958,7 +1059,7 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         return 0, 1
     copies = _copy_org_child_tree(c, target_folder, organized,
                                   moved_dirs, output, dry_run, log,
-                                  lock=lock)
+                                  lock=lock, folder_names=folder_names)
     return copies, 0
 
 
@@ -1005,7 +1106,8 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
                 for c in sorted(org_children_of.get(s, ())):
                     _c, _m = _adopt_one_org_child(c, folder, organized,
                                                   moved_dirs, output,
-                                                  dry_run, log, lock=lock)
+                                                  dry_run, log, lock=lock,
+                                                  folder_names=folder_names)
                     total += _c
                     total_moves += _m
             for ch in sorted(new_children.get(s, ())):
@@ -1107,15 +1209,57 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
     return est
 
 
+def _subtree_stems(root, children):
+    """`root` plus every stem reachable through `children` (cycle-safe)."""
+    seen = set()
+    stack = [root]
+    while stack:
+        s = stack.pop()
+        if s in seen:
+            continue
+        seen.add(s)
+        stack.extend(children.get(s, ()))
+    return seen
+
+
+def _names_for_placement(folder_names, children, roots, index, names_of, base, log):
+    """Folder names for one placement: the run's whole-tree plan if given.
+
+    Both modes plan folder names for the WHOLE tree about to be placed (one
+    `plan_folder_names` call over the merged/new graph), and every placement
+    and adoption then uses that single map. The per-subtree call below is the
+    fallback for callers that drive a helper directly (tests, repair passes).
+    Planning per placement instead is what made a stem's folder name depend on
+    which call happened to create it first.
+    """
+    if folder_names is not None:
+        return folder_names
+    return build_folder_names(children, roots, index, names_of, base, log)
+
+
+def plan_folder_names(children, roots, index, names_of, output, log):
+    """The run's folder-name plan: one map over the whole tree (see naming.py).
+
+    `naming.build_folder_names` measures every root-to-leaf path, so a stem's
+    folder is shortened as far as its deepest copy needs - and the same stem
+    gets the same name wherever it lands. Full mode calls this over its whole
+    graph; incremental calls it over the merged graph (new + already
+    organized), which is why the two modes agree on the tree's shape.
+    """
+    return build_folder_names(children, roots, index, names_of, output, log)
+
+
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
                            base, output, dry_run, log, org_children_of,
-                           organized, moved_dirs, renames=None, lock=None):
+                           organized, moved_dirs, renames=None, lock=None,
+                           folder_names=None):
     """R is a sub-assembly of organized part(s) P; place under P.
 
     Returns (copies, moves)."""
     if len(org_par) > 1:
         log(f"  {R}: referenced by multiple organized parts {org_par}; placing under {P}")
-    fn = build_folder_names(new_children, [R], new_index, new_names, base, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, base, log)
     log(f"  {R}: sub-assembly of organized part {P} -> {(base / fn.get(R, R)).relative_to(output)}")
     placed = place_files(new_children, [R], new_index, base, dry_run, log, new_names, fn,
                          renames=renames, lock=lock)
@@ -1129,7 +1273,7 @@ def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
 def _place_above_organized_children(R, org_child, new_children, new_index, new_names,
                                     organized, moved_dirs, output, dry_run, log,
                                     org_children_of,
-                                    renames=None, lock=None):
+                                    renames=None, lock=None, folder_names=None):
     """R is a higher-level assembly referencing organized part(s): create its
     folder, adopt the organized child folders under it, then place R's subtree.
     Mutates moved_dirs; returns (copies, moves).
@@ -1141,7 +1285,8 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     copies = 0
     moves = 0
     log(f"  {R}: higher-level assembly referencing organized part(s): {org_child}")
-    fn = build_folder_names(new_children, [R], new_index, new_names, output, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, output, log)
     target_folder = output / fn.get(R, R)
     can_move = True
     if dry_run:
@@ -1155,7 +1300,7 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     for c in (org_child if can_move else (())):
         _c, _m = _adopt_one_org_child(c, target_folder, organized,
                                       moved_dirs, output, dry_run, log,
-                                      lock=lock)
+                                      lock=lock, folder_names=fn)
         copies += _c
         moves += _m
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
@@ -1171,11 +1316,12 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
 def _place_standalone_new_root(R, new_children, new_index, new_names,
                                output, dry_run, log, org_children_of,
                                organized, moved_dirs,
-                               renames=None, lock=None):
+                               renames=None, lock=None, folder_names=None):
     """Standalone new root with a BOM/children -> new root folder.
 
     Returns (copies, moves)."""
-    fn = build_folder_names(new_children, [R], new_index, new_names, output, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, output, log)
     log(f"  {R}: standalone assembly -> new root folder {fn.get(R, R)}/")
     placed = place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
                          renames=renames, lock=lock)
@@ -1218,10 +1364,6 @@ def _full_prepare_index(folder, output, jobs, log):
     if not index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
-    # Unapproved CHK drawings present at scan time (before revision filtering):
-    # a CHK is reported even when an approved DWG of the same base exists, since
-    # the DWG superseded it and the user still needs the Teamcenter lookup.
-    chk_stems = [s for s in sorted(index) if is_chk_stem(s)]
     index, old = split_superseded(index)
     if old:
         _log_superseded_preface(old, log)
@@ -1231,20 +1373,34 @@ def _full_prepare_index(folder, output, jobs, log):
     # shallowest) BEFORE extraction, so BOM/NAME/title block come from the
     # copy that will actually be placed.
     index, watermarked_dupes = _resolve_duplicates(index, duplicates, jobs, log)
+    # Report only CHK drawings that stay live in the tree: a CHK whose base has
+    # an approved/higher revision is superseded (archived to _superseded/) and the
+    # approved drawing is already in the tree, so listing the CHK would ask the
+    # user to fetch a drawing they already have. Computed after the split so the
+    # list reflects the tree, not the raw input.
+    chk_stems = [s for s in sorted(index) if is_chk_stem(s)]
     return index, chk_stems, old, watermarked_dupes
 
 
 def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     """BOM scan + opt-in re-key + watermark/title-block logs + OCR snap.
-    Returns the scan results plus the extraction warning count."""
+    Returns the scan results plus the extraction warning count and the
+    single-pass USED ON figures (so the USED ON section reuses them)."""
     log("--- Scanning BOM tables ---")
-    bom_of, bom_names, watermarks, titleblocks, warnings = _scan_boms(
-        sorted(index.items()), jobs, log, require_desc=True)
+    bom_of, bom_names, watermarks, titleblocks, warnings, used_on_of, \
+        used_names = _scan_boms(
+            sorted(index.items()), jobs, log, require_desc=True)
     rekeyed = {}
     if rekey:
         index, bom_of, watermarks, titleblocks, rekeyed = _rekey_misnamed(
             index, bom_of, watermarks, titleblocks, set(index), log)
         chk_stems = [rekeyed.get(s, s) for s in chk_stems]
+        # Keep the single-pass USED ON figures aligned with re-keyed stems.
+        for old, new in rekeyed.items():
+            if old in used_on_of:
+                used_on_of[new] = used_on_of.pop(old)
+            if old in used_names:
+                used_names[new] = used_names.pop(old)
     _log_watermarks(watermarks, log)
     # Filename vs title block: number, revision, title (report only; with
     # --rekey-titleblock a misnamed file is re-keyed first).
@@ -1252,14 +1408,13 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(bom_of, index, log)
     return (index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed,
-            chk_stems, warnings)
+            chk_stems, warnings, used_on_of, used_names)
 
 
 def _full_build_edges(bom_of, index, bom_names, log):
     """BOM edges + missing/FC logs. Returns (children, parents, unmatched)."""
     children = defaultdict(set)
     parents = defaultdict(set)
-    unmatched = []
     skipped_fc = set()
     for stem, raw_values in sorted(bom_of.items()):
         for val in raw_values:
@@ -1268,28 +1423,26 @@ def _full_build_edges(bom_of, index, bom_names, log):
                 continue
             if not is_processable_ref(val):
                 continue
-            matches = match_pdfs(val, index)
-            if not matches:
-                unmatched.append((stem, val))
-                continue
-            for m in matches:
+            for m in match_pdfs(val, index):
                 if m == stem:
                     continue
                 children[stem].add(m)
                 parents[m].add(stem)
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
+    unmatched = _collect_missing(bom_of, index, bom_names,
+                                 "BOM reference(s) with no matching PDF:", log)
     if unmatched:
-        _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
-                          unmatched, bom_names, log)
         log("")
     return children, parents, unmatched
 
 
-def _full_scan_used_on(index, jobs, log):
+def _full_scan_used_on(index, jobs, log, used_on_of=None, names_of=None):
     """USED ON + NAME scan + OCR snap + missing-NAME log."""
     used_on_of, names_of = _scan_used_on(sorted(index.items()), jobs,
-                                         "--- Scanning USED ON fields ---", log)
+                                         "--- Scanning USED ON fields ---", log,
+                                         used_on_cache=used_on_of,
+                                         names_cache=names_of)
     _snap_used_on(used_on_of, index, log)
     _log_missing_names(index, names_of, log)
     return used_on_of, names_of
@@ -1331,7 +1484,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     refused = bool(skipped)
     total_copies = 0
     if kept:
-        folder_names = build_folder_names(children, kept, index, names_of, output, log)
+        folder_names = plan_folder_names(children, kept, index, names_of, output, log)
         total_copies = place_files(children, kept, index, output, dry_run,
                                    log, names_of, folder_names, renames=renames,
                                    lock=lock)
@@ -1440,7 +1593,8 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     sweep_stale_claims(output, dry_run, log)
     index, chk_stems, old, watermarked_dupes = _full_prepare_index(folder, output, jobs, log)
     index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed, chk_stems, \
-        warning_count = _full_scan_boms(index, jobs, log, rekey, chk_stems)
+        warning_count, _used_on_of, _used_names = _full_scan_boms(
+            index, jobs, log, rekey, chk_stems)
 
     children, parents, unmatched = _full_build_edges(bom_of, index, bom_names, log)
 
@@ -1448,7 +1602,9 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     if chk_stems:
         _log_chk_block(chk_stems, log)
 
-    used_on_of, names_of = _full_scan_used_on(index, jobs, log)
+    used_on_of, names_of = _full_scan_used_on(index, jobs, log,
+                                            used_on_of=_used_on_of,
+                                            names_of=_used_names)
 
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
@@ -1476,11 +1632,20 @@ def _incremental_prepare(folder, output, dry_run, log):
         raise NoPDFsFoundError("No PDFs found in folder.")
     scan_res = scan_output_tree(output)
     in_place = Path(folder).resolve() == Path(output).resolve()
-    organized, sup_dir, stored_orphans, new_index, chk_stems = \
+    organized, sup_dir, stored_orphans, new_index = \
         _collect_incremental_candidates(scan_index, output, scan_res=scan_res,
                                         in_place=in_place)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
+    # Report only CHK drawings that stay live in the tree (whole-tree scope, like
+    # the other reported decisions). A CHK whose base has an approved/higher
+    # revision is archived to _superseded/ below and the approved drawing is
+    # already in the tree, so listing the CHK would ask the user to fetch a
+    # drawing they already have. Organized CHK superseded by this batch drop out
+    # as well.
+    superseded_by_batch = {o for _s, o in supersede_pairs}
+    chk_stems = [s for s in sorted((set(organized) | set(new_index))
+                                   - superseded_by_batch) if is_chk_stem(s)]
     new_duplicates = {stem: paths for stem, paths in top_duplicates.items()
                       if stem in new_index}
     if old_new:
@@ -1558,8 +1723,9 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
     new_index, watermarked_dupes = _resolve_duplicates(
         new_index, new_duplicates, jobs, log)
     log("--- Scanning BOM tables (new PDFs) ---")
-    new_boms, bom_names, new_watermarks, new_titleblocks, warnings = _scan_boms(
-        sorted(new_index.items()), jobs, log, require_desc=False)
+    new_boms, bom_names, new_watermarks, new_titleblocks, warnings, \
+        new_used_on, new_names = _scan_boms(
+            sorted(new_index.items()), jobs, log, require_desc=False)
     all_stems = new_stems | org_stems
     rekeyed = {}
     if rekey:
@@ -1571,12 +1737,18 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
             scanned_new = len(new_index)
             chk_stems = [rekeyed.get(s, s) for s in chk_stems]
             all_stems = new_stems | org_stems
+        for old, new in rekeyed.items():
+            if old in new_used_on:
+                new_used_on[new] = new_used_on.pop(old)
+            if old in new_names:
+                new_names[new] = new_names.pop(old)
     _log_watermarks(new_watermarks, log)
     # OCR near-miss refs: correct against the known stems before edges.
     _snap_boms(new_boms, all_stems, log)
     return (new_index, watermarked_dupes, new_boms, bom_names,
             new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
-            scanned_new, all_stems, chk_stems, warnings)
+            scanned_new, all_stems, chk_stems, warnings, new_used_on,
+            new_names)
 
 
 def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
@@ -1584,16 +1756,8 @@ def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
     skipped_fc = sorted({v for vals in new_boms.values() for v in vals if v.startswith("FC")})
     if skipped_fc:
         _log_skipped_fc(skipped_fc, log)
-    unmatched = []
-    for nstem, vals in sorted(new_boms.items()):
-        for v in vals:
-            if not is_processable_ref(v):
-                continue
-            if not match_pdfs(v, all_stems):
-                unmatched.append((nstem, v))
-    if unmatched:
-        _log_missing_refs(f"Skipped {len(unmatched)} BOM reference(s) with no matching PDF:",
-                          unmatched, bom_names, log)
+    unmatched = _collect_missing(new_boms, all_stems, bom_names,
+                                 "BOM reference(s) with no matching PDF:", log)
     log("")
     # Unapproved CHK drawings among the new PDFs: approved DWG should be
     # downloaded from Teamcenter (same base drawing number, no CHK suffix)
@@ -1617,8 +1781,7 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
         org_boms, org_used_on, org_unmatched, org_watermarks, \
             org_titleblocks, org_names, warnings = \
             _scan_organized(organized, all_stems, jobs, bom_names, log)
-        _snap_boms(org_boms, all_stems, log)
-        _snap_used_on(org_used_on, all_stems, log)
+        # (_scan_organized snaps org_boms/org_used_on before its missing check.)
         unmatched.extend(org_unmatched)
         if org_watermarks:
             _log_watermarks(org_watermarks, log)
@@ -1633,10 +1796,13 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
         warnings
 
 
-def _incremental_scan_new_used_on(new_index, jobs, all_stems, log):
+def _incremental_scan_new_used_on(new_index, jobs, all_stems, log,
+                                  cached_used_on=None, cached_names=None):
     """USED ON + NAME scan for new PDFs + OCR snap."""
-    new_used_on, new_names = _scan_used_on(sorted(new_index.items()), jobs,
-                                           "--- Scanning USED ON fields (new PDFs) ---", log)
+    new_used_on, new_names = _scan_used_on(
+        sorted(new_index.items()), jobs,
+        "--- Scanning USED ON fields (new PDFs) ---", log,
+        used_on_cache=cached_used_on, names_cache=cached_names)
     _snap_used_on(new_used_on, all_stems, log)
     return new_used_on, new_names
 
@@ -1697,27 +1863,29 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
 
 
 def _incremental_graph(new_boms, org_boms, new_used_on, org_used_on,
-                       new_names, all_stems, new_stems, org_stems, log):
-    """Graph edges + USED ON cross-checks + cycles + relationship notes."""
+                       all_stems, new_stems, org_stems, log,
+                       *, merged_children, merged_used_on, merged_names):
+    """Graph edges + USED ON cross-checks + cycles + relationship notes.
+
+    Placement maps stay delta-scoped (``new_*`` / ``org_*_of``); the two
+    *reported* cross-checks run on the merged tree with the same functions full
+    mode uses, so the two modes report identical USED ON sections.
+    """
     _, org_parents_of = _graph_edges(org_boms, new_stems)
     org_children_of, _ = _graph_edges(new_boms, org_stems)
     new_children, new_parents = _graph_edges(new_boms, new_stems)
     # BOM is the only source of truth for parent-child edges; USED ON is a
     # cross-check only. Report children whose USED ON names a parent the
     # parent's BOM does not list as USED ON bugs (never placement edges).
-    used_on_bugs = _collect_used_on_bugs_incremental(
-        new_boms, org_boms, new_used_on, org_used_on, all_stems, log)
+    used_on_bugs = find_used_on_bugs(merged_children, merged_used_on, all_stems)
+    if used_on_bugs:
+        _log_used_on_bugs(used_on_bugs, log)
     # USED ON consistency (BOM-derived edges only): parent BOM lists the part
-    # but the part USED ON omits the parent.
-    incr_bom_edges, _ = _graph_edges(new_boms, all_stems)
-    org_edges, _ = _graph_edges(org_boms, new_stems)
-    for ostem, children_set in org_edges.items():
-        incr_bom_edges[ostem] |= children_set
-    used_all = dict(org_used_on)
-    used_all.update(new_used_on)
-    incr_mism = find_used_on_mismatches(incr_bom_edges, used_all)
+    # but the part USED ON omits the parent. Whole merged tree, plus the merged
+    # name map, so the sheet and the report's NAME lines match a full run.
+    incr_mism = find_used_on_mismatches(merged_children, merged_used_on)
     if incr_mism:
-        _log_used_on_mismatches(incr_mism, new_names, log)
+        _log_used_on_mismatches(incr_mism, merged_names, log)
     removed = _log_cycle_detection("--- Cycle detection (new PDFs) ---",
                                    new_children, new_parents, log)
     _log_relationship_notes(new_stems, new_parents, org_parents_of, org_children_of, log)
@@ -1740,15 +1908,25 @@ def _incremental_placeable(R, new_boms, new_children, org_parents_of,
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
-                       log, rekeyed, total_copies, total_moves, lock=None):
-    """Placement decisions for new roots.
+                       log, rekeyed, total_copies, total_moves, lock=None,
+                       folder_names=None):
+    """Placement decisions for the parentless new stems (the placement worklist).
 
-    Returns (new_roots, copies, moves, placement_refused, skipped_roots). The
-    per-run fan-out check trims oversized roots before any placement, so a
-    partial refusal still places the rest; skipped roots are reported, never
-    placed. BOM-less standalone roots are still parked (bounded by the root
-    count, not by the graph fan-out), matching full mode - except on a full
-    refusal, which places and parks nothing, as before."""
+    Returns (worklist, copies, moves, placement_refused, skipped_roots), where
+    worklist is every parentless new stem - including BOM-less standalones that
+    are only parked and stems placed under an organized parent. Reported roots
+    are computed separately from the merged tree with full mode's rule (see
+    ``_classify_roots`` in ``_run_incremental_inner``). The per-run fan-out check
+    trims oversized roots before any placement, so a partial refusal still
+    places the rest; skipped roots are reported, never placed. BOM-less
+    standalone roots are still parked (bounded by the root count, not by the
+    graph fan-out), matching full mode - except on a full refusal, which places
+    and parks nothing, as before.
+
+    `folder_names` is this run's whole-tree plan (``_run_incremental_inner``);
+    placement and organized-child adoption both name folders from it, so the
+    tree does not depend on which run created a folder first. Callers that pass
+    nothing (tests, repair passes) fall back to a per-placement plan."""
     new_roots = sorted(s for s in new_stems if not new_parents.get(s))
     log("--- Placement decisions ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
@@ -1776,6 +1954,9 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
         log("")
         return [], total_copies, total_moves, refused, skipped
     standalone_orphans = []
+    # (stem, organized claimant) pairs already copied by the root case below, so
+    # the cross-batch claimant pass does not copy any of them twice.
+    covered: set = set()
     for R in new_roots:
         if R in skipped_set:
             # Oversized root: reported by fit_roots_within_cap above, never
@@ -1791,20 +1972,24 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             # Every claimant gets its own copy (as in full mode): placing
             # under only the first would leave the other parents' BOMs
             # pointing at a child missing from their subtrees.
+            subtree = _subtree_stems(R, new_children)
             for P in org_par:
                 base = _current_folder_of(P, organized, output, moved_dirs)
                 _c, _m = _place_subassembly_of(R, P, org_par, new_children, new_index,
                                                new_names, base, output, dry_run, log,
                                                org_children_of, organized, moved_dirs,
-                                               renames=renames, lock=lock)
+                                               renames=renames, lock=lock,
+                                               folder_names=folder_names)
                 total_copies += _c
                 total_moves += _m
+                covered.update((X, P) for X in subtree)
         elif org_child:
             copies, moves = _place_above_organized_children(R, org_child, new_children,
                                                             new_index, new_names, organized,
                                                             moved_dirs, output, dry_run, log,
                                                             org_children_of,
-                                                            renames=renames, lock=lock)
+                                                            renames=renames, lock=lock,
+                                                            folder_names=folder_names)
             total_copies += copies
             total_moves += moves
         elif not (new_boms.get(R) or new_children.get(R)):
@@ -1819,7 +2004,32 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             _c, _m = _place_standalone_new_root(R, new_children, new_index,
                                                    new_names, output, dry_run, log,
                                                    org_children_of, organized, moved_dirs,
-                                                   renames=renames, lock=lock)
+                                                   renames=renames, lock=lock,
+                                                   folder_names=folder_names)
+            total_copies += _c
+            total_moves += _m
+    # Cross-batch claimant symmetry. A stem that arrives together with its own
+    # new parent is placed only under that parent, so a pre-existing (organized)
+    # claimant whose BOM lists it never gets a copy: its folder is missing a
+    # child its own BOM points at, and the resulting tree depends on the order
+    # the batches happened to arrive in. Give every organized claimant the same
+    # copy the batch-root case above already makes.
+    placed = set()
+    for R in new_roots:
+        if R in skipped_set or R in standalone_orphans:
+            continue
+        placed |= _subtree_stems(R, new_children)
+    for S in sorted(placed):
+        org_par = sorted(org_parents_of.get(S, ()))
+        for P in org_par:
+            if (S, P) in covered:
+                continue
+            base = _current_folder_of(P, organized, output, moved_dirs)
+            _c, _m = _place_subassembly_of(S, P, org_par, new_children, new_index,
+                                           new_names, base, output, dry_run, log,
+                                           org_children_of, organized, moved_dirs,
+                                           renames=renames, lock=lock,
+                                           folder_names=folder_names)
             total_copies += _c
             total_moves += _m
     if standalone_orphans:
@@ -1832,7 +2042,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
 def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           organized, new_roots, new_children, removed,
                           total_copies, total_moves, warning_count, unmatched,
-                          chk_stems, new_used_on, incr_mism, used_on_bugs,
+                          chk_stems, roots_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
                           bom_names, org_names=None, superseded=(), planned=(),
                           scan_res=None, refused=False,
@@ -1852,7 +2062,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "--- Summary ---",
         f"  New PDFs scanned:     {scanned_new}",
         f"  Already organized:    {len(organized)}",
-        f"  New graph roots:      {len(new_roots)}",
+        f"  Root assemblies:     {len(new_roots)}",
         f"  BOM edges kept:       {sum(len(v) for v in new_children.values())}",
         f"  Cycles broken:        {len(removed)}",
         f"  PDF copies written:   {total_copies}",
@@ -1872,7 +2082,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "missing": unmatched,
         "chk": chk_stems,
         "orphans": _live_orphan_stems(output),
-        "roots": [(r, sorted(set(new_used_on.get(r, [])))) for r in new_roots],
+        "roots": [(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
         "used_on_mismatches": incr_mism,
         "used_on_bugs": used_on_bugs,
         "titleblock_mismatches": tb_mismatches,
@@ -1947,7 +2157,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
     new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
         new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
-        all_stems, chk_stems, warning_count = _incremental_scan_new_boms(
+        all_stems, chk_stems, warning_count, _new_used_on, _new_names = \
+        _incremental_scan_new_boms(
             new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
     # Archive the watermarked duplicates that lost the pre-scan resolution.
     _ensure_lock(lock, log)
@@ -1963,7 +2174,9 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             new_titleblocks, unmatched, log)
     warning_count += org_warnings
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
-                                                           all_stems, log)
+                                                           all_stems, log,
+                                                           cached_used_on=_new_used_on,
+                                                           cached_names=_new_names)
 
     # Cap check BEFORE any supersede swaps/moves: a refused run must not
     # mutate the tree. Uses the pre-merge new graph (cycle-broken, like the
@@ -2012,20 +2225,69 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                    new_stems, org_stems, all_stems, sup_dir,
                                    output, dry_run, log, total_copies,
                                    lock=lock)
+    # One merged view of the tree this run reports on (new + already organized).
+    # Every reported decision below - roots, USED ON bugs, USED ON mismatches -
+    # is computed from it with the same functions full mode uses, so the two
+    # modes cannot drift. Placement keeps its own delta inputs (new_* /
+    # org_*_of): those drive the executor, not the report. Safe here because
+    # nothing after this point mutates the stem/bom maps.
+    merged_stems = new_stems | org_stems
+    merged_boms = {**org_boms, **new_boms}
+    merged_used_on = {**org_used_on, **new_used_on}
+    merged_children, merged_parents = _graph_edges(merged_boms, merged_stems)
+
     new_children, new_parents, org_parents_of, org_children_of, used_on_bugs, \
         incr_mism, removed = _incremental_graph(
-            new_boms, org_boms, new_used_on, org_used_on, new_names,
-            all_stems, new_stems, org_stems, log)
+            new_boms, org_boms, new_used_on, org_used_on,
+            all_stems, new_stems, org_stems, log,
+            merged_children=merged_children, merged_used_on=merged_used_on,
+            merged_names=_merge_names(org_names or {}, new_names))
+    # Break merged-graph cycles only now, exactly like full mode: the report
+    # cross-checks above run on the unbroken merged graph, and the break exists
+    # for the root/orphan split. Silent, so the "Cycle detection (new PDFs)"
+    # section keeps reporting new-graph breaks only (the pre-cap break above is
+    # silent for the same reason).
+    break_cycles(merged_children, merged_parents, lambda msg: None)
+    # Reported roots use full mode's rule and scope: every stem of the merged
+    # tree with no parent and at least one child edge. A refused run still
+    # reports the tree's roots exactly as full mode does (it reports the plan,
+    # not what it managed to place).
+    reported_roots, _merged_orphans = _classify_roots(
+        merged_stems, merged_parents, merged_boms, merged_children)
+
+    # Folder names for the WHOLE merged tree, exactly as full mode plans them
+    # (naming.py): one map, shared by placement and by organized-child
+    # adoption. Planning per placement instead would name one stem differently
+    # depending on which call created its folder first, and an incremental
+    # subtree plan stops at the organized children hanging off it, so the
+    # deepest copies were never measured - that is how a copy of an
+    # already-organized child could land under a name that no longer fits the
+    # path limit and be skipped instead of placed.
+    merged_index = {s: pick_shallowest(paths) for s, paths in organized.items() if paths}
+    merged_index.update(new_index)
+    folder_names = plan_folder_names(merged_children, reported_roots, merged_index,
+                                     _merge_names(org_names or {}, new_names),
+                                     output, log)
+    # Make the live tree's folder names match that plan before placing anything
+    # else, so a folder an earlier run named for a smaller tree cannot survive
+    # as a stale spelling (see normalize_folder_names).
+    normalize_folder_names(organized, folder_names, output, dry_run, log, moved_dirs,
+                           lock=lock)
 
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
     # places nothing, exactly as before.
-    (new_roots, total_copies, total_moves, place_refused,
+    (worklist, total_copies, total_moves, place_refused,
      skipped) = _incremental_place(
         new_stems, new_parents, org_parents_of, org_children_of, new_children,
         new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
         output, dry_run, log, rekeyed, total_copies, total_moves,
-        lock=lock)
+        lock=lock, folder_names=folder_names)
+    # Reported roots use the SAME rule and scope as full mode: every stem of
+    # the merged tree (new + already organized) with no parent and at least one
+    # child edge. Organically parentless BOM-less standalones are orphans, not
+    # roots, and a refused run still reports the tree's roots exactly as full
+    # mode does (it reports the plan, not what it managed to place).
     # A pre-check drop stays refused even when the backstop drops nothing
     # further (cycle breaking can only shrink the plan between the two).
     refused = refused or place_refused
@@ -2037,7 +2299,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # for placements that never happened.
     skipped_stems = {r for r, _ in skipped}
     planned = set()
-    for _r in new_roots:
+    for _r in worklist:
         if _r in skipped_stems:
             continue
         if not _incremental_placeable(_r, new_boms, new_children,
@@ -2054,10 +2316,10 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # Finalize retires adopted orphans (deletes), so the lock is re-checked.
     _ensure_lock(lock, log)
     return _incremental_finalize(stored_orphans, output, dry_run, log,
-                                 scanned_new, organized, new_roots,
+                                 scanned_new, organized, reported_roots,
                                  new_children, removed, total_copies,
                                  total_moves, warning_count, unmatched,
-                                 chk_stems, new_used_on, incr_mism,
+                                 chk_stems, merged_used_on, incr_mism,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
                                  org_names=org_names,

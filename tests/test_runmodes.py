@@ -499,13 +499,14 @@ def test_run_incremental_returns_structured_ctx(tmp_path, make_pdf):
                         "used_on_mismatches", "used_on_bugs",
                         "titleblock_mismatches", "scanned", "watermarks",
                         "names", "placement_refused", "skipped_roots"}
-    assert ctx["counters"] == {"scanned": 2, "roots": 1, "copies": 2,
+    assert ctx["counters"] == {"scanned": 2, "roots": 2, "copies": 2,
                                "cycles": 0, "warnings": 0}
     assert ctx["skipped_roots"] == []
     assert ctx["missing"] == []
     assert ctx["chk"] == []
     assert ctx["orphans"] == []
-    assert ctx["roots"] == [("F10126109", [])]
+    # Whole-tree roots, exactly as a full run over the same tree would report.
+    assert ctx["roots"] == [("F10126106", []), ("F10126109", [])]
     assert ctx["used_on_mismatches"] == [("F10126109", "F10126108", [])]
     assert ctx["used_on_bugs"] == []
     assert ctx["names"]["F10126108"] == "Standalone part"
@@ -706,12 +707,14 @@ def test_run_incremental_full_refusal_places_and_parks_nothing(
 
     assert ctx["placement_refused"] is True
     assert ctx["skipped_roots"] == [("F10126106", 2)]
-    assert ctx["roots"] == []
-    assert ctx["counters"]["roots"] == 0
+    # Roots mirror full mode even on a refused run: it reports the tree's plan,
+    # not what it managed to place.
+    assert ctx["roots"] == [("F10126106", [])]
+    assert ctx["counters"]["roots"] == 1
     assert not any(out.rglob("*.pdf"))
     text = "\n".join(logged)
     assert "placing 0 of 1" in text
-    assert "New graph roots:      0" in text
+    assert "Root assemblies:     1" in text
 
 
 def test_run_incremental_precheck_ignores_phantom_cycle_fanout(
@@ -1132,6 +1135,39 @@ def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     assert "storing in _orphans/" in "\n".join(logged)
 
 
+def test_incremental_roots_match_full_mode(tmp_path, make_pdf):
+    # A parentless BOM-less standalone is an orphan, never a root: the
+    # incremental Roots list/count must match full mode instead of counting
+    # every parentless new stem (the internal placement worklist).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+
+    full = run_full(in_dir, tmp_path / "out_full", False, lambda m: None, jobs=1)
+    incr = run_incremental(in_dir, tmp_path / "out_incr", False,
+                           lambda m: None, jobs=1)
+
+    assert full["counters"]["roots"] == 1
+    assert incr["counters"]["roots"] == full["counters"]["roots"]
+    assert incr["roots"] == full["roots"] == [("F10126106", [])]
+    assert incr["orphans"] == full["orphans"] == ["F10126108"]
+
+    # Second phase: an incremental run over an ALREADY ORGANIZED tree must still
+    # report the whole tree's roots, not just the arriving stems - a full run
+    # over the same input is the reference.
+    out = tmp_path / "out_live"
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+    make_pdf(in_dir / "F10126109.pdf", [
+        "FERMI PART LIST", "F10126108 STANDALONE PART", "NAME", "New assembly"])
+    incr2 = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+    full2 = run_full(in_dir, tmp_path / "out_full2", False, lambda m: None, jobs=1)
+
+    assert incr2["roots"] == full2["roots"] == [("F10126106", []), ("F10126109", [])]
+    assert incr2["counters"]["roots"] == full2["counters"]["roots"] == 2
+
+
 def test_swap_revision_counts_only_actual_writes(tmp_path):
     new_pdf = tmp_path / "F10126107_A.pdf"
     new_pdf.write_bytes(b"new")
@@ -1382,11 +1418,15 @@ def test_run_incremental_supersede_copies_shared_child(tmp_path, make_pdf):
         "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent C rev B"])
     ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
 
-    c_copy = (out / "F10126108 Parent C" / "F10126150 Shared part"
+    c_copy = (out / "F10126108 Parent C rev B" / "F10126150 Shared part"
               / "F10126150.pdf")
     assert c_copy.is_file()
     assert a_copy.is_file()
     assert b_copy.is_file()
+    # The superseded folder is renamed to the name this run's plan gives the
+    # real revision (its NAME is now "Parent C rev B"), so the stale spelling
+    # cannot survive a batch that way.
+    assert not (out / "F10126108 Parent C").exists()
     # Swap (2 copies) + the shared-child copy (1): the summary must count it.
     assert ctx["counters"]["copies"] == 3
 
@@ -1421,12 +1461,13 @@ def test_run_full_reports_titleblock_mismatches(tmp_path, make_pdf):
 
     mism = ctx["titleblock_mismatches"]
     assert ("F10126106_A_DWG1", "number", "F10126106", "F10126107") in mism
-    assert ("F10126106_A_DWG1", "revision", "A", "B") in mism
+    # The misnamed file's filename revision is not also reported.
+    assert not any(m[1] == "revision" for m in mism)
     assert ("F10126108", "name", "KIT, SOMETHING ELSE",
             "Completely Different") in mism
     text = "\n".join(logged)
-    assert "Title block check (3 mismatch(es))" in text
-    assert "F10126106_A_DWG1: revision: filename 'A', title block 'B'" in text
+    assert "Title block check (2 mismatch(es))" in text
+    assert "F10126106_A_DWG1: revision:" not in text
 
 
 def test_rekey_misnamed_pure_rules():
@@ -1590,7 +1631,7 @@ def _write_organized_nested_child(make_pdf, out):
     parent_dir = out / "F10126106 Old parent"
     parent_dir.mkdir(parents=True)
     make_pdf(parent_dir / "F10126106.pdf", ["NAME", "Old parent"])
-    child_dir = parent_dir / "F10126107 Child"
+    child_dir = parent_dir / "F10126107 Child part"
     child_dir.mkdir()
     make_pdf(child_dir / "F10126107.pdf", ["NAME", "Child part"])
     return parent_dir, child_dir
@@ -1616,9 +1657,9 @@ def test_place_above_copies_nested_shared_child_to_every_claimant(
     assert ctx["placement_refused"] is False
     # Source intact, both claimants served.
     assert (child_dir / "F10126107.pdf").is_file()
-    assert (out / "F10126109 Higher one" / "F10126107 Child"
+    assert (out / "F10126109 Higher one" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
-    assert (out / "F10126111 Higher two" / "F10126107 Child"
+    assert (out / "F10126111 Higher two" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
     assert "already moved, skipping" not in "\n".join(logged)
 
@@ -1630,7 +1671,7 @@ def test_place_above_moves_top_level_root_adoption(tmp_path, make_pdf):
     in_dir.mkdir()
     out = tmp_path / "out"
     out.mkdir()
-    root_dir = out / "F10126107 Child"
+    root_dir = out / "F10126107 Child part"
     root_dir.mkdir()
     make_pdf(root_dir / "F10126107.pdf", ["NAME", "Child part"])
     make_pdf(in_dir / "F10126109.pdf", [
@@ -1641,8 +1682,62 @@ def test_place_above_moves_top_level_root_adoption(tmp_path, make_pdf):
 
     assert ctx["placement_refused"] is False
     assert not root_dir.exists()
-    assert (out / "F10126109 Higher assembly" / "F10126107 Child"
+    assert (out / "F10126109 Higher assembly" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
+
+
+def test_incremental_renames_stale_folder_to_this_runs_plan(tmp_path, make_pdf):
+    # A folder an earlier run named for a smaller tree keeps that spelling
+    # unless this run renames it. The plan is computed over the merged tree, so
+    # normalizing to it is what makes the tree depend on its contents and not
+    # on the order the batches arrived in (two trees built from the same two
+    # inputs the other way round differed only in these names).
+    out = tmp_path / "out"
+    out.mkdir()
+    stale_parent = out / "F10126106 Stale parent"
+    stale_parent.mkdir()
+    make_pdf(stale_parent / "F10126106.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    stale_child = stale_parent / "F10126107 Stale child"
+    stale_child.mkdir()
+    make_pdf(stale_child / "F10126107.pdf", ["NAME", "Child part"])
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    # An unrelated new root: the run needs something to place.
+    make_pdf(in_dir / "F10126200.pdf",
+             ["FERMI PART LIST", "F10126201 LEAF", "NAME", "Other"])
+    make_pdf(in_dir / "F10126201.pdf", ["NAME", "Leaf"])
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    assert (out / "F10126106 Parent" / "F10126106.pdf").is_file()
+    assert (out / "F10126106 Parent" / "F10126107 Child part"
+            / "F10126107.pdf").is_file()
+    assert not stale_parent.exists()
+    assert any("Normalized" in line for line in logged)
+
+
+def test_incremental_dry_run_logs_stale_rename_without_touching_it(tmp_path, make_pdf):
+    out = tmp_path / "out"
+    out.mkdir()
+    stale = out / "F10126106 Stale parent"
+    stale.mkdir()
+    make_pdf(stale / "F10126106.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(stale / "F10126107.pdf", ["NAME", "Child part"])
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126200.pdf",
+             ["FERMI PART LIST", "F10126201 LEAF", "NAME", "Other"])
+    make_pdf(in_dir / "F10126201.pdf", ["NAME", "Leaf"])
+    logged = []
+
+    run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    assert stale.exists()
+    assert any("[DRY-RUN] rename" in line for line in logged)
 
 
 def test_place_above_organized_children_mkdir_oserror(tmp_path, make_pdf):
@@ -1848,14 +1943,174 @@ def test_titleblock_mismatches_pure_rules():
     }
     logged.clear()
     res = _titleblock_mismatches(tb_multi, logged.append)
+    # A number mismatch (misnamed file) suppresses the revision row for the
+    # same drawing - the filename revision is meaningless then.
     expected = [
         ("F10126106_A", "number", "F10126106", "F10126107"),
-        ("F10126106_A", "revision", "A", "B"),
         ("F10126108", "name", "WRONG NAME", "OTHER TITLE"),
     ]
     assert res == expected
     text = "\n".join(logged)
-    assert "Title block check (3 mismatch(es))" in text
+    assert "Title block check (2 mismatch(es))" in text
+
+
+def test_titleblock_number_mismatch_suppresses_revision_row():
+    # A misnamed file reports the number only; its filename revision is
+    # meaningless. A correctly-named file still reports its revision.
+    misnamed = {"F10126106_A": ("F10126106_A", "F10126107", "B", None, False)}
+    logged = []
+    res = _titleblock_mismatches(misnamed, logged.append)
+    assert res == [("F10126106_A", "number", "F10126106", "F10126107")]
+    assert "revision" not in "\n".join(logged)
+
+    named = {"F10126106_A": ("F10126106_A", "F10126106", "B", None, False)}
+    res = _titleblock_mismatches(named, lambda m: None)
+    assert res == [("F10126106_A", "revision", "A", "B")]
+
+
+def test_titleblock_scanned_single_char_number_misread_suppressed():
+    # A scanned sheet whose OCR number differs from the filename by one glyph is
+    # read as an OCR misread, not a misnamed file (the filename is the CAD
+    # export name and is authoritative).
+    scanned = {"F10134728___DWG1": ("F10134728___DWG1", "F10154728", None, None, True)}
+    assert _titleblock_mismatches(scanned, lambda m: None) == []
+
+    # A text-layer read of the same number is exact, so it is still reported.
+    text = {"F10134728___DWG1": ("F10134728___DWG1", "F10154728", None, None, False)}
+    res = _titleblock_mismatches(text, lambda m: None)
+    assert res == [("F10134728___DWG1", "number", "F10134728", "F10154728")]
+
+    # More than one character apart is still a real mismatch, even when scanned.
+    far = {"F10134728___DWG1": ("F10134728___DWG1", "F10128174", None, None, True)}
+    res2 = _titleblock_mismatches(far, lambda m: None)
+    assert res2 == [("F10134728___DWG1", "number", "F10134728", "F10128174")]
+
+
+def test_incremental_missing_refs_match_full_after_ocr_snap(tmp_path, make_pdf):
+    # A BOM misread (F0156241) snaps to the real stem F10156241. Full mode snaps
+    # before its missing check; incremental built the organized-drawing missing
+    # list from un-snapped BOMs, so the same ref showed up missing only there.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST", "F0156241 CHILD PART", "NAME", "Parent"])
+    make_pdf(in_dir / "F10156241.pdf", [
+        "FERMI PART LIST", "F10156241", "NAME", "Child"])
+    out = tmp_path / "out"
+
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    # A new PDF so the incremental run has work to do and therefore scans the
+    # organized tree (with no new PDF it short-circuits and never gets there).
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST", "F10126110", "NAME", "New part"])
+    inc = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert "F0156241" not in {ref for _, ref in full["missing"]}
+    assert "F0156241" not in {ref for _, ref in inc["missing"]}
+
+
+def test_collect_missing_filters_and_reports():
+    from fermi_organizer.runmodes import _collect_missing
+
+    boms = {"F10126106": ["F10126107", "F00459093", "FC0003392", "notaref"]}
+    logged = []
+    missing = _collect_missing(boms, {"F10126106", "F10126107"},
+                               {"F00459093": "NUT BACKING PLATE"},
+                               "ref(s):", logged.append)
+    assert missing == [("F10126106", "F00459093")]
+    text = "\n".join(logged)
+    assert "Skipped 1 ref(s):" in text
+    assert "F10126106 -> F00459093" in text
+    assert "NAME F00459093: NUT BACKING PLATE" in text
+
+    # Nothing missing -> no log at all (callers keep their own blank lines).
+    logged2 = []
+    assert _collect_missing({"S": ["F10126107"]}, {"S", "F10126107"}, {},
+                            "ref(s):", logged2.append) == []
+    assert logged2 == []
+
+
+def test_chk_reported_only_when_live_in_tree(tmp_path, make_pdf):
+    # A CHK whose base has an approved revision is superseded (archived to
+    # _superseded/) and the approved drawing is in the tree, so it is NOT
+    # reported. A CHK with no approved counterpart stays live and IS reported.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106_A_DWG1.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Approved"])
+    make_pdf(in_dir / "F10126106__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved twin"])
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["chk"] == ["F10126107__CHK"]
+    assert (out / "_superseded" / "F10126106__CHK.pdf").is_file()
+    assert not (out / "F10126106__CHK.pdf").exists()
+
+
+def test_incremental_reports_chk_already_live_in_tree(tmp_path, make_pdf):
+    # Whole-tree scope: a batch that contains no CHK at all must still report the
+    # CHK drawings sitting live in the tree.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+    assert full["chk"] == ["F10126107__CHK"]
+
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "New arrival"])
+    incr = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert incr["chk"] == ["F10126107__CHK"]
+
+
+def test_incremental_stops_reporting_chk_once_approved_arrives(tmp_path, make_pdf):
+    # The approved revision arriving in a later batch supersedes the organized
+    # CHK, so the next run stops reporting it - the approved drawing is now in
+    # the tree and there is nothing to fetch from Teamcenter.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126107__CHK.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Unapproved only"])
+    full = run_full(in_dir, out, False, lambda m: None, jobs=1)
+    assert full["chk"] == ["F10126107__CHK"]
+
+    make_pdf(in_dir / "F10126107_A_DWG1.pdf",
+             ["FERMI PART LIST", "F10126108 CHILD", "NAME", "Now approved"])
+    incr = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert incr["chk"] == []
+
+
+def test_incremental_copies_new_child_under_organized_claimant(tmp_path, make_pdf):
+    # Batch 1 organizes parent A, whose BOM claims C - but C is not there yet, so
+    # it is reported missing and A's subtree has no child.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10190001.pdf", [
+        "FERMI PART LIST", "F10190003 SHARED CHILD", "NAME", "Parent A"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    # Batch 2 brings C together with a SECOND parent B that also claims it. C is
+    # not a batch root (it has an in-batch parent), but A is an organized
+    # claimant, so C must be copied under A as well as under B. Without that the
+    # tree depends on the order the batches arrived in.
+    make_pdf(in_dir / "F10190002.pdf", [
+        "FERMI PART LIST", "F10190003 SHARED CHILD", "NAME", "Parent B"])
+    make_pdf(in_dir / "F10190003.pdf", ["NAME", "Shared child"])
+    run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    copies = sorted(str(p.relative_to(out)) for p in out.rglob("F10190003.pdf"))
+    assert len(copies) == 2, copies
+    assert any(c.startswith("F10190001") for c in copies)
+    assert any(c.startswith("F10190002") for c in copies)
 
 
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):

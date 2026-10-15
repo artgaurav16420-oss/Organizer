@@ -33,6 +33,13 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
 
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
+## Performance
+- A recent run passes (extracted release) now scans each PDF once per phase. Typical bottlenecks are still OCR and very large BOM fan-out.
+- Use `--jobs 4` (or your CPU count) for thousands of text PDFs; expect `jobs=2` and `jobs=1` to agree on results.
+- Add `--no-ocr` when drawings are known to have text layers; otherwise OCR runs per scan and dominates runtime.
+- Prefer `--output "<input>/Output"` so later runs do not re-scan an organized tree as input.
+- A dry run with no output folder yet still processes scans and builds the workbook even though no text report is created until the folder exists.
+
 ## Flags
 
 | Flag | Effect |

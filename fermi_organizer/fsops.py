@@ -13,7 +13,13 @@ from pathlib import Path
 from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH,
                      PLANNED_COPIES_WARN, MAX_PLANNED_COPIES)
 from .graph import is_chk_stem
+from .extraction import detect_watermark
 from .naming import folder_name_for
+
+try:
+    import pymupdf
+except ImportError:  # pragma: no cover
+    pymupdf = None
 
 
 def _native(path):
@@ -45,6 +51,31 @@ def _exists(path):
 def _islink(path):
     """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
     return os.path.islink(_native(path))
+
+
+def _pdf_watermarked(path):
+    """Best-effort watermark probe for one archived/on-disk PDF.
+
+    Returns True when detect_watermark finds evidence; False (including on any
+    read failure) otherwise, so undecidable copies are treated as clean rather
+    than as reasons to delete parked orphan bytes.
+    """
+    if pymupdf is None:
+        return False
+    try:
+        doc = pymupdf.open(str(_native(path)))
+    except Exception:
+        return False
+    try:
+        return detect_watermark(doc) is not None
+    except Exception:
+        return False
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
 
 
 def _classify_input_pdf(p, folder, index):
@@ -344,7 +375,7 @@ def _staged_copy(src, staging):
         raise OSError(f"staging path became a symlink during copy, refusing: {staging}")
     try:
         with open(_native(src), "rb") as fsrc, os.fdopen(fd, "wb") as fdst:
-            shutil.copyfileobj(fsrc, fdst)
+            shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
     except BaseException:
         try:
             os.unlink(_native(staging))
@@ -770,15 +801,20 @@ def scan_output_tree(output):
     output = Path(output)
     tree, sup, orph = [], [], []
     if output.is_dir():
-        for p in output.rglob("*.pdf"):
-            top = p.relative_to(output).parts[0]
-            if is_system_dir(top):
-                if top.startswith("_superseded"):
-                    sup.append(p)
-                elif top.startswith("_orphans"):
-                    orph.append(p)
-            else:
-                tree.append(p)
+        out_root = output
+        for dirpath, _dirnames, filenames in os.walk(out_root):
+            for name in filenames:
+                if not name.lower().endswith(".pdf"):
+                    continue
+                p = Path(dirpath) / name
+                top = p.relative_to(out_root).parts[0]
+                if is_system_dir(top):
+                    if top.startswith("_superseded"):
+                        sup.append(p)
+                    elif top.startswith("_orphans"):
+                        orph.append(p)
+                else:
+                    tree.append(p)
     return {"tree": tree, "sup": sup, "orph": orph}
 
 
@@ -1095,12 +1131,12 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                            planned=(), scan_res=None):
     """Delete parked _orphans/ copies whose stem is now live in the tree,
     or whose stem was superseded (its archived copy lives in _superseded/).
-    Only a byte-identical copy retires the parked copy: a differing copy may
-    be the only copy of those bytes (e.g. the input was updated after the
-    parked copy was made), so the parked copy is kept with a warning instead.
-    A superseded stem therefore also needs its bytes somewhere - in the tree
-    or in the archive - and a live same-stem copy only counts when its bytes
-    match the parked copy. `superseded` must list only stems whose archive copy
+    A superseded stem is retired only when its bytes live in the tree or in
+    the archive. A live same-stem copy retires the parked copy when its bytes
+    match the parked copy, or when the parked copy is watermarked and the live
+    copy is clean (the watermark difference must not leave order-dependent
+    orphans). A differing clean parked copy is kept with a warning instead
+    (it may be the only copy of those bytes). `superseded` must list only stems whose archive copy
     was verified written (e.g. copy_superseded's archived set) - a failed
     archive must never delete the parked copy. In dry-run only, stems in
     planned (placed by this run but not yet on disk) also count as live.
@@ -1141,11 +1177,19 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
                      f"byte-identical copy in tree or _superseded/; kept: {opath}")
                 continue
         elif o not in planned_set:
-            # Only a byte-identical regular live copy retires the parked
-            # copy; a symlinked live entry never counts (same rule as the
-            # archive byte-verify: a link is not a managed copy).
-            retireable = any(not _islink(p) and _same_bytes(p, opath)
-                             for p in live)
+            # Watermark dominance (order-independent): a parked watermarked
+            # copy is dominated by any clean live same-stem copy, even when the
+            # bytes differ only by the watermark. A byte-identical copy also
+            # retires the parked copy. Clean parked copies keep the old
+            # byte-safety rule, so a genuinely newer input is not discarded.
+            # Symlinked live entries are not managed copies.
+            same_bytes = any(not _islink(p) and _same_bytes(p, opath)
+                              for p in live)
+            watermarked_dominated = (
+                _pdf_watermarked(opath)
+                and any(not _islink(p) and not _pdf_watermarked(p)
+                        for p in live))
+            retireable = same_bytes or watermarked_dominated
             if not retireable:
                 if live:
                     log(f"  WARNING: orphan copy {o} not retired: no "

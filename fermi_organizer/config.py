@@ -1,4 +1,5 @@
 """Shared constants and regexes for the Fermi PDF organizer."""
+import functools
 import re
 
 FERMI_VAL_RE = re.compile(r"^F(?!C)[0-9][0-9A-Za-z]*$")
@@ -35,6 +36,7 @@ PART_NAME_RE = re.compile(r"(?<![A-Z0-9])F(?:C)?\d{5,8}(?![0-9])[A-Z0-9_-]*",
                           re.IGNORECASE)
 
 
+@functools.lru_cache(maxsize=None)
 def canonical_stem(name):
     """Canonical uppercase stem for a PDF filename (no extension), or None.
 
@@ -49,6 +51,7 @@ def canonical_stem(name):
     return stem if PART_STEM_RE.match(stem) else None
 
 
+@functools.lru_cache(maxsize=None)
 def filename_title(name):
     """Title text after the part token in a filename, or None.
 
@@ -70,11 +73,22 @@ def filename_title(name):
 # ---------------------------------------------------------------------------
 TB_REV_VAL_RE = re.compile(r"^[A-Z]$|^-$")
 TB_NUM_VAL_RE = re.compile(r"^F(?:C)?\d{5,8}$")
+# A full FERMI part number is 'F' + 8 digits (or 'FC' + 7), i.e. 9 chars. OCR
+# splits a cramped title-block number into fragments ('F', '1Q1', '19580'), and
+# a shorter read must not be fabricated into a wrong number (F10119580 ->
+# F19580). The OCR title-block path accepts only this full length so a
+# fragment reads as "unreadable" instead of as a bogus number mismatch.
+TB_NUM_FULL_RE = re.compile(r"^F(?:\d{8}|C\d{7})$")
 TB_REV_DX_LEFT, TB_REV_DX_RIGHT, TB_REV_DY_BOTTOM = -10, 50, 14
 TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT, TB_NUM_DY_BOTTOM = -40, 170, 14
 # OCR word boxes can be offset by a row: search a symmetric band around the
 # label instead of only below it.
 TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM = 40, 40
+# The title block sits in the bottom-right of the sheet, so the drawing-number
+# label must be in the right portion of the page. Note text far to the left
+# ("MANUFACTURER'S PART NUMBER F10154728") also OCRs as the word 'NUMBER'; the
+# bottom-most such note would otherwise hijack the bottom-most-label rule.
+TB_NUM_LABEL_X_FRAC = 0.5
 # Single safety limit for all path-length guards (Windows MAX_PATH = 260, margin below)
 MAX_PATH = 250
 # Windows mkdir limit on the directory path only (~248; keep margin)
@@ -121,6 +135,7 @@ OCR_NAME_DY_TOP = 2
 OCR_NAME_DX_RIGHT = 360
 OCR_NAME_DY_BOTTOM = 30
 OCR_NAME_LINE_TOL = 9        # NAME is a single visual line: max y drift
+OCR_PART_NAME_GAP_MAX = 40   # "PART" -> "NAME" header pair: max x gap
 OCR_FERMI_SCAN_DX_LEFT = 15  # FERMI# header column scan: x window around label
 OCR_FERMI_SCAN_DX_RIGHT = 90
 OCR_HDR_ROW_TOL = 5          # FERMI# header vs ITEM label: same-row y tolerance

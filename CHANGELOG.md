@@ -4,6 +4,174 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Performance: single PDF open per phase
+- `survey_task` extracts BOM, USED ON, title block, name, watermark and
+  scanned state from one opened PDF document instead of separate BOM and
+  USED ON passes. The run reports USED ON from the single-pass cache without
+  reopening PDFs, cutting extraction-side filesystem/PDF-open work while
+  keeping the golden dry-run log byte-for-byte.
+- `canonical_stem`/`filename_title` are now memoized; `scan_output_tree` uses
+  `os.walk` instead of recursive glob.
+- `report_glue.names_from_tree` uses `os.walk` and `_staged_copy` uses a
+  1 MiB copy buffer.
+
+### Order-independent orphan adoption
+- A parked watermarked `_orphans/` copy is now retired when a clean live
+  same-stem copy exists in the tree, even when the PDF bytes differ only
+  by the watermark. Split-run order no longer changes the final tree;
+  generic differing (non-watermarked) parked copies keep their
+  byte-safety behaviour so a newer input is not discarded.
+
+### A title-block number is not a parts-list row
+- On a scanned sheet, the OCR parts-list matcher counted the F-numbers aligned
+  in the `FERMI#` header's column and took whatever it found as rows. On a sheet
+  whose parts list is empty (or whose list the OCR never read) the only such
+  number is a title-block value, which then became a phantom BOM edge and a
+  phantom entry on the Missing sheet: `F10133759` (a flange, no parts list)
+  reported its own `USED ON F10133744` missing, and `F10148138` reported
+  `F10196096` from a title-block cross-reference row 89% down the page.
+- Two guards, both word-path counterparts of the text path's
+  `_fermi_line_is_title_block`: below the header a bare FERMI token now counts
+  only when its visual row carries an ITEM number (these sheets draw parts lists
+  bottom-up, so a top-down list has to look like one - a title-block row never
+  does), and no row may be a number the page's own `USED ON` claims as a parent.
+  Parts-list rows are read after the USED ON recovery, so values recovered by
+  the title-block zoom/strip passes count too. (A blanket "no rows in the bottom
+  15%" bound was measured first and rejected: `F10209823`'s own bottom-up list
+  legitimately extends into that band, 9 of its 32 rows were in it.)
+
+### Folder names no longer depend on the batch order
+- Both modes now plan folder names **once per run over the whole tree** and name
+  every placement *and* every organized-child adoption from that one map. Two
+  trees built from the same two inputs in opposite orders previously disagreed
+  on folder spelling (a stem's folder was named by whichever placement created
+  it first) and differed by 10 copies: an adopted copy reused the name it
+  carried on disk, and an incremental run's plan stops at the organized children
+  hanging off its own subtree, so the deepest copies were never measured and
+  were skipped for being over `MAX_PATH`.
+- `--incremental` also renames live folders that no longer match this run's plan
+  (`Normalized N folder name(s) to this run's plan`), so a folder named by an
+  earlier run over a smaller tree converges to the name a full rebuild of the
+  same drawings would use. Guarded: a colliding destination or an over-long
+  target is logged and skipped, never fatal.
+
+### Incremental copies a new child under its pre-existing claimants
+- A drawing that arrives together with its own new parent is now also copied
+  under every already-organized part whose BOM lists it. The cross-batch
+  "every claimant gets its own copy" rule previously applied only to a run's
+  batch roots, so a pre-existing parent's folder could be missing a child its
+  own BOM points at, and the final tree depended on the order the batches
+  happened to arrive in (two trees built from the same two inputs in opposite
+  order differed by 76 copies). The pass covers stems *placed by the run*, so an
+  existing tree built before this fix is not repaired by re-running
+  `--incremental` (nothing is new) - it needs a rebuild.
+
+### CHK list reports only unapproved drawings still live in the tree
+- A CHK drawing is now listed only while it is live in the tree. A CHK whose base
+  has an approved/higher revision is archived to `_superseded/` and the approved
+  drawing is already in the tree, so listing it asked the operator to download a
+  drawing they already had. The list is computed after revision filtering
+  (`split_superseded`), and incremental now covers the whole live tree rather
+  than only the incoming batch. Previously the reported set depended on the run
+  mode and batch order: an incremental run could list the archived CHK copies
+  while hiding the CHK drawings that were still live and unresolved.
+- **Behaviour change:** a full run over inputs whose CHK drawings all have
+  approved revisions now reports zero CHK entries (previously every CHK in the
+  input), and incremental reports the live CHK of the whole tree.
+
+### Full and incremental share one decision layer
+- Both modes now compute their reported decisions (roots/orphans, missing refs,
+  USED ON bugs, USED ON mismatches) from one merged view of the tree using the
+  same functions, so the two modes cannot report different things. Cyclic
+  merged graphs are broken before the root/orphan split, mirroring full mode's
+  order. Removed the forked `_incremental_roots` and
+  `_collect_used_on_bugs_incremental`; added `_collect_missing` and
+  `tests/test_mode_parity.py`, which fails if a decision is forked again.
+  Known, deliberate asymmetries (counters, `scanned`, `chk`, `orphans`, cycle
+  section, the no-new-PDF early exit) are recorded in
+  `docs/adr/0001-shared-run-mode-decisions.md`.
+- **Behaviour change (incremental):** the Roots sheet/count and the USED ON
+  check's mismatch table now cover the whole tree rather than only the stems
+  arriving in that run, matching full mode. The incremental summary line
+  "New graph roots:" is now "Root assemblies:" (same value and wording as full).
+
+### Incremental missing list matches full mode after OCR snap
+- Incremental computed the "missing reference(s) from organized drawing(s)"
+  list from un-snapped BOMs, so a misread that snaps to a real stem
+  (`F0156241` -> `F10156241`) was reported missing only in incremental runs
+  (full mode snaps before its missing check). The snap now runs before the
+  organized-drawing missing check, so both modes report the same refs.
+
+### Workbook file links are relative
+- File cells on the `Files`, `Orphans` and `Superseded` sheets now use a
+  relative hyperlink target instead of a `file:///...` URI. Excel resolves it
+  against the workbook's folder, so links survive moving or copying the tree,
+  and deep space/comma-heavy paths stay under Excel's 255-character hyperlink
+  limit (a `file:///` URI percent-encodes spaces and commas, which left 51 of
+  516 Files rows unlinked).
+
+### OCR title-block NAME: retry when the read is a stray fragment
+- A 1-2 letter NAME (OCR noise from a mangled cell) is now treated as missing,
+  so the title-block zoom re-OCR fires and reads the real value (`F10134685`
+  read `er` for `SSR/650 CM LIFTING INTERFACE ASSY`). A three-letter real name
+  (`LUG`) is left untouched.
+
+### Title block check: OCR number notes and scanned near-misses
+- The drawing-number label must sit in the right half of the sheet, so note
+  text on the left ("MANUFACTURER'S PART NUMBER F10154728") no longer hijacks
+  the field (`F10007338`, `F10007339`, `F10007343`, `F10007348`).
+- A scanned (OCR) number that differs from the filename by a single character
+  is treated as an OCR misread rather than a misnamed file (`F10134728`,
+  `F10157448`). Text-layer reads are unaffected and stay exact.
+
+### OCR title-block number: reject split fragments
+- The OCR title-block reader now accepts only a full-length FERMI number
+  (`F` + 8 digits, or `FC` + 7). Tesseract splitting a cramped number
+  (`F10119580` -> tokens `F`, `1Q1`, `19580`) no longer fabricates `F19580`,
+  so the Title block check stops reporting bogus number mismatches
+  (`F10128056`, `F10119580`, `F10142926`, `F10144043`, `F10144047`,
+  `F10042432`). Such a field now reads as unreadable instead of wrong.
+
+### Title block check: no revision row for a misnamed file
+- When a file's drawing number disagrees with its title block, the Title
+  block check sheet (and log) no longer also reports a revision row for that
+  drawing - the filename revision is meaningless once the number is wrong.
+  Revision rows are unchanged for correctly numbered files.
+
+### Workbook Files sheet is tree-only
+- The `Files` sheet now lists only the organized tree (`Active` / `CHK`);
+  parked `_orphans/` files are no longer repeated there and live solely on the
+  `Orphans` sheet. The `PDF FILES IN TREE (LIVE)` count was already tree-only.
+
+### OCR title-block NAME: note-row guard and zoom retry
+- `_find_name_anchor` now rejects a `NAME` label only when a `PART` word sits
+  **immediately to its left** (the parts-list `PART NAME` header pair) instead
+  of any `PART` word on the same visual row. A left-column note ("PART TO BE
+  FREE OF ALL SHARP EDGES") no longer hides the title-block label and drops a
+  legible NAME (`F10144038` "FLAT RAIL SUPPORT BLOCK", `F10144048`
+  "CYLINDRICAL RAIL SUPPORT BLOCK - 1").
+- The title-block zoom re-OCR now also runs when a NAME is missing (previously
+  only for a missing USED ON), recovering small NAME labels the full-page pass
+  misses (`F10112629`, `F10007335`, `F10128174`, ...).
+
+### OCR title-block NAME on tall cells
+- The OCR NAME reader now retries with a vertical-overlap window when the
+  strict top-edge window finds nothing, so a value centred in a tall
+  title-block cell (its OCR box starting above the `NAME` label's bottom
+  edge) is read. Drawings that already read a NAME keep their exact result -
+  the strict pass wins, so a tall box cannot hijack the row. The scanned
+  `F10209823` (`HB650 PROD CM - PIPING PROCUREMENT`) had fallen back to a bare
+  drawing-number folder despite a legible NAME.
+
+### Incremental root classification matches full mode
+- The incremental Roots sheet/count no longer includes parentless BOM-less
+  standalones (which are parked in `_orphans/`) or new stems placed under an
+  already organized parent. Reported roots now use the same rule as full mode
+  (`_classify_roots`: no parent + at least one child edge), via the new
+  `_incremental_roots`. Previously the internal placement worklist (every
+  parentless new stem) was reported as roots, so a drawing could appear in
+  both Roots and Orphans (e.g. `F10038961`). Placement itself is unchanged.
+
 ### Workbook NAME coverage fixes
 - Incremental runs now carry organized names forward (`_scan_organized`
   already extracted them and dropped them): prior-batch NAMEs survive into
