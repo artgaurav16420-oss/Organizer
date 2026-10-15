@@ -68,6 +68,33 @@ and a stem that arrives together with its own new parent is likewise copied
 under each organized claimant (see `_incremental_place`). Without that second
 half the tree's shape depended on which batch happened to arrive first.
 
+### Folder names: one plan per run
+
+Folder names are shortened to fit `MAX_PATH`, and how much is needed depends on
+how deep a drawing ends up. Both modes therefore plan names **once per run over
+the whole tree they are about to place** (`plan_folder_names` →
+`naming.build_folder_names`), and both placement and organized-child adoption
+name folders from that one map. Per-placement planning was the last way the
+tree depended on history:
+
+- a stem's folder was named by whichever placement created it first, so the
+  same drawing could be spelled differently in two trees built from the same
+  inputs in opposite orders;
+- adoption reused the organized child's **on-disk** name, and an incremental
+  run's plan stops at the organized children hanging off its own subtree, so
+  the deepest copies were never measured at all — they were silently skipped
+  for being over `MAX_PATH` (`Output 2` was missing 10 copies that `Output 4`
+  placed, purely because the two orders shortened different folders).
+
+Incremental additionally **normalizes** live folders to that plan
+(`normalize_folder_names`): a folder created by an earlier run over a smaller
+tree cannot be re-placed, so it is renamed instead. This is what makes the tree
+a function of its contents rather than of the order its batches arrived in;
+`tests/test_mode_parity.py::test_folder_names_do_not_depend_on_batch_order`
+pins it. Full mode has no organized index to normalize against (it does not read
+the output tree), so a full run into a pre-existing tree leaves its folder names
+alone — accepted asymmetry 6 below.
+
 The reported scope of incremental therefore changes from delta to whole-tree
 (roots, mismatches). That is intended: a delta-only Roots section was the
 inconsistency being fixed.
@@ -96,3 +123,8 @@ Pinned as excluded by `tests/test_mode_parity.py`:
 5. **No-new-PDF early exit.** `_incremental_no_new_ctx` returns before any scan
    and reports empty decision fields. Fixing it would mean scanning the whole
    tree on a no-op run; out of scope.
+6. **Folder-name normalization.** Incremental renames live folders that no
+   longer match the run's name plan; full (which never reads the output tree)
+   leaves pre-existing folders alone. A full rebuild into a clean output and an
+   incremental run onto the same drawings therefore agree, but a full run *into*
+   an existing tree does not rename what is already there.

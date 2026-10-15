@@ -4,6 +4,21 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Folder names no longer depend on the batch order
+- Both modes now plan folder names **once per run over the whole tree** and name
+  every placement *and* every organized-child adoption from that one map. Two
+  trees built from the same two inputs in opposite orders previously disagreed
+  on folder spelling (a stem's folder was named by whichever placement created
+  it first) and differed by 10 copies: an adopted copy reused the name it
+  carried on disk, and an incremental run's plan stops at the organized children
+  hanging off its own subtree, so the deepest copies were never measured and
+  were skipped for being over `MAX_PATH`.
+- `--incremental` also renames live folders that no longer match this run's plan
+  (`Normalized N folder name(s) to this run's plan`), so a folder named by an
+  earlier run over a smaller tree converges to the name a full rebuild of the
+  same drawings would use. Guarded: a colliding destination or an over-long
+  target is logged and skipped, never fatal.
+
 ### Incremental copies a new child under its pre-existing claimants
 - A drawing that arrives together with its own new parent is now also copied
   under every already-organized part whose BOM lists it. The cross-batch

@@ -816,13 +816,19 @@ def _longest_dest_path(target_path, current):
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
-                         dry_run, log, lock=None):
+                         dry_run, log, lock=None, folder_names=None):
     """Copy organized child c's folder under target_folder; returns PDF copies.
 
     Nested under a live parent means COPY, never move: moving would hollow
     out the existing parent, and later claimants would find nothing (every
     claimant gets its own copy, matching place_files). A failed copy is
     guarded, with partial-tree cleanup so later runs don't trip over it.
+
+    The copy is named from this run's folder-name plan, not from the name it
+    carries on disk: an on-disk name is whatever the run that created it first
+    chose, so reusing it would make the tree depend on the order the batches
+    arrived in, and could leave the copy past the path limit and silently
+    skipped.
     """
     child_paths = organized.get(c, [])
     if not child_paths:
@@ -846,7 +852,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         log(f"  {c}: already moved, skipping")
         return 0
     # Guard against destination collisions before adopting the folder.
-    target_path = target_folder / child_folder.name
+    target_path = target_folder / ((folder_names or {}).get(c) or child_folder.name)
     if _exists(target_path):
         same = False
         try:
@@ -894,14 +900,70 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
 
+def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_dirs,
+                           lock=None):
+    """Rename live folders whose name differs from this run's plan.
+
+    The plan is computed from the merged tree, so it is the name a full rebuild
+    of the same drawings would give every folder. A folder created by an earlier
+    run over a smaller tree can still carry the name that fitted then - usually
+    the longer one - and that is the only reason two trees built from the same
+    drawings in different batch orders were not identical. Renaming to the plan
+    makes the tree a function of its contents instead of of its history.
+
+    Guarded like every other tree mutation: a colliding destination or an
+    over-long target is logged and skipped, never fatal. Returns the number of
+    folders renamed."""
+    renamed = 0
+    for stem in sorted(folder_names):
+        paths = organized.get(stem)
+        if not paths:
+            continue
+        wanted = folder_names[stem]
+        for path in list(paths):
+            folder = path.parent
+            # Follow earlier relocations: an ancestor claimed earlier this run
+            # may already have moved the folder.
+            for old, new in moved_dirs.items():
+                if folder == old or folder.is_relative_to(old):
+                    folder = new / folder.relative_to(old)
+                    break
+            if folder.name == wanted:
+                continue
+            target = folder.parent / wanted
+            if len(str(target)) > MAX_PATH:
+                log(f"  WARNING: {stem}: folder name not normalized "
+                    f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
+                continue
+            if _exists(target):
+                log(f"  WARNING: {stem}: folder name not normalized "
+                    f"(destination exists, manual review): {target.relative_to(output)}")
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] rename {folder.name} -> {wanted}")
+            else:
+                _ensure_lock(lock, log)
+                try:
+                    folder.rename(target)
+                except OSError as e:
+                    log(f"  WARNING: {stem}: rename failed ({target}): {e}")
+                    continue
+            moved_dirs[folder] = target
+            renamed += 1
+    if renamed:
+        log(f"Normalized {renamed} folder name(s) to this run's plan")
+    return renamed
+
+
 def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
-                         dry_run, log, lock=None):
+                         dry_run, log, lock=None, folder_names=None):
     """Adopt one organized child under target_folder; returns (copies, moves).
 
     Top-level folders are re-homed (moved, so no stale root is left behind;
     the shared-folder guard applies since a move relocates foreign PDFs).
     Nested folders are copied via _copy_org_child_tree (shared sources land
-    whole). Later claimants resolve the new home through moved_dirs.
+    whole). Later claimants resolve the new home through moved_dirs. The
+    destination folder is named from this run's plan (see _copy_org_child_tree).
     """
     child_paths = organized.get(c, [])
     if not child_paths:
@@ -925,7 +987,7 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         log(f"  {c}: already moved, skipping")
         return 0, 0
     # Guard against destination collisions before adopting the folder.
-    target_path = target_folder / child_folder.name
+    target_path = target_folder / ((folder_names or {}).get(c) or child_folder.name)
     if _exists(target_path):
         same = False
         try:
@@ -963,7 +1025,7 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         return 0, 1
     copies = _copy_org_child_tree(c, target_folder, organized,
                                   moved_dirs, output, dry_run, log,
-                                  lock=lock)
+                                  lock=lock, folder_names=folder_names)
     return copies, 0
 
 
@@ -1010,7 +1072,8 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
                 for c in sorted(org_children_of.get(s, ())):
                     _c, _m = _adopt_one_org_child(c, folder, organized,
                                                   moved_dirs, output,
-                                                  dry_run, log, lock=lock)
+                                                  dry_run, log, lock=lock,
+                                                  folder_names=folder_names)
                     total += _c
                     total_moves += _m
             for ch in sorted(new_children.get(s, ())):
@@ -1125,15 +1188,44 @@ def _subtree_stems(root, children):
     return seen
 
 
+def _names_for_placement(folder_names, children, roots, index, names_of, base, log):
+    """Folder names for one placement: the run's whole-tree plan if given.
+
+    Both modes plan folder names for the WHOLE tree about to be placed (one
+    `plan_folder_names` call over the merged/new graph), and every placement
+    and adoption then uses that single map. The per-subtree call below is the
+    fallback for callers that drive a helper directly (tests, repair passes).
+    Planning per placement instead is what made a stem's folder name depend on
+    which call happened to create it first.
+    """
+    if folder_names is not None:
+        return folder_names
+    return build_folder_names(children, roots, index, names_of, base, log)
+
+
+def plan_folder_names(children, roots, index, names_of, output, log):
+    """The run's folder-name plan: one map over the whole tree (see naming.py).
+
+    `naming.build_folder_names` measures every root-to-leaf path, so a stem's
+    folder is shortened as far as its deepest copy needs - and the same stem
+    gets the same name wherever it lands. Full mode calls this over its whole
+    graph; incremental calls it over the merged graph (new + already
+    organized), which is why the two modes agree on the tree's shape.
+    """
+    return build_folder_names(children, roots, index, names_of, output, log)
+
+
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
                            base, output, dry_run, log, org_children_of,
-                           organized, moved_dirs, renames=None, lock=None):
+                           organized, moved_dirs, renames=None, lock=None,
+                           folder_names=None):
     """R is a sub-assembly of organized part(s) P; place under P.
 
     Returns (copies, moves)."""
     if len(org_par) > 1:
         log(f"  {R}: referenced by multiple organized parts {org_par}; placing under {P}")
-    fn = build_folder_names(new_children, [R], new_index, new_names, base, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, base, log)
     log(f"  {R}: sub-assembly of organized part {P} -> {(base / fn.get(R, R)).relative_to(output)}")
     placed = place_files(new_children, [R], new_index, base, dry_run, log, new_names, fn,
                          renames=renames, lock=lock)
@@ -1147,7 +1239,7 @@ def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
 def _place_above_organized_children(R, org_child, new_children, new_index, new_names,
                                     organized, moved_dirs, output, dry_run, log,
                                     org_children_of,
-                                    renames=None, lock=None):
+                                    renames=None, lock=None, folder_names=None):
     """R is a higher-level assembly referencing organized part(s): create its
     folder, adopt the organized child folders under it, then place R's subtree.
     Mutates moved_dirs; returns (copies, moves).
@@ -1159,7 +1251,8 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     copies = 0
     moves = 0
     log(f"  {R}: higher-level assembly referencing organized part(s): {org_child}")
-    fn = build_folder_names(new_children, [R], new_index, new_names, output, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, output, log)
     target_folder = output / fn.get(R, R)
     can_move = True
     if dry_run:
@@ -1173,7 +1266,7 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     for c in (org_child if can_move else (())):
         _c, _m = _adopt_one_org_child(c, target_folder, organized,
                                       moved_dirs, output, dry_run, log,
-                                      lock=lock)
+                                      lock=lock, folder_names=fn)
         copies += _c
         moves += _m
     copies += place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
@@ -1189,11 +1282,12 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
 def _place_standalone_new_root(R, new_children, new_index, new_names,
                                output, dry_run, log, org_children_of,
                                organized, moved_dirs,
-                               renames=None, lock=None):
+                               renames=None, lock=None, folder_names=None):
     """Standalone new root with a BOM/children -> new root folder.
 
     Returns (copies, moves)."""
-    fn = build_folder_names(new_children, [R], new_index, new_names, output, log)
+    fn = _names_for_placement(folder_names, new_children, [R], new_index,
+                              new_names, output, log)
     log(f"  {R}: standalone assembly -> new root folder {fn.get(R, R)}/")
     placed = place_files(new_children, [R], new_index, output, dry_run, log, new_names, fn,
                          renames=renames, lock=lock)
@@ -1346,7 +1440,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     refused = bool(skipped)
     total_copies = 0
     if kept:
-        folder_names = build_folder_names(children, kept, index, names_of, output, log)
+        folder_names = plan_folder_names(children, kept, index, names_of, output, log)
         total_copies = place_files(children, kept, index, output, dry_run,
                                    log, names_of, folder_names, renames=renames,
                                    lock=lock)
@@ -1757,7 +1851,8 @@ def _incremental_placeable(R, new_boms, new_children, org_parents_of,
 def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                        new_children, new_index, new_names, new_boms,
                        organized, moved_dirs, stored_orphans, output, dry_run,
-                       log, rekeyed, total_copies, total_moves, lock=None):
+                       log, rekeyed, total_copies, total_moves, lock=None,
+                       folder_names=None):
     """Placement decisions for the parentless new stems (the placement worklist).
 
     Returns (worklist, copies, moves, placement_refused, skipped_roots), where
@@ -1769,7 +1864,12 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
     places the rest; skipped roots are reported, never placed. BOM-less
     standalone roots are still parked (bounded by the root count, not by the
     graph fan-out), matching full mode - except on a full refusal, which places
-    and parks nothing, as before."""
+    and parks nothing, as before.
+
+    `folder_names` is this run's whole-tree plan (``_run_incremental_inner``);
+    placement and organized-child adoption both name folders from it, so the
+    tree does not depend on which run created a folder first. Callers that pass
+    nothing (tests, repair passes) fall back to a per-placement plan."""
     new_roots = sorted(s for s in new_stems if not new_parents.get(s))
     log("--- Placement decisions ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
@@ -1821,7 +1921,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                 _c, _m = _place_subassembly_of(R, P, org_par, new_children, new_index,
                                                new_names, base, output, dry_run, log,
                                                org_children_of, organized, moved_dirs,
-                                               renames=renames, lock=lock)
+                                               renames=renames, lock=lock,
+                                               folder_names=folder_names)
                 total_copies += _c
                 total_moves += _m
                 covered.update((X, P) for X in subtree)
@@ -1830,7 +1931,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                                                             new_index, new_names, organized,
                                                             moved_dirs, output, dry_run, log,
                                                             org_children_of,
-                                                            renames=renames, lock=lock)
+                                                            renames=renames, lock=lock,
+                                                            folder_names=folder_names)
             total_copies += copies
             total_moves += moves
         elif not (new_boms.get(R) or new_children.get(R)):
@@ -1845,7 +1947,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             _c, _m = _place_standalone_new_root(R, new_children, new_index,
                                                    new_names, output, dry_run, log,
                                                    org_children_of, organized, moved_dirs,
-                                                   renames=renames, lock=lock)
+                                                   renames=renames, lock=lock,
+                                                   folder_names=folder_names)
             total_copies += _c
             total_moves += _m
     # Cross-batch claimant symmetry. A stem that arrives together with its own
@@ -1868,7 +1971,8 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             _c, _m = _place_subassembly_of(S, P, org_par, new_children, new_index,
                                            new_names, base, output, dry_run, log,
                                            org_children_of, organized, moved_dirs,
-                                           renames=renames, lock=lock)
+                                           renames=renames, lock=lock,
+                                           folder_names=folder_names)
             total_copies += _c
             total_moves += _m
     if standalone_orphans:
@@ -2091,6 +2195,25 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     reported_roots, _merged_orphans = _classify_roots(
         merged_stems, merged_parents, merged_boms, merged_children)
 
+    # Folder names for the WHOLE merged tree, exactly as full mode plans them
+    # (naming.py): one map, shared by placement and by organized-child
+    # adoption. Planning per placement instead would name one stem differently
+    # depending on which call created its folder first, and an incremental
+    # subtree plan stops at the organized children hanging off it, so the
+    # deepest copies were never measured - that is how a copy of an
+    # already-organized child could land under a name that no longer fits the
+    # path limit and be skipped instead of placed.
+    merged_index = {s: pick_shallowest(paths) for s, paths in organized.items() if paths}
+    merged_index.update(new_index)
+    folder_names = plan_folder_names(merged_children, reported_roots, merged_index,
+                                     _merge_names(org_names or {}, new_names),
+                                     output, log)
+    # Make the live tree's folder names match that plan before placing anything
+    # else, so a folder an earlier run named for a smaller tree cannot survive
+    # as a stale spelling (see normalize_folder_names).
+    normalize_folder_names(organized, folder_names, output, dry_run, log, moved_dirs,
+                           lock=lock)
+
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
     # places nothing, exactly as before.
@@ -2099,7 +2222,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         new_stems, new_parents, org_parents_of, org_children_of, new_children,
         new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
         output, dry_run, log, rekeyed, total_copies, total_moves,
-        lock=lock)
+        lock=lock, folder_names=folder_names)
     # Reported roots use the SAME rule and scope as full mode: every stem of
     # the merged tree (new + already organized) with no parent and at least one
     # child edge. Organically parentless BOM-less standalones are orphans, not

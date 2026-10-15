@@ -75,3 +75,63 @@ def test_full_and_incremental_report_same_decisions(tmp_path, make_pdf):
                                           ("F10126113__CHK", "F10126108", [])]
     assert full["used_on_bugs"] == [("F10126106", "F10126111")]
     assert full["missing"] == []
+
+
+def _live_paths(root):
+    """Live PDFs of a tree, as relative paths (system folders excluded)."""
+    found = set()
+    for path in root.rglob("*.pdf"):
+        rel = path.relative_to(root)
+        if rel.parts[0].startswith("_"):
+            continue
+        found.add(str(rel).lower())
+    return found
+
+
+_LONG_A = "ASSEMBLY OF THE LONG NAMED THING FOR PATH LENGTH TESTING ALPHA BRAVO CHA"
+_LONG_B = "WELDMENT OF THE LONG NAMED THING FOR PATH LENGTH TESTING CHARLIE DELTA E"
+_LONG_C = "PROCUREMENT ASSEMBLY OF THE LONG NAMED THING FOR PATH LENGTH TESTING FOXT"
+
+
+def _write_long_batch_base(make_pdf, in_dir):
+    make_pdf(in_dir / "F10127001.pdf", [
+        "FERMI PART LIST", "F10127002 CHILD", "NAME", _LONG_A])
+    make_pdf(in_dir / "F10127002.pdf", ["NAME", _LONG_B])
+
+
+def _write_long_batch_deeper(make_pdf, in_dir):
+    make_pdf(in_dir / "F10127003.pdf", [
+        "FERMI PART LIST", "F10127001 CHILD", "NAME", _LONG_C])
+
+
+def test_folder_names_do_not_depend_on_batch_order(tmp_path, make_pdf):
+    # The same drawings must give the same tree whichever order the batches
+    # arrive in. Folder names are shortened to fit the path limit, and how much
+    # is needed depends on how deep a drawing ends up. Naming each folder from
+    # the placement that happened to create it first - and adopting organized
+    # children under the name they already carried on disk - left two trees
+    # built from the same drawings in opposite orders with differently spelled
+    # folders, and skipped the deepest copies outright.
+    logged_a = []
+    out_a = tmp_path / "order_a"
+    in_a = tmp_path / "in_a"
+    in_a.mkdir()
+    _write_long_batch_base(make_pdf, in_a)
+    run_full(in_a, out_a, False, logged_a.append, jobs=1)
+    _write_long_batch_deeper(make_pdf, in_a)
+    run_incremental(in_a, out_a, False, logged_a.append, jobs=1)
+
+    logged_b = []
+    out_b = tmp_path / "order_b"
+    in_b = tmp_path / "in_b"
+    in_b.mkdir()
+    _write_long_batch_base(make_pdf, in_b)
+    _write_long_batch_deeper(make_pdf, in_b)
+    run_full(in_b, out_b, False, logged_b.append, jobs=1)
+
+    paths_a = _live_paths(out_a)
+    assert paths_a == _live_paths(out_b)
+    # Non-vacuous: all three drawings are live in both, and nothing was dropped
+    # for being too long (the deepest copies used to be skipped).
+    assert len(paths_a) == 3
+    assert not any("path too long" in line for line in logged_a + logged_b)

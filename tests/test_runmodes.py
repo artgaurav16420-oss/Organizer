@@ -1418,11 +1418,15 @@ def test_run_incremental_supersede_copies_shared_child(tmp_path, make_pdf):
         "FERMI PART LIST", "F10126150 SHARED PART", "NAME", "Parent C rev B"])
     ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
 
-    c_copy = (out / "F10126108 Parent C" / "F10126150 Shared part"
+    c_copy = (out / "F10126108 Parent C rev B" / "F10126150 Shared part"
               / "F10126150.pdf")
     assert c_copy.is_file()
     assert a_copy.is_file()
     assert b_copy.is_file()
+    # The superseded folder is renamed to the name this run's plan gives the
+    # real revision (its NAME is now "Parent C rev B"), so the stale spelling
+    # cannot survive a batch that way.
+    assert not (out / "F10126108 Parent C").exists()
     # Swap (2 copies) + the shared-child copy (1): the summary must count it.
     assert ctx["counters"]["copies"] == 3
 
@@ -1627,7 +1631,7 @@ def _write_organized_nested_child(make_pdf, out):
     parent_dir = out / "F10126106 Old parent"
     parent_dir.mkdir(parents=True)
     make_pdf(parent_dir / "F10126106.pdf", ["NAME", "Old parent"])
-    child_dir = parent_dir / "F10126107 Child"
+    child_dir = parent_dir / "F10126107 Child part"
     child_dir.mkdir()
     make_pdf(child_dir / "F10126107.pdf", ["NAME", "Child part"])
     return parent_dir, child_dir
@@ -1653,9 +1657,9 @@ def test_place_above_copies_nested_shared_child_to_every_claimant(
     assert ctx["placement_refused"] is False
     # Source intact, both claimants served.
     assert (child_dir / "F10126107.pdf").is_file()
-    assert (out / "F10126109 Higher one" / "F10126107 Child"
+    assert (out / "F10126109 Higher one" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
-    assert (out / "F10126111 Higher two" / "F10126107 Child"
+    assert (out / "F10126111 Higher two" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
     assert "already moved, skipping" not in "\n".join(logged)
 
@@ -1667,7 +1671,7 @@ def test_place_above_moves_top_level_root_adoption(tmp_path, make_pdf):
     in_dir.mkdir()
     out = tmp_path / "out"
     out.mkdir()
-    root_dir = out / "F10126107 Child"
+    root_dir = out / "F10126107 Child part"
     root_dir.mkdir()
     make_pdf(root_dir / "F10126107.pdf", ["NAME", "Child part"])
     make_pdf(in_dir / "F10126109.pdf", [
@@ -1678,8 +1682,62 @@ def test_place_above_moves_top_level_root_adoption(tmp_path, make_pdf):
 
     assert ctx["placement_refused"] is False
     assert not root_dir.exists()
-    assert (out / "F10126109 Higher assembly" / "F10126107 Child"
+    assert (out / "F10126109 Higher assembly" / "F10126107 Child part"
             / "F10126107.pdf").is_file()
+
+
+def test_incremental_renames_stale_folder_to_this_runs_plan(tmp_path, make_pdf):
+    # A folder an earlier run named for a smaller tree keeps that spelling
+    # unless this run renames it. The plan is computed over the merged tree, so
+    # normalizing to it is what makes the tree depend on its contents and not
+    # on the order the batches arrived in (two trees built from the same two
+    # inputs the other way round differed only in these names).
+    out = tmp_path / "out"
+    out.mkdir()
+    stale_parent = out / "F10126106 Stale parent"
+    stale_parent.mkdir()
+    make_pdf(stale_parent / "F10126106.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    stale_child = stale_parent / "F10126107 Stale child"
+    stale_child.mkdir()
+    make_pdf(stale_child / "F10126107.pdf", ["NAME", "Child part"])
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    # An unrelated new root: the run needs something to place.
+    make_pdf(in_dir / "F10126200.pdf",
+             ["FERMI PART LIST", "F10126201 LEAF", "NAME", "Other"])
+    make_pdf(in_dir / "F10126201.pdf", ["NAME", "Leaf"])
+    logged = []
+
+    ctx = run_incremental(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    assert (out / "F10126106 Parent" / "F10126106.pdf").is_file()
+    assert (out / "F10126106 Parent" / "F10126107 Child part"
+            / "F10126107.pdf").is_file()
+    assert not stale_parent.exists()
+    assert any("Normalized" in line for line in logged)
+
+
+def test_incremental_dry_run_logs_stale_rename_without_touching_it(tmp_path, make_pdf):
+    out = tmp_path / "out"
+    out.mkdir()
+    stale = out / "F10126106 Stale parent"
+    stale.mkdir()
+    make_pdf(stale / "F10126106.pdf",
+             ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(stale / "F10126107.pdf", ["NAME", "Child part"])
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    make_pdf(in_dir / "F10126200.pdf",
+             ["FERMI PART LIST", "F10126201 LEAF", "NAME", "Other"])
+    make_pdf(in_dir / "F10126201.pdf", ["NAME", "Leaf"])
+    logged = []
+
+    run_incremental(in_dir, out, True, logged.append, jobs=1)
+
+    assert stale.exists()
+    assert any("[DRY-RUN] rename" in line for line in logged)
 
 
 def test_place_above_organized_children_mkdir_oserror(tmp_path, make_pdf):
