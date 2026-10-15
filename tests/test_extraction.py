@@ -300,15 +300,21 @@ def test_ocr_partslist_ignores_titleblock_used_on_of_empty_parts_list(
 
     used, _name, _used_anchor = extraction._title_fields_from_words(words)
     assert used == ["F10133744"]
-    # The title block declares it a parent: not a row of this drawing.
+    # A lone F-number below the header is not a row at all (it has no ITEM
+    # number): the sheet keeps its empty parts list.
     assert extraction._partslist_from_words(None, words, used) == []
-    # ...and nothing else claims it, so a real row still reads (the filter is
-    # not a blanket ban on the number).
-    assert extraction._partslist_from_words(None, words, []) == ["F10133744"]
 
+    # Give the row the ITEM number a real list row has, so the row itself is
+    # legitimate and only the title-block claim can reject the value.
+    with_item = words + [(570, 738, 578, 748, "1", 0, 0, 0)]
+    monkeypatch.setattr(extraction, "_ocr_strip_tokens",
+                        lambda page, rect, psm="7": ["F10133744"])
+    assert extraction._partslist_from_words(None, with_item, used) == []
+    assert extraction._partslist_from_words(None, with_item, []) == ["F10133744"]
+
+    extraction.OCR.reset(enabled=True)
     pdf = make_pdf(tmp_path / "F10133759.pdf", ["NAME", "Part"])
     page = fitz.open(str(pdf))[0]
-    extraction.OCR.reset(enabled=True)
     monkeypatch.setattr(extraction.OCR, "available", True)
     monkeypatch.setattr(extraction.OCR, "words_cached", lambda *a, **k: words)
     monkeypatch.setattr(extraction, "_ocr_words_zoom", lambda *a, **k: [])
@@ -318,6 +324,31 @@ def test_ocr_partslist_ignores_titleblock_used_on_of_empty_parts_list(
 
     assert page_used == ["F10133744"]
     assert page_bom == []
+
+
+def test_ocr_partslist_below_header_row_needs_its_item_number(monkeypatch):
+    # A bottom-up parts list puts every row ABOVE the header, so a lone F-number
+    # below it is the title block's - and reading it as a row invented BOM edges
+    # and Missing entries (F10148138 took the cross-reference F10196096 89% down
+    # the page). A top-down list is the exception, and it shows its ITEM numbers.
+    header = [
+        (588, 653, 620, 662, "ITEM", 0, 0, 0),
+        (622, 653, 660, 662, "FERMI", 0, 0, 0),
+        (668, 653, 674, 662, "#", 0, 0, 0),
+    ]
+    stray = (653, 752, 700, 762, "F10196096", 0, 0, 0)
+    hdr = extraction._partslist_header(header + [stray])
+    assert hdr is not None and hdr[6] == "below"  # the trap is set
+
+    assert extraction._partslist_from_words(None, header + [stray]) == []
+
+    # With its ITEM number beside it the same token is a row, and the row strip
+    # (the value's own token is the ITEM cell here) recovers the number.
+    item = (570, 752, 578, 762, "1", 0, 0, 0)
+    monkeypatch.setattr(extraction, "_ocr_strip_tokens",
+                        lambda page, rect, psm="7": ["F10196096"])
+    assert extraction._partslist_from_words(None, header + [item, stray]) == [
+        "F10196096"]
 
 
 def test_iso_page_scale_and_ocr_render_dpi():

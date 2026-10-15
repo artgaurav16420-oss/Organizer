@@ -4,16 +4,23 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
-### A title-block USED ON value is not a parts-list row
-- On a scanned sheet whose parts list is empty, the OCR parts-list matcher
-  counted the F-numbers aligned in the `FERMI#` header's column and took the
-  only one it found - the title block's own `USED ON` value, i.e. a *parent* -
-  as a child row. That invented a BOM edge and a phantom entry on the Missing
-  sheet: `F10133759` (a flange, no parts list) reported `F10133744` missing.
-  The word path now applies the guard the text path already had
-  (`_fermi_line_is_title_block`): a number this page declares as its parent is
-  never a row of it. Parts-list rows are read after the USED ON recovery, so a
-  value recovered by the title-block zoom/strip passes counts too.
+### A title-block number is not a parts-list row
+- On a scanned sheet, the OCR parts-list matcher counted the F-numbers aligned
+  in the `FERMI#` header's column and took whatever it found as rows. On a sheet
+  whose parts list is empty (or whose list the OCR never read) the only such
+  number is a title-block value, which then became a phantom BOM edge and a
+  phantom entry on the Missing sheet: `F10133759` (a flange, no parts list)
+  reported its own `USED ON F10133744` missing, and `F10148138` reported
+  `F10196096` from a title-block cross-reference row 89% down the page.
+- Two guards, both word-path counterparts of the text path's
+  `_fermi_line_is_title_block`: below the header a bare FERMI token now counts
+  only when its visual row carries an ITEM number (these sheets draw parts lists
+  bottom-up, so a top-down list has to look like one - a title-block row never
+  does), and no row may be a number the page's own `USED ON` claims as a parent.
+  Parts-list rows are read after the USED ON recovery, so values recovered by
+  the title-block zoom/strip passes count too. (A blanket "no rows in the bottom
+  15%" bound was measured first and rejected: `F10209823`'s own bottom-up list
+  legitimately extends into that band, 9 of its 32 rows were in it.)
 
 ### Folder names no longer depend on the batch order
 - Both modes now plan folder names **once per run over the whole tree** and name

@@ -43,9 +43,10 @@ from .config import (canonical_stem,
                      OCR_FERMI_SCAN_DX_LEFT, OCR_FERMI_SCAN_DX_RIGHT,
                      OCR_HDR_ROW_TOL, OCR_ITEM_FERMI_GAP_MAX, OCR_HDR_ROW_GAP,
                      OCR_FERMI_COL_DX_LEFT, OCR_FERMI_COL_DX_RIGHT,
-                      OCR_ITEM_COL_DX_LEFT, OCR_ITEM_FERMI_MIN_GAP,
-                      OCR_ITEM_X_FALLBACK, OCR_ROW_STRIP_DY_TOP,
-                      OCR_ROW_STRIP_DY_BOTTOM, OCR_MAX_RENDER_MP)
+                     OCR_ITEM_COL_DX_LEFT, OCR_ITEM_FERMI_MIN_GAP,
+                     OCR_ITEM_X_FALLBACK, OCR_ROW_STRIP_DY_TOP,
+                     OCR_ROW_STRIP_DY_BOTTOM,
+                     OCR_MAX_RENDER_MP)
 
 # Resource-exhaustion guards + OCR memo bound.
 # OCR_MIN_CHARS itself lives in config.py; these thresholds sit here so
@@ -771,7 +772,20 @@ def _partslist_header(words):
 
 
 def _partslist_candidate_rows(words, item_x, fer_x, fer_x1, hdr_y, side):
-    """Candidate rows: ITEM digits OR bare FERMI tokens on the header's side."""
+    """Candidate rows: ITEM digits OR bare FERMI tokens on the header's side.
+
+    Below the header a bare FERMI token counts only when its visual row carries
+    an ITEM number: these sheets draw parts lists bottom-up, so a top-down list
+    is the exception and has to look like a list. A lone F-number below the
+    header belongs to the title block, and reading it as a row invented BOM
+    edges (and Missing entries) out of title-block values: F10133759 took its
+    own 'USED ON F10133744', F10148138 took the cross-reference F10196096.
+    Above the header no such evidence is needed - there the title block never is.
+    """
+    item_rows = [w2[1] for w2 in words
+                 if re.fullmatch(r"\d{1,3}\|?", w2[4])
+                 and item_x - OCR_ITEM_COL_DX_LEFT <= w2[0]
+                 < fer_x - OCR_ITEM_FERMI_MIN_GAP]
     cand_rows = []
     for w in words:
         x, y0 = w[0], w[1]
@@ -790,6 +804,9 @@ def _partslist_candidate_rows(words, item_x, fer_x, fer_x1, hdr_y, side):
         in_fermi_col = fer_x - OCR_FERMI_COL_DX_LEFT <= x <= fer_x1 + OCR_FERMI_COL_DX_RIGHT
         if (((v or partial_f) and in_fermi_col)
                 or (label and item_x - OCR_ITEM_COL_DX_LEFT <= x < fer_x - OCR_ITEM_FERMI_MIN_GAP)):
+            if (side == "below" and not label
+                    and not any(abs(y0 - iy) < 3 for iy in item_rows)):
+                continue
             cand_rows.append((y0, y0, w))
     return cand_rows
 
@@ -812,13 +829,11 @@ def _partslist_from_words(page, words, used_on=()):
     """Parts-list FERMI values: label-anchored column + per-row strip re-OCR.
 
     `used_on` is this page's title-block USED ON list: those numbers are the
-    drawing's parents, so none of them is a parts-list row. A sheet whose parts
-    list is empty has no row tokens in the header's column at all, and then the
-    only aligned F-number on whichever side the header won can be the title-block
-    value itself - which invented a BOM edge, and a missing reference, out of a
-    parent number (F10133759, a flange with no parts list, read its own
-    'USED ON F10133744' as a child). This is the word path's counterpart to the
-    text path's _fermi_line_is_title_block guard.
+    drawing's parents, so none of them is a parts-list row. Together with the
+    ITEM-evidence rule for rows below the header (see _partslist_candidate_rows)
+    this keeps a sheet whose parts list is empty - or whose list the OCR never
+    read - from inventing a BOM edge, and a Missing entry, out of a title-block
+    value (F10133759 read its own USED ON F10133744).
     """
     if not words:
         return []
