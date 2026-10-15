@@ -4,6 +4,17 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Incremental copies a new child under its pre-existing claimants
+- A drawing that arrives together with its own new parent is now also copied
+  under every already-organized part whose BOM lists it. The cross-batch
+  "every claimant gets its own copy" rule previously applied only to a run's
+  batch roots, so a pre-existing parent's folder could be missing a child its
+  own BOM points at, and the final tree depended on the order the batches
+  happened to arrive in (two trees built from the same two inputs in opposite
+  order differed by 76 copies). The pass covers stems *placed by the run*, so an
+  existing tree built before this fix is not repaired by re-running
+  `--incremental` (nothing is new) - it needs a rebuild.
+
 ### CHK list reports only unapproved drawings still live in the tree
 - A CHK drawing is now listed only while it is live in the tree. A CHK whose base
   has an approved/higher revision is archived to `_superseded/` and the approved

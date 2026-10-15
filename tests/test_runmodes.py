@@ -2030,6 +2030,31 @@ def test_incremental_stops_reporting_chk_once_approved_arrives(tmp_path, make_pd
     assert incr["chk"] == []
 
 
+def test_incremental_copies_new_child_under_organized_claimant(tmp_path, make_pdf):
+    # Batch 1 organizes parent A, whose BOM claims C - but C is not there yet, so
+    # it is reported missing and A's subtree has no child.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10190001.pdf", [
+        "FERMI PART LIST", "F10190003 SHARED CHILD", "NAME", "Parent A"])
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    # Batch 2 brings C together with a SECOND parent B that also claims it. C is
+    # not a batch root (it has an in-batch parent), but A is an organized
+    # claimant, so C must be copied under A as well as under B. Without that the
+    # tree depends on the order the batches arrived in.
+    make_pdf(in_dir / "F10190002.pdf", [
+        "FERMI PART LIST", "F10190003 SHARED CHILD", "NAME", "Parent B"])
+    make_pdf(in_dir / "F10190003.pdf", ["NAME", "Shared child"])
+    run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    copies = sorted(str(p.relative_to(out)) for p in out.rglob("F10190003.pdf"))
+    assert len(copies) == 2, copies
+    assert any(c.startswith("F10190001") for c in copies)
+    assert any(c.startswith("F10190002") for c in copies)
+
+
 def test_run_modes_sweep_leftover_supersede_staging(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()

@@ -1112,6 +1112,19 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
     return est
 
 
+def _subtree_stems(root, children):
+    """`root` plus every stem reachable through `children` (cycle-safe)."""
+    seen = set()
+    stack = [root]
+    while stack:
+        s = stack.pop()
+        if s in seen:
+            continue
+        seen.add(s)
+        stack.extend(children.get(s, ()))
+    return seen
+
+
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
                            base, output, dry_run, log, org_children_of,
                            organized, moved_dirs, renames=None, lock=None):
@@ -1784,6 +1797,9 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
         log("")
         return [], total_copies, total_moves, refused, skipped
     standalone_orphans = []
+    # (stem, organized claimant) pairs already copied by the root case below, so
+    # the cross-batch claimant pass does not copy any of them twice.
+    covered: set = set()
     for R in new_roots:
         if R in skipped_set:
             # Oversized root: reported by fit_roots_within_cap above, never
@@ -1799,6 +1815,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
             # Every claimant gets its own copy (as in full mode): placing
             # under only the first would leave the other parents' BOMs
             # pointing at a child missing from their subtrees.
+            subtree = _subtree_stems(R, new_children)
             for P in org_par:
                 base = _current_folder_of(P, organized, output, moved_dirs)
                 _c, _m = _place_subassembly_of(R, P, org_par, new_children, new_index,
@@ -1807,6 +1824,7 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                                                renames=renames, lock=lock)
                 total_copies += _c
                 total_moves += _m
+                covered.update((X, P) for X in subtree)
         elif org_child:
             copies, moves = _place_above_organized_children(R, org_child, new_children,
                                                             new_index, new_names, organized,
@@ -1828,6 +1846,29 @@ def _incremental_place(new_stems, new_parents, org_parents_of, org_children_of,
                                                    new_names, output, dry_run, log,
                                                    org_children_of, organized, moved_dirs,
                                                    renames=renames, lock=lock)
+            total_copies += _c
+            total_moves += _m
+    # Cross-batch claimant symmetry. A stem that arrives together with its own
+    # new parent is placed only under that parent, so a pre-existing (organized)
+    # claimant whose BOM lists it never gets a copy: its folder is missing a
+    # child its own BOM points at, and the resulting tree depends on the order
+    # the batches happened to arrive in. Give every organized claimant the same
+    # copy the batch-root case above already makes.
+    placed = set()
+    for R in new_roots:
+        if R in skipped_set or R in standalone_orphans:
+            continue
+        placed |= _subtree_stems(R, new_children)
+    for S in sorted(placed):
+        org_par = sorted(org_parents_of.get(S, ()))
+        for P in org_par:
+            if (S, P) in covered:
+                continue
+            base = _current_folder_of(P, organized, output, moved_dirs)
+            _c, _m = _place_subassembly_of(S, P, org_par, new_children, new_index,
+                                           new_names, base, output, dry_run, log,
+                                           org_children_of, organized, moved_dirs,
+                                           renames=renames, lock=lock)
             total_copies += _c
             total_moves += _m
     if standalone_orphans:

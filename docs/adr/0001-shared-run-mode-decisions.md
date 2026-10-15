@@ -62,6 +62,12 @@ Cycle-breaking mirrors full mode's order exactly: the merged graph is broken
 Incremental keeps its delta inputs (`new_*`, `org_*_of`, the placement
 worklist) — those drive the executor and are unaffected.
 
+One executor rule is shared for the same reason: "every claimant gets its own
+copy". A new batch root is copied under each organized parent that claims it,
+and a stem that arrives together with its own new parent is likewise copied
+under each organized claimant (see `_incremental_place`). Without that second
+half the tree's shape depended on which batch happened to arrive first.
+
 The reported scope of incremental therefore changes from delta to whole-tree
 (roots, mismatches). That is intended: a delta-only Roots section was the
 inconsistency being fixed.
