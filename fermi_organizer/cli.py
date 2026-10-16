@@ -19,7 +19,8 @@ def build_parser():
         description="Organize Fermi lab PDF drawings into nested folders based on BOM tables."
     )
     parser.add_argument("folder", help="Folder containing Fermi PDF drawings")
-    parser.add_argument("--output", help="Output folder for organized structure (default: same as input)")
+    parser.add_argument("--output", help="Output folder for organized structure; use an isolated "
+                                "folder such as \"<input>/Output\" for repeat runs (default: same as input)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan without copying drawings; report + .xlsx are still "
                              "written (a missing --output folder is created for the workbook only)")
