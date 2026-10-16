@@ -50,6 +50,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 - Dry-run copies nothing; skips the `.txt` when the output folder does not exist yet but still writes the workbook.
 - `--incremental`: only stems missing from the tree plus parked `_orphans/`; existing folders stay except supersede swaps / parent-adoption. A claimed child nested under a live parent is copied to every claimant; only a top-level organized root is re-homed (moved). Target an existing tree with `--output <input>/Output`.
 - `--jobs`: 0=auto, 1=serial, >1 uses a spawn ProcessPool (do not switch to fork). `--rekey-titleblock` re-keys text-layer PDFs only, only when that number is not already in the run.
+- Long runs: allow >=10 min on multi-thousand-file folders; a quiet `--- Scanning BOM tables ---` phase is normal, not a hang. `--jobs 4` (or CPU count) for thousands of text PDFs.
 - Exit: 0 normal (orphans/CHK/missing refs still 0); 1 fatal (bad path, no PDFs, uncreatable output, crash, lock held); 2 placement refusal (report + workbook written) OR run-lock loss (no artifacts). Distinguish by whether the report exists.
 
 ## Testing

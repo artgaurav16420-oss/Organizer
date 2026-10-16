@@ -13,13 +13,20 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
 
 ## Decision flow
 
+0. Gather paths from the user first (user-friendly prompts). Before running anything, ask:
+   - "Please paste the input folder path(s) containing the PDFs (one per line if more than one)."
+   - "Where should the organized tree be written? (Press Enter for `<first input>/Output`, or paste another path.)"
+   Then echo the resolved paths back and ask for confirmation before proceeding.
+   Always quote paths that contain spaces in the final commands. Offer sensible defaults (`<input>/Output`) and let the user accept or override.
+   If the pasted paths are wrapped in quotes, strip the quotes before echoing them back. If a path does not exist, say so and ask again instead of guessing.
 1. Resolve paths. Use `--output "<input>/Output"` to keep the tree separate from the input. Omit `--output` (in-place run) only if the user asks for it.
 2. Dry-run first, every time. A dry run copies nothing:
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>/Output" --dry-run
    ```
-3. Report the dry-run plan to the user. Wait for explicit go-ahead.
-4. Real run after approval:
+3. Report the dry-run plan to the user. If the dry run succeeds and reports no warnings, proceeds automatically to the real run; only ask for go-ahead if it failed or warned.
+   Trigger phrase for the agent: say "Run" to execute immediately after a successful dry run.
+4. Real run after the successful dry run:
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>/Output"
    ```

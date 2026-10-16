@@ -4,6 +4,7 @@ import itertools
 import multiprocessing
 import os
 import re
+import threading
 import shutil
 import subprocess
 import tempfile
@@ -55,6 +56,7 @@ from .config import (canonical_stem,
 MAX_PDF_BYTES = 500 * 1024 * 1024  # skip-with-issue files over ~500MB
 MAX_PDF_PAGES = 200  # skip-with-issue documents beyond 200 pages
 _OCR_MEMO_MAX_ENTRIES = 512  # oldest-first cap per memo dict (never events)
+OCR_INPROCESS_TIMEOUT_SEC = 120  # guard against hung in-process Tesseract OCR
 
 
 def _memo_put(memo, key, value):
@@ -242,14 +244,35 @@ class _OcrContext:
         words = []
         try:
             scale = iso_page_scale(page.rect.width, page.rect.height)
-            tp = page.get_textpage_ocr(dpi=_ocr_render_dpi(page), full=True)
-            words = page.get_text("words", textpage=tp)
-            if scale != 1.0:
-                # Normalize to ISO page points so the label-relative windows
-                # (tuned for 72 dpi pages) also fit scans stored at scanner dpi.
-                words = [(w[0] / scale, w[1] / scale, w[2] / scale,
-                          w[3] / scale) + tuple(w[4:]) for w in words]
-            _memo_put(self.page_scale, key, scale)
+            timeout = OCR_INPROCESS_TIMEOUT_SEC
+            result = {}
+            def _worker():
+                try:
+                    result["tp"] = page.get_textpage_ocr(
+                        dpi=_ocr_render_dpi(page), full=True)
+                except Exception as e:  # surfaced as OCR failure below
+                    result["error"] = e
+            worker = threading.Thread(target=_worker, daemon=True, name="ocr-timeout")
+            worker.start()
+            worker.join(timeout)
+            if worker.is_alive():
+                if issues is not None:
+                    issues.append(
+                        f"{page_label}: OCR timed out after {timeout}s "
+                        "(tesseract process may still finish in background)")
+                _memo_put(self.words_memo, key, words)
+                return words
+            if "error" in result:
+                raise RuntimeError(result["error"])
+            tp = result.get("tp")
+            if tp is not None:
+                words = page.get_text("words", textpage=tp)
+                if scale != 1.0:
+                    # Normalize to ISO page points so the label-relative windows
+                    # (tuned for 72 dpi pages) also fit scans stored at scanner dpi.
+                    words = [(w[0] / scale, w[1] / scale, w[2] / scale,
+                              w[3] / scale) + tuple(w[4:]) for w in words]
+                _memo_put(self.page_scale, key, scale)
         except (RuntimeError, OSError, ValueError) as e:
             # RuntimeError covers pymupdf's mupdf errors (FileDataError /
             # EmptyFileError subclass RuntimeError; no generic pymupdf.Error
