@@ -13,12 +13,20 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
 
 ## Decision flow
 
-0. Gather paths from the user first (user-friendly prompts). Before running anything, ask:
-   - "Please paste the input folder path(s) containing the PDFs (one per line if more than one)."
-   - "Where should the organized tree be written? (Press Enter for `<first input>/Output`, or paste another path.)"
+0. Gather exactly two things from the user - nothing else: the input folder and the output folder. Ask them as plain chat messages, one at a time, in this order:
+   - First: "Input folder (the folder containing the PDFs)?"
+   - After the answer: "What output folder path should I use?"
+   Use plain text messages for both - no `question` tool, no options list. If the user replies nothing to the output question, fall back to the default `<input>/Output`.
+   Wait for the answer before asking the next question; do not batch them into one prompt.
+   Do NOT ask about run mode, flags, dry-run, jobs, or anything else - the agent decides all of that.
    Then echo the resolved paths back and ask for confirmation before proceeding.
-   Always quote paths that contain spaces in the final commands. Offer sensible defaults (`<input>/Output`) and let the user accept or override.
+   Always quote paths that contain spaces in the final commands.
    If the pasted paths are wrapped in quotes, strip the quotes before echoing them back. If a path does not exist, say so and ask again instead of guessing.
+   Run mode (full vs `--incremental`) is the agent's decision, never a user question:
+   - Output folder does not exist, or exists but holds no PDFs outside `_`-prefixed dirs -> full run.
+   - Output folder already holds PDFs (an existing organized tree) -> `--incremental`.
+   - Later batch into a tree built from earlier inputs -> `--incremental` (step 6).
+   State the chosen mode and one-line reason in the dry-run report; do not ask the user to pick it.
 1. Resolve paths. Use `--output "<input>/Output"` to keep the tree separate from the input. Omit `--output` (in-place run) only if the user asks for it.
 2. Dry-run first, every time. A dry run copies nothing:
    ```

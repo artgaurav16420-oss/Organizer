@@ -415,7 +415,11 @@ class _OcrContext:
 OCR = _OcrContext()
 
 # Test seam: monkeypatch to intercept PDF opening in the worker tasks.
-_open_pdf = pymupdf.open
+def _native(path):
+    from . import fsops
+    return fsops._native(path)
+
+_open_pdf = lambda p: pymupdf.open(_native(p))
 
 
 def normalize(s):
