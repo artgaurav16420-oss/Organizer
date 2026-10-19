@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import TypedDict
@@ -13,7 +14,7 @@ from .extraction import (resolve_jobs, title_task, org_task, survey_task,
                          dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
-                    collect_reachable, snap_ref, _edit1)
+                    collect_reachable, snap_ref, _edit1, planned_paths)
 from .naming import (build_folder_names, folder_name_for, add_bom_name,
                      bom_name_winners, prefer_bom_names)
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
@@ -21,9 +22,10 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
                     retire_adopted_orphans, sweep_supersede_staging,
                     sweep_stale_claims, resolve_archive_target, folder_foreign_pdfs,
-                     fit_roots_within_cap,
+                     fit_roots_within_cap, reconcile_tree, remove_empty_dirs,
+                     longest_dest_path,
                      acquire_run_lock, release_run_lock, abandon_run_lock,
-                    LockLostError, _ensure_lock,
+                    LockLostError, _ensure_lock, _same_bytes,
                     _native, _exists, _islink, _staged_copy)
 
 
@@ -571,7 +573,7 @@ def _in_place_tree_copy(p, stem, output):
 
 
 def _collect_incremental_candidates(scan_index, output, scan_res=None,
-                                    in_place=False):
+                                    in_place=False, allow_archived=False):
     """Organized stems, superseded/orphan state, and the incremental candidate
     set. Stored orphans are pulled in as adoption candidates (a parent arriving
     in this batch may adopt them). Returns
@@ -579,7 +581,10 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
     Accepts an optional `scan_res` (precomputed `scan_output_tree` result)
     to avoid redundant filesystem scans. `in_place` (output IS the input
     folder) keeps only tree-shaped copies as organized, so new arrivals at
-    the root or in input subfolders are not silently skipped.
+    the root or in input subfolders are not silently skipped. `allow_archived`
+    (repair mode) lets a caller's own candidate index name stems that already
+    sit in _superseded/ - normally archiving is a one-way door; the repair
+    caller decides which archived copies deserve a fresh decision.
     """
     if scan_res is None:
         scan_res = scan_output_tree(output)
@@ -597,7 +602,9 @@ def _collect_incremental_candidates(scan_index, output, scan_res=None,
     # its _orphans/ copy is retired; if not, it stays parked.
     stored_orphans = {s: p for p in scan_res["orph"]
                       if (s := canonical_stem(p.stem))}
-    new_index = {s: p for s, p in scan_index.items() if s not in organized and s not in already_sup}
+    new_index = {s: p for s, p in scan_index.items()
+                 if s not in organized
+                 and (allow_archived or s not in already_sup)}
     for o, p in stored_orphans.items():
         if o in organized:
             # A same-stem copy already lives in the tree: the parked one is a
@@ -861,21 +868,8 @@ def _current_folder_of(stem, organized, output, moved_dirs):
 
 
 def _longest_dest_path(target_path, current):
-    """Longest file path the copy of `current` under `target_path` would
-    create, or None when the source cannot be listed.
-
-    place_files guards every target against MAX_PATH; the folder-level MAX_DIR
-    check alone does not bound descendant files, which fail mid-copy on
-    Windows and force partial-tree cleanup.
-    """
-    try:
-        entries = list(current.rglob("*"))
-    except OSError:
-        return None
-    if not entries:
-        return target_path
-    return max((target_path / e.relative_to(current) for e in entries),
-               key=lambda p: len(str(p)))
+    """Longest file path the copy of `current` under `target_path` would create."""
+    return longest_dest_path(target_path, current)
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
@@ -1654,20 +1648,39 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
 
 def _incremental_prepare(folder, output, dry_run, log):
-    """Collect candidates, log counts, archive superseded among new PDFs.
-    Returns (organized, sup_dir, stored_orphans, new_index, chk_stems,
-    supersede_pairs, new_duplicates, copies, archived_new, scan_res) where
-    archived_new holds only stems whose archive copy was verified written.
-    """
+    """Collect candidates from the input folder (see _incremental_prepare_from_index)."""
     scan_index, top_duplicates = build_pdf_index(folder, log, exclude=output)
     if not scan_index:
         log("No PDFs found in folder.")
         raise NoPDFsFoundError("No PDFs found in folder.")
     scan_res = scan_output_tree(output)
     in_place = Path(folder).resolve() == Path(output).resolve()
+    return _incremental_prepare_from_index(scan_index, top_duplicates, output,
+                                           dry_run, log, scan_res, in_place)
+
+
+def _incremental_prepare_from_index(scan_index, top_duplicates, output, dry_run,
+                                    log, scan_res=None, in_place=False,
+                                    allow_archived=False,
+                                    candidate_line="PDFs at top level:              "):
+    """Collect candidates, log counts, archive superseded among new PDFs.
+
+    Split out of _incremental_prepare so repair mode can feed the tree's own
+    system folders in as the candidate set (`allow_archived` lifts the
+    "an archived stem is never a candidate again" rule for that caller).
+    An empty candidate set is legal here: repair still has to reconcile the
+    tree, so the caller decides whether emptiness is fatal.
+
+    Returns (organized, sup_dir, stored_orphans, new_index, chk_stems,
+    supersede_pairs, new_duplicates, copies, archived_new, scan_res) where
+    archived_new holds only stems whose archive copy was verified written.
+    """
+    if scan_res is None:
+        scan_res = scan_output_tree(output)
     organized, sup_dir, stored_orphans, new_index = \
         _collect_incremental_candidates(scan_index, output, scan_res=scan_res,
-                                        in_place=in_place)
+                                        in_place=in_place,
+                                        allow_archived=allow_archived)
     new_index, old_new = split_superseded(new_index)
     supersede_pairs = _detect_supersede_pairs(new_index, old_new, organized, log)
     # Report only CHK drawings that stay live in the tree (whole-tree scope, like
@@ -1683,7 +1696,7 @@ def _incremental_prepare(folder, output, dry_run, log):
                       if stem in new_index}
     if old_new:
         log(f"Found {len(old_new)} superseded revision(s) among new PDFs")
-    log(f"PDFs at top level:              {len(scan_index)}")
+    log(f"{candidate_line}{len(scan_index)}")
     log(f"Already organized (subfolders): {len(organized)}")
     log(f"New PDFs to process:            {len(new_index)}")
     _log_previous_report(output, log)
@@ -1692,6 +1705,176 @@ def _incremental_prepare(folder, output, dry_run, log):
     total_copies, archived_new = copy_superseded(old_new, output, dry_run, log)
     return (organized, sup_dir, stored_orphans, new_index, chk_stems,
             supersede_pairs, new_duplicates, total_copies, archived_new, scan_res)
+
+
+def _repair_candidates(scan_res, organized):
+    """Archived _superseded/ copies that deserve a fresh decision.
+
+    Archiving is normally a one-way door. A repair run re-opens it narrowly: an
+    archived copy is a candidate only when its stem is not live, it is not an
+    unapproved CHK, and its revision rank is strictly higher than the highest
+    revision live for that base. A correctly archived copy - an older revision,
+    a CHK, a watermarked loser - fails that test and stays put, so a repair over
+    a tree the current code built changes nothing.
+
+    Deliberately not a candidate: the same-stem case (duplicate resolution
+    between a live and an archived export) and the sheet-restoration case (a
+    `DWG2` whose sibling is live) - both are ties, and a tie cannot be resolved
+    without re-deciding duplicate resolution, which would let a repair run churn
+    a healthy tree. A base with no live copy at all is left alone too: repair
+    never re-adds a drawing the tree does not have.
+    """
+    live_rank: dict = {}
+    for stem in organized:
+        base = stem.split("_")[0]
+        live_rank[base] = max(live_rank.get(base, -1), revision_rank(stem))
+    best: dict = {}
+    for path in sorted(scan_res["sup"]):
+        stem = canonical_stem(path.stem)
+        if not stem or stem in organized:
+            continue
+        if is_chk_stem(stem):
+            continue
+        base = stem.split("_")[0]
+        if base not in live_rank or revision_rank(stem) <= live_rank[base]:
+            continue
+        # One candidate per base - the highest revision. Handing the batch
+        # several revisions of one base would make split_superseded demote the
+        # losers into old_new, and prepare would then archive copies that are
+        # already in the archive (a second entry under a different name).
+        current = best.get(base)
+        if current is None or revision_rank(stem) > revision_rank(current):
+            best[base] = stem
+    keep = set(best.values())
+    return {stem: path for stem, path in
+            ((canonical_stem(p.stem), p) for p in sorted(scan_res["sup"]))
+            if stem in keep}
+
+
+def _stage_repair_candidates(candidates, log):
+    """Copy archived candidates to a temp dir under their canonical names.
+
+    An archive filename carries a folder prefix ("1.1.2.0 F10197062-B-CHK.pdf"),
+    so a promoted copy must be placed as "{stem}.pdf" or the tree gets that
+    prefix. Staging in the system temp dir keeps the output folder untouched
+    even in a dry run. Returns (staged_index, staging_dir_or_None); the caller
+    removes the directory (see repair_cleanup).
+    """
+    if not candidates:
+        return {}, None
+    staged_dir = Path(tempfile.mkdtemp(prefix="fermi_repair_"))
+    staged = {}
+    for stem, path in sorted(candidates.items()):
+        dst = staged_dir / f"{stem}.pdf"
+        try:
+            shutil.copy2(_native(path), _native(dst))
+        except OSError as e:
+            log(f"  WARNING: {stem}: could not stage archived copy ({path}): {e}")
+            continue
+        staged[stem] = dst
+    return staged, staged_dir
+
+
+def _repair_prepare(output, dry_run, log):
+    """Prepare a repair run from the tree's own system folders.
+
+    Returns ((organized, sup_dir, stored_orphans, new_index, chk_stems,
+    supersede_pairs, new_duplicates, copies, archived_new, scan_res), meta)
+    with the tuple shaped exactly like _incremental_prepare's, so
+    _run_delta_inner can drive either mode. Parked _orphans/ copies arrive
+    through the shared stored_orphans path; the _superseded/ copies worth a
+    fresh decision are staged (see _stage_repair_candidates) and recorded in
+    meta for cleanup. An empty candidate set is legal - repair still has a tree
+    to reconcile.
+    """
+    scan_res = scan_output_tree(output)
+    organized = find_organized_pdfs(output, scan_res=scan_res)
+    if not organized:
+        log("No organized PDFs found - not an organized tree, nothing to repair.")
+        raise NoPDFsFoundError("No organized PDFs found in the tree.")
+    archived = _repair_candidates(scan_res, organized)
+    staged, staged_dir = _stage_repair_candidates(archived, log)
+    prepared = _incremental_prepare_from_index(
+        staged, {}, output, dry_run, log, scan_res, False,
+        allow_archived=True,
+        candidate_line="Repair candidates:            ")
+    meta = {"archived": archived, "staged": staged, "staging_dir": staged_dir}
+    return prepared, meta
+
+
+def repair_cleanup(meta, log):
+    """Remove the repair staging directory (never the tree's own files)."""
+    if not meta or not meta.get("staging_dir"):
+        return
+    try:
+        shutil.rmtree(meta["staging_dir"])
+    except OSError as e:
+        log(f"  WARNING: could not remove repair staging dir "
+            f"{meta['staging_dir']}: {e}")
+
+
+def _finish_repair_promotions(organized, archived, staged_stems, output,
+                              dry_run, log):
+    """Delete promoted archive sources whose live copy is verified.
+
+    A promotion copies the archived drawing into the tree and leaves the
+    archive file in place; once the live copy is byte-identical the archive
+    original is a duplicate of a live revision, so it goes. A missing or
+    differing live copy keeps it - nothing is ever lost. `live_index` must be
+    a post-reconcile scan: an index taken before a rename points at a path that
+    no longer exists. Returns the number removed.
+    """
+    removed = 0
+    for stem in sorted(staged_stems):
+        src = archived.get(stem)
+        if src is None or dry_run:
+            continue
+        live = [p for p in organized.get(stem, []) if p.exists()]
+        if not any(_same_bytes(p, src) for p in live):
+            log(f"  WARNING: {stem}: promoted archive copy kept "
+                "(no verified live copy)")
+            continue
+        try:
+            src.unlink()
+            removed += 1
+        except OSError as e:
+            log(f"  WARNING: {stem}: could not remove promoted archive copy: {e}")
+    return removed
+
+
+def _repair_reconcile(output, children, roots, folder_names, dry_run, log,
+                      moved_dirs, lock=None):
+    """Put the live tree on the plan: fresh scan, reconcile, sweep empties.
+
+    Runs after placement, on a fresh index - supersede swaps and orphan
+    adoption have already moved folders, so the pre-run index is stale. Returns
+    (counts, review, index) where index is the post-reconcile stem -> paths map
+    (paths as they are on disk now, so callers can verify bytes).
+    """
+    scan_res = scan_output_tree(output)
+    organized = find_organized_pdfs(output, scan_res=scan_res)
+    planned = planned_paths(children, roots, folder_names)
+    counts, review = reconcile_tree(organized, planned, output, dry_run, log,
+                                    moved_dirs, lock=lock)
+    counts["emptied"] = remove_empty_dirs(output, dry_run, log)
+    return counts, review, organized
+
+
+def _log_repair_block(counts, review, log):
+    """Report what the repair pass moved, removed, and left for a human."""
+    log("")
+    log("--- Repair (tree reconciliation) ---")
+    log(f"  Folders renamed:        {counts.get('renamed', 0)}")
+    log(f"  Folders moved:          {counts.get('moved', 0)}")
+    log(f"  Folders copied:         {counts.get('copied', 0)}")
+    log(f"  Folders removed:        {counts.get('removed', 0)}")
+    log(f"  Empty folders removed:  {counts.get('emptied', 0)}")
+    log(f"  Orphans adopted:        {counts.get('adopted', 0)}")
+    log(f"  Revisions promoted:     {counts.get('promoted', 0)}")
+    log(f"  Needs manual review:    {len(review)}")
+    for line in review:
+        log(f"    {line}")
+    log("")
 
 
 def _incremental_no_new_ctx(organized, chk_stems, output, total_copies,
@@ -2082,7 +2265,7 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           bom_names, org_names=None, merged_names=None,
                           superseded=(), planned=(),
                           scan_res=None, refused=False,
-                          skipped=()) -> RunContext:
+                          skipped=(), repair=False) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
     # Orphan retirement: a parked _orphans/ copy is retired when the same stem
     # exists live in the tree (adopted into an earlier or this run's placement)
@@ -2094,16 +2277,30 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                                superseded=superseded, planned=planned,
                                scan_res=scan_res)
     log("")
-    summary = [
-        "--- Summary ---",
-        f"  New PDFs scanned:     {scanned_new}",
-        f"  Already organized:    {len(organized)}",
-        f"  Root assemblies:     {len(new_roots)}",
-        f"  BOM edges kept:       {sum(len(v) for v in new_children.values())}",
-        f"  Cycles broken:        {len(removed)}",
-        f"  PDF copies written:   {total_copies}",
-        f"  Root folders moved:   {total_moves}",
-    ]
+    if repair:
+        # A repair run imports nothing: its "new" set is the tree's own
+        # _orphans/ and _superseded/ candidates, and it places no delta edges,
+        # so the incremental wording ("New PDFs scanned", "BOM edges kept")
+        # would read as if drawings had arrived.
+        summary = [
+            "--- Summary ---",
+            f"  Candidates examined:  {scanned_new}",
+            f"  Tree folders:         {len(organized)}",
+            f"  Root assemblies:     {len(new_roots)}",
+            f"  PDF copies written:   {total_copies}",
+            f"  Root folders moved:   {total_moves}",
+        ]
+    else:
+        summary = [
+            "--- Summary ---",
+            f"  New PDFs scanned:     {scanned_new}",
+            f"  Already organized:    {len(organized)}",
+            f"  Root assemblies:     {len(new_roots)}",
+            f"  BOM edges kept:       {sum(len(v) for v in new_children.values())}",
+            f"  Cycles broken:        {len(removed)}",
+            f"  PDF copies written:   {total_copies}",
+            f"  Root folders moved:   {total_moves}",
+        ]
     if skipped:
         summary.append(f"  Roots skipped (oversized): {len(skipped)}")
     _log_summary(summary, log)
@@ -2172,18 +2369,73 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
     return ctx
 
 
+def run_repair(folder, dry_run, log, jobs=0, *, hold_lock=False):
+    """Repair mode: re-apply the current decisions to an existing output tree.
+
+    Reads nothing outside `folder`. The tree's own `_orphans/` copies are
+    adoption candidates and its `_superseded/` copies are promotion candidates
+    when they out-rank the live drawing or restore a missing sheet; naming,
+    placement and revision ranking then run through the same functions a
+    normal run uses, followed by a reconcile pass that moves folders onto the
+    plan and removes verified duplicates. It never places a drawing that is
+    absent from the tree, and never deletes anything without a byte-identical
+    twin. Holds the output-tree lock like the other modes; with hold_lock=True
+    returns (ctx, lock_path) and the caller releases it after its post-work.
+    Raises NoPDFsFoundError when the folder holds no organized tree.
+    """
+    output = Path(folder).resolve()
+    lock = acquire_run_lock(output, dry_run, log)
+    try:
+        ctx = _run_repair_inner(output, dry_run, log, jobs, lock=lock)
+    except LockLostError:
+        abandon_run_lock(lock)
+        raise
+    except BaseException:
+        release_run_lock(lock)
+        raise
+    if hold_lock:
+        return ctx, lock
+    release_run_lock(lock)
+    return ctx
+
+
 def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                            lock=None) -> RunContext:
     """run_incremental body (see run_incremental); split out so the lock spans all returns."""
+    return _run_delta_inner(folder, output, dry_run, log, jobs, rekey, lock=lock)
+
+
+def _run_repair_inner(output, dry_run, log, jobs=0, lock=None) -> RunContext:
+    """run_repair body (see run_repair); split out so the lock spans all returns."""
+    return _run_delta_inner(output, output, dry_run, log, jobs, False, lock=lock,
+                            repair=True)
+
+
+def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
+                     lock=None, repair=False) -> RunContext:
+    """Shared body of the incremental and repair runs.
+
+    Both modes decide on a delta - incremental from the input folder's new
+    PDFs, repair from the tree's own system folders - and both must then report
+    the same whole-tree decisions; sharing this body is what keeps them from
+    drifting (ADR 0001). Repair adds a reconcile pass after placement and skips
+    the "nothing to do" shortcut, because a repair with no candidates still has
+    a tree to put in order.
+    """
     jobs = resolve_jobs(jobs)
     _ensure_lock(lock, log)
     sweep_supersede_staging(output, dry_run, log)
     sweep_stale_claims(output, dry_run, log)
+    repair_meta = None
+    if repair:
+        prepared, repair_meta = _repair_prepare(output, dry_run, log)
+    else:
+        prepared = _incremental_prepare(folder, output, dry_run, log)
     organized, sup_dir, stored_orphans, new_index, chk_stems, \
         supersede_pairs, new_duplicates, total_copies, archived_new, scan_res = \
-        _incremental_prepare(folder, output, dry_run, log)
+        prepared
 
-    if not new_index:
+    if not new_index and not repair:
         # No scan ran on this path, so there are no extraction warnings.
         _ensure_lock(lock, log)
         return _incremental_no_new_ctx(organized, chk_stems, output,
@@ -2313,8 +2565,9 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # Make the live tree's folder names match that plan before placing anything
     # else, so a folder an earlier run named for a smaller tree cannot survive
     # as a stale spelling (see normalize_folder_names).
-    normalize_folder_names(organized, folder_names, output, dry_run, log, moved_dirs,
-                           lock=lock)
+    renamed_folders = normalize_folder_names(organized, folder_names, output,
+                                             dry_run, log, moved_dirs,
+                                             lock=lock)
 
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
@@ -2357,16 +2610,39 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     reused_scan_res = scan_res if (dry_run or (total_copies == 0 and total_moves == 0)) else None
     # Finalize retires adopted orphans (deletes), so the lock is re-checked.
     _ensure_lock(lock, log)
-    return _incremental_finalize(stored_orphans, output, dry_run, log,
-                                 scanned_new, organized, reported_roots,
-                                 new_children, removed, total_copies,
-                                 total_moves, warning_count, unmatched,
-                                 chk_stems, merged_used_on, incr_mism,
-                                 used_on_bugs, tb_mismatches, watermarks,
-                                 new_names, bom_names,
-                                 org_names=org_names,
-                                 merged_names=merged_names,
-                                 superseded=archived_new | set(swapped_old),
-                                 planned=planned,
-                                 scan_res=reused_scan_res,
-                                 refused=refused, skipped=skipped)
+    if repair:
+        repair_counts, repair_review, live_index = _repair_reconcile(
+            output, merged_children, reported_roots, folder_names, dry_run, log,
+            moved_dirs, lock=lock)
+        repair_counts["adopted"] = len(planned)
+        repair_counts["renamed"] = renamed_folders
+        promoted_stems = {s for s, o in supersede_pairs if o in set(swapped_old)}
+        repair_counts["promoted"] = len(promoted_stems)
+        if repair_meta is not None:
+            repair_counts["promoted_archive_cleaned"] = _finish_repair_promotions(
+                live_index, repair_meta["archived"], promoted_stems,
+                output, dry_run, log)
+        # The tree changed after placement: finalize must see it as it is now,
+        # so do not hand it the pre-reconcile scan.
+        reused_scan_res = None
+    ctx = _incremental_finalize(stored_orphans, output, dry_run, log,
+                                scanned_new, organized, reported_roots,
+                                new_children, removed, total_copies,
+                                total_moves, warning_count, unmatched,
+                                chk_stems, merged_used_on, incr_mism,
+                                used_on_bugs, tb_mismatches, watermarks,
+                                new_names, bom_names,
+                                org_names=org_names,
+                                merged_names=merged_names,
+                                superseded=archived_new | set(swapped_old),
+                                planned=planned,
+                                scan_res=reused_scan_res,
+                                refused=refused, skipped=skipped,
+                                repair=repair)
+    if repair:
+        repair_cleanup(repair_meta, log)
+        ctx["repair"] = repair_counts
+        ctx["repair"]["review"] = repair_review
+        ctx["repair_required"] = bool(repair_review)
+        _log_repair_block(repair_counts, repair_review, log)
+    return ctx

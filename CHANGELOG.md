@@ -4,6 +4,30 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Added: `--repair` re-applies the current decisions to an existing tree
+- New mode: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` takes an
+  existing output folder as its **only** input (no source scan, no `--output`)
+  and re-applies the current code's decisions to it: it renames live folders to
+  the current name plan, moves a folder onto its planned parent, adopts a
+  drawing a previous run wrongly parked in `_orphans/`, promotes a `_superseded/`
+  copy whose revision out-ranks the live drawing (never an unapproved CHK), and
+  removes duplicate folders. Nothing is placed that is absent from the tree.
+- A tree built by older code (or by an unknown batch order) can therefore be
+  corrected in place instead of deleting the output and rebuilding from every
+  source folder in order; `_superseded/` history is preserved.
+- Delete rule: a folder is removed only when every file in its subtree is a PDF
+  and every one is byte-identical to a copy at a planned path. Anything else is
+  kept, reported, and makes the run exit 2 (`Needs manual review`). Nothing is
+  ever removed from `_superseded/` except the promoted source, once its live
+  copy is verified.
+- `_superseded/` stops being a one-way door, but only for copies the current
+  ranking disagrees with: correctly archived copies (older revisions, CHK,
+  watermarked losers) are untouched, so a repair over a freshly built tree
+  reports all zeros.
+- Repair shares the incremental executor (`_run_delta_inner`) and the whole
+  decision layer, so its report matches a full run's
+  (`tests/test_mode_parity.py`).
+
 ### Names come from a parent's parts list when the drawing is scanned
 - A scanned drawing's own NAME is OCR output, so a misread still looks like a
   real name (`F10128174` was named `-CONFLAIL, NUT PLATE, MINI xX OQ.`). The

@@ -22,10 +22,13 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    Then echo the resolved paths back and ask for confirmation before proceeding.
    Always quote paths that contain spaces in the final commands.
    If the pasted paths are wrapped in quotes, strip the quotes before echoing them back. If a path does not exist, say so and ask again instead of guessing.
-   Run mode (full vs `--incremental`) is the agent's decision, never a user question:
+   Run mode (full vs `--incremental` vs `--repair`) is the agent's decision, never a user question:
    - Output folder does not exist, or exists but holds no PDFs outside `_`-prefixed dirs -> full run.
    - Output folder already holds PDFs (an existing organized tree) -> `--incremental`.
    - Later batch into a tree built from earlier inputs -> `--incremental` (step 6).
+   - The tree itself needs correcting and no new PDFs are coming in (the naming
+     or placement rules changed since it was built, or a drawing sits in
+     `_orphans/` or `_superseded/` by mistake) -> `--repair` on the tree (step 8).
    State the chosen mode and one-line reason in the dry-run report; do not ask the user to pick it.
 1. Resolve paths. Use `--output "<input>/Output"` to keep the tree separate from the input. Omit `--output` (in-place run) only if the user asks for it.
 2. Dry-run first, every time. A dry run copies nothing:
@@ -45,6 +48,16 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    ```
 6. Several input folders into one tree: dry-run all of them and report together. After approval, run a full run for the first folder, then `--incremental` for each later one. An incremental dry-run against a tree that does not yet hold the earlier batches shows their drawings as orphans. Expect small drift between dry-run and real-run counts; quote the real run's summary.
 7. Command timeouts: use at least 10 minutes for multi-thousand-file folders. A quiet phase under `--- Scanning BOM tables ---` is normal, not a hang.
+8. Repairing an existing tree (no new PDFs, no source folder):
+   ```
+   python -m fermi_organizer.cli "<existing_Output>" --repair --dry-run
+   python -m fermi_organizer.cli "<existing_Output>" --repair
+   ```
+   Read the `--- Repair (tree reconciliation) ---` block before running for real:
+   every rename and move is listed, and `Needs manual review` > 0 means exit 2.
+   A hand-renamed or hand-moved folder is a difference from the plan and gets
+   reverted, so say so to the user if the tree was curated by hand. Do not pass
+   `--output`, `--incremental` or `--rekey-titleblock` with `--repair`.
 
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
@@ -62,6 +75,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `--output <dir>` | Target folder for the organized tree. Default: the input folder (in-place). |
 | `--dry-run` | Print the plan, copy nothing. Rebuilds the Excel workbook, and writes the text report only if the output folder exists. |
 | `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. Existing folders stay, except supersede swaps and parent-adoption moves. |
+| `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
 | `--jobs N` | Extraction workers. `0` = auto (CPU count, default), `1` = serial. |
 | `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
@@ -74,6 +88,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `1` | Startup failure. Input is missing or not a directory, no PDFs found, output folder cannot be created, or another run holds the lock (`ERROR: could not acquire run lock ...`). No report or workbook is written. | Fix the path or permissions, or wait for the other run to finish. Do not retry blindly. |
 | `2` | Argument error (argparse usage message), or the run lock was lost mid-run (`ERROR: ...`). Report and workbook are not written for a lost lock. | Argument error: fix the flags. Lost lock: check no other process touched the output, then re-run. |
 | `2` | Placement refused: planned fan-out exceeds 10,000 copies. The report and workbook are written. | Do not retry. Inspect the BOM graph and ask the user first. See the refusal section below. |
+| `2` | Repair left folders needing manual review (`Needs manual review: N` in the Repair block). The report and workbook are written. | Read the review lines in the report; do not retry. The tree is otherwise reconciled. |
 
 Both `2` rows share a code. Tell them apart by the log: a refusal writes `Report saved to:` and the workbook; a lost lock or argument error does not.
 

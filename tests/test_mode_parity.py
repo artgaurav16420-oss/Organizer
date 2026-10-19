@@ -12,7 +12,7 @@ Excluded by design (see docs/adr/0001-shared-run-mode-decisions.md):
   * `orphans` - full derives them from the input classification, incremental
     from a live `_orphans/` scan (which also sees earlier runs' parks).
 """
-from fermi_organizer.runmodes import run_full, run_incremental
+from fermi_organizer.runmodes import run_full, run_incremental, run_repair
 
 
 def _decision_sets(ctx):
@@ -76,6 +76,24 @@ def test_full_and_incremental_report_same_decisions(tmp_path, make_pdf):
                                           ("F10126113__CHK", "F10126108", [])]
     assert full["used_on_bugs"] == [("F10126106", "F10126111")]
     assert full["missing"] == []
+
+
+def test_repair_reports_the_same_decisions_as_a_full_run(tmp_path, make_pdf):
+    # Repair must not grow its own copy of the decision layer: its report for a
+    # tree has to match what a full run over the same drawings reports.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_fixture(make_pdf, in_dir)
+    out = tmp_path / "out"
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    repaired = run_repair(out, False, lambda m: None, jobs=1)
+    full = run_full(in_dir, tmp_path / "out_full", False, lambda m: None, jobs=1)
+    assert _decision_sets(repaired) == _decision_sets(full)
+
+    # Non-vacuous: the tree under repair is the fixture's, decisions and all.
+    assert repaired["roots"] == [("F10126106", []), ("F10126113__CHK", [])]
+    assert repaired["used_on_bugs"] == [("F10126106", "F10126111")]
 
 
 def _live_paths(root):

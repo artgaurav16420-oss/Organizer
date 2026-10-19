@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .extraction import (OCR, resolve_jobs)
-from .runmodes import run_full, run_incremental, NoPDFsFoundError, RunContext
+from .runmodes import (run_full, run_incremental, run_repair, NoPDFsFoundError,
+                       RunContext)
 from .fsops import (RunLockedError, LockLostError, release_run_lock,
                     abandon_run_lock, run_lock_lost)
 from .report_glue import names_from_tree
@@ -28,6 +29,11 @@ def build_parser():
                         help="Process only stems not already in the output tree plus stored "
                              "_orphans/ (input scan is recursive); existing subfolders stay put "
                              "except supersede swaps and parent-adoption moves")
+    parser.add_argument("--repair", action="store_true",
+                        help="Re-apply the current decisions to an existing output tree given as "
+                             "FOLDER: rename folders, re-home misplaced ones, adopt wrongly parked "
+                             "_orphans/, promote wrongly archived _superseded/ revisions, drop "
+                             "verified duplicates. Places nothing new; reads no source folder")
     parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
     parser.add_argument("--jobs", type=int, default=0,
                         help="Parallel extraction workers (0=auto = CPU count, 1=serial)")
@@ -51,13 +57,16 @@ def _log_ocr_startup(log):
             f"OCR: unavailable ({reason}; scanned PDFs stay orphans)")
 
 
-def run_mode_label(dry_run, incremental):
+def run_mode_label(dry_run, incremental=False, repair=False):
+    if repair:
+        return "REPAIR (DRY-RUN)" if dry_run else "REPAIR"
     if incremental:
         return "INCREMENTAL (DRY-RUN)" if dry_run else "INCREMENTAL"
     return "DRY-RUN" if dry_run else "EXECUTE"
 
 
-def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, incremental, log):
+def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, incremental, log,
+                      repair=False):
     try:
         import fermi_report_xlsx as fx
     except ImportError as e:
@@ -70,7 +79,7 @@ def _refresh_workbook(ctx: RunContext, output, report_path, run_time, dry_run, i
         # Explicit remap: RunContext uses used_on_mismatches, refresh_from_run wants mismatches.
         mismatches: list[tuple[str, str, list[str]]] = ctx["used_on_mismatches"]
         xlsx = fx.refresh_from_run(
-            output=str(output), run_mode=run_mode_label(dry_run, incremental),
+            output=str(output), run_mode=run_mode_label(dry_run, incremental, repair),
             run_time=run_time, counters=ctx["counters"], missing=ctx["missing"],
             chk=ctx["chk"], orphans=ctx["orphans"],
             report_txt=report_path if output.is_dir() else None,
@@ -99,6 +108,16 @@ def main():
         print(f"ERROR: not a directory: {folder}")
         sys.exit(1)
 
+    if args.repair:
+        if args.incremental:
+            parser.error("--repair and --incremental cannot be combined: --repair works on an "
+                         "existing tree, --incremental brings in new PDFs")
+        if args.output:
+            parser.error("--repair takes the tree to repair as FOLDER; drop --output")
+        if args.rekey_titleblock:
+            parser.error("--repair does not re-key drawings; run --rekey-titleblock with a "
+                         "normal run")
+
     output = Path(args.output).resolve() if args.output else folder
     if not output.is_dir() and not args.dry_run:
         try:
@@ -124,7 +143,7 @@ def main():
     _log_ocr_startup(log)
     if args.incremental and not args.output and (folder / "Output").is_dir():
         log(f"WARNING: {folder / 'Output'} exists. Use --output to target it.")
-    if not args.incremental and output == folder:
+    if not args.incremental and not args.repair and output == folder:
         log("WARNING: in-place run - organized folders inside the input "
             "are re-scanned by later full runs; use --output to keep the "
             "tree separate")
@@ -133,13 +152,16 @@ def main():
             "is not reliable there - coordinate runs manually, never run two "
             "against this output (mapped drive letters to a share are no "
             "safer, they just cannot be detected - see Known limits)")
-    log(f"Mode: {run_mode_label(args.dry_run, args.incremental)}")
+    log(f"Mode: {run_mode_label(args.dry_run, args.incremental, args.repair)}")
     jobs = resolve_jobs(args.jobs)
     log(f"  Extraction workers: {jobs} (override with --jobs N)")
     log("")
 
     try:
-        if args.incremental:
+        if args.repair:
+            ctx, held = run_repair(folder, args.dry_run, log, jobs,
+                                   hold_lock=True)
+        elif args.incremental:
             ctx, held = run_incremental(folder, output, args.dry_run, log, jobs,
                                         rekey=args.rekey_titleblock,
                                         hold_lock=True)
@@ -199,7 +221,7 @@ def main():
 
         # Live Excel workbook (after every run, dry-run included)
         _refresh_workbook(ctx, output, report_path, run_time, args.dry_run,
-                          args.incremental, log)
+                          args.incremental, log, repair=args.repair)
     finally:
         # The lock spans the shared-file post-work too: report + workbook are
         # read-modify-write files, so a second run must not enter until they
@@ -208,7 +230,7 @@ def main():
 
     # Refusal is a non-success outcome: distinct exit code so scripts notice
     # without reading the log. Report + workbook are already written above.
-    if ctx.get("placement_refused"):
+    if ctx.get("placement_refused") or ctx.get("repair_required"):
         sys.exit(2)
 
 
