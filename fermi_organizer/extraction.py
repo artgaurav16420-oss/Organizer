@@ -558,12 +558,25 @@ def _name_from_anchor(words, name_anchor):
         # legible NAME was dropped to a bare drawing-number folder (F10209823).
         picked = [w for w in words if _candidate(w)
                   and w[1] <= win_bottom and w[3] >= win_top]
-    picked.sort(key=lambda w: (round(w[1]), w[0]))
+    picked.sort(key=lambda w: (w[1], w[0]))
     if picked:
         # NAME is a single line; anything in the next visual row (SCALE,
-        # DRAWING NUMBER chips OCR'd as junk) is dropped.
-        y_first = (picked[0][1] + picked[0][3]) / 2
-        picked = [w for w in picked if abs((w[1] + w[3]) / 2 - y_first) < OCR_NAME_LINE_TOL]
+        # DRAWING NUMBER chips OCR'd as junk) is dropped. Group the words into
+        # rows by the same y tolerance the drop used to apply: keying the sort
+        # on round(y) split one line whenever two boxes' top edges straddled a
+        # half-point boundary, which pushed a fragment to the front of the name
+        # (F10128174 read '-CONFLAIL, NUT PLATE, MINI xX OQ' for 'NUT PLATE,
+        # MINI-CONFLAT, M4 X 0.7 THD'). Then read the top row left to right.
+        def _yc(w):
+            return (w[1] + w[3]) / 2
+
+        rows = []
+        for w in picked:
+            if rows and abs(_yc(w) - _yc(rows[-1][0])) < OCR_NAME_LINE_TOL:
+                rows[-1].append(w)
+            else:
+                rows.append([w])
+        picked = sorted(rows[0], key=lambda w: w[0])
     if picked:
         return " ".join(w[4] for w in picked)
     return None
@@ -1017,6 +1030,21 @@ def _desc_is_cross_reference(desc):
     return bool(words) and all(w in _CROSS_REF_WORDS for w in words)
 
 
+def _desc_plausible(desc):
+    """True when a parts-list description can name a part.
+
+    Format 1 takes the line below the FERMI# verbatim, which on an annotated
+    sheet can be a balloon's own item digit or a stray letter (F10202541's
+    F10218071 got the description 'F'). A numeric catalogue name
+    ('8020-30-3030') is legitimate, so only a single character or a bare item
+    count (1-3 digits) is rejected.
+    """
+    text = (desc or "").strip()
+    if len(re.sub(r"[^A-Za-z0-9]", "", text)) < 2:
+        return False
+    return not (text.isdigit() and len(text) <= 3)
+
+
 def _line_bom_entries(lines, page_num):
     """Formats 1-3 over the page's text lines, in exact scan order."""
     entries = []
@@ -1036,7 +1064,9 @@ def _line_bom_entries(lines, page_num):
                     i += 1
                     continue
                 val = normalize(line)
-                entries.append((val, page_num, "text-fallback", desc_candidate.strip()))
+                desc = desc_candidate.strip()
+                entries.append((val, page_num, "text-fallback",
+                                desc if _desc_plausible(desc) else ""))
                 i += 2
                 # Skip optional note line(s) until we hit qty or next item
                 while i < len(lines):
@@ -1206,7 +1236,7 @@ def _positional_row_has_context(rows, sorted_ys, y_idx, y):
     return False
 
 
-def _positional_row_entries(page, page_num, entries, issues):
+def _positional_row_entries(page, page_num, entries, issues, x_band=None):
     """Format 4: Positional text grouping; appends into entries (set-deduped)."""
     try:
         blocks = page.get_text("dict")["blocks"]
@@ -1238,9 +1268,14 @@ def _positional_row_entries(page, page_num, entries, issues):
                 continue
             if not _positional_row_has_context(rows, sorted_ys, y_idx, y):
                 continue
-            for _, t in rows[y]:
+            for tx, t in rows[y]:
                 t_stripped = t.strip()
                 if FERMI_RE.match(t_stripped):
+                    # A view balloon prints a bare F-number off to the side of
+                    # the parts-list table (F10202541's '11 F10218071'); only a
+                    # token sitting in the table's FERMI# column is a row.
+                    if x_band is not None and not (x_band[0] <= tx <= x_band[1]):
+                        continue
                     # A bare FERMI token takes its description from the row
                     # below (Format-1 stack shape): a pure cross-reference
                     # there ("AND F10126108.") rejects the row, mirroring the
@@ -1309,10 +1344,19 @@ def extract_bom_from_text(doc, issues=None):
             continue
         lines = [l.strip() for l in text.splitlines()]
         lines = [l for l in lines if l]
+        # Parts-list FERMI# column for this page (None when undetectable):
+        # every row - line-parsed or positional - must sit in it, or a view
+        # balloon's part number is read as a child (F10202541).
+        words = _page_words(page)
+        band = _partslist_band(words)
         if header:
-            entries.extend(_line_bom_entries(lines, page_num))
-        _positional_row_entries(page, page_num, entries, issues)
-        entries.extend(_extract_bom_positional(page, page_num, issues))
+            line_entries = _line_bom_entries(lines, page_num)
+            if band is not None:
+                in_band = _fermi_values_in_band(words, band)
+                line_entries = [e for e in line_entries if e[0] in in_band]
+            entries.extend(line_entries)
+        _positional_row_entries(page, page_num, entries, issues, band)
+        entries.extend(_extract_bom_positional(page, page_num, issues, band, words))
     return entries
 
 
@@ -1350,6 +1394,63 @@ def _x_clusters(x_values):
         else:
             clusters.append([x])
     return clusters
+
+
+def _band_from_positions(positions):
+    """(x_min, x_max) of the parts-list FERMI# column, or None.
+
+    A parts list lines its FERMI# tokens up in one column, so the densest
+    cluster of whole-word F-number x positions is that column. None when the
+    page shows no such column (fewer than two aligned F-numbers), which leaves
+    callers on their prior behaviour.
+    """
+    if len(positions) < 2:
+        return None
+    cluster = max(_x_clusters(sorted(x for x, _, _ in positions)), key=len)
+    if len(cluster) < 2:
+        return None
+    return min(cluster) - 10, max(cluster) + 10
+
+
+def _page_words(page):
+    """Page words, or [] when the page will not yield them."""
+    try:
+        return page.get_text("words")
+    except (RuntimeError, ValueError):
+        return []
+
+
+def _partslist_band(words):
+    """x range of the parts-list FERMI# column on a page, or None.
+
+    Anchored to the 'FERMI #' header label when the page prints one: a view
+    balloon's part number is drawn away from the table, and counting x
+    positions alone follows the balloons on a sheet whose views carry more
+    callouts than the list has rows. Falls back to the densest column of
+    whole-word F-numbers when no header label is found.
+    """
+    if not words:
+        return None
+    header = _partslist_header(words)
+    if header is not None:
+        _score, _item_x, fer_x, fer_x1 = header[0], header[1], header[2], header[3]
+        return fer_x - OCR_FERMI_COL_DX_LEFT, fer_x1 + OCR_FERMI_COL_DX_RIGHT
+    return _band_from_positions(_fermi_word_positions(_words_by_row(words)))
+
+
+def _fermi_values_in_band(words, band):
+    """Normalized F-numbers printed inside the parts-list column `band`.
+
+    A search (not a whole-word match) so a column entry glued to its
+    description still counts.
+    """
+    vals = set()
+    lo, hi = band
+    for w in words or ():
+        if lo <= w[0] <= hi:
+            for m in FERMI_RE_SEARCH.finditer(w[4].upper()):
+                vals.add(normalize(m.group(0)))
+    return vals
 
 
 def _word_row_has_item_before(row_words, x):
@@ -1457,26 +1558,24 @@ def _word_row_is_title_block(rows, sorted_y_keys, y_key, row_words, y_index):
     return False
 
 
-def _extract_bom_positional(page, page_num, issues=None):
+def _extract_bom_positional(page, page_num, issues=None, x_band=None, words=None):
     found = []
-    try:
-        words = page.get_text("words")
-    except (RuntimeError, ValueError) as e:
-        if issues is not None:
-            issues.append(f"page {page_num}: word extraction failed: {e}")
-        return found
+    if words is None:
+        try:
+            words = page.get_text("words")
+        except (RuntimeError, ValueError) as e:
+            if issues is not None:
+                issues.append(f"page {page_num}: word extraction failed: {e}")
+            return found
     if not words:
         return found
     rows = _words_by_row(words)
     fermi_positions = _fermi_word_positions(rows)
-    if len(fermi_positions) < 2:
+    if x_band is None:
+        x_band = _partslist_band(words)
+    if x_band is None:
         return found
-    x_values = sorted(x for x, _, _ in fermi_positions)
-    best_cluster = max(_x_clusters(x_values), key=len)
-    if len(best_cluster) < 2:
-        return found
-    best_x_min = min(best_cluster) - 10
-    best_x_max = max(best_cluster) + 10
+    best_x_min, best_x_max = x_band
     sorted_y_keys = sorted(rows.keys())
     y_index = {y: i for i, y in enumerate(sorted_y_keys)}
     for x, y_key, word in fermi_positions:
@@ -1607,7 +1706,11 @@ def _ocr_words_zoom(page, clip, zoom=8, psm="11"):
         tmp.close()
     try:
         pix.save(png)
-        r = _tesseract_run([exe, png, "stdout", "tsv", "--psm", psm], 180)
+        # Tesseract takes its options BEFORE the config file: with "tsv" first,
+        # every --psm/--oem after it was silently dropped and the pass always
+        # ran at the default psm 3 (which garbles a title block: F10051459's
+        # NAME came back empty while psm 6 read 'PLATE SIDE, RESTRAINT ...').
+        r = _tesseract_run([exe, png, "stdout", "--psm", psm, "tsv"], 180)
         words = []
         for line in (r.stdout or "").splitlines()[1:]:
             f = line.split("\t")

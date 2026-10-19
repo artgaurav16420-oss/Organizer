@@ -2,6 +2,7 @@
 """Folder naming and path-length policy."""
 import os
 import re
+from collections import Counter
 
 from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES, TREE_MAX_DEPTH
 
@@ -29,6 +30,53 @@ def folder_name_for(stem, names_of):
         if clean:
             return f"{base} {clean}"
     return stem
+
+
+def add_bom_name(votes, ref, desc):
+    """Record one parts-list description for `ref` (input to the vote)."""
+    desc = (desc or "").strip()
+    if desc:
+        votes.setdefault(ref, Counter())[desc] += 1
+
+
+def bom_name_winners(votes):
+    """ref -> best description: most frequent, ties broken lexicographically.
+
+    Parents can disagree about a child's description (a stale parts list keeps
+    an old revision's wording). The majority is the current one; the
+    lexicographic tie-break keeps the pick deterministic across runs and
+    parallel job counts.
+    """
+    return {ref: sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+            for ref, c in (votes or {}).items()}
+
+
+def prefer_bom_names(names_of, ocr_named_stems, bom_names, stems=()):
+    """Take folder NAMEs from a parent's parts list where the drawing has none to trust.
+
+    An image-only drawing's own NAME is OCR output, so a misread still reads
+    as a plausible part name ('NUT PLATE, MINI-CONFLAT' -> '-CONFLAIL, NUT
+    PLATE, MINI xX OQ'); a parent's PARTS LIST row carries the same name as a
+    text layer, so it wins. A drawing whose NAME could not be read at all (no
+    OCR name, no title-block line) is filled the same way rather than left as a
+    bare drawing number. Text-layer drawings with their own NAME keep it - that
+    one is authoritative.
+
+    `bom_names` is keyed by the BOM reference value (the base number), while
+    `names_of` is keyed by stem, so a stem is matched through its base.
+
+    Returns a new dict (callers keep their own name map).
+    """
+    names = dict(names_of or {})
+    bom_names = bom_names or {}
+    ocr_named = ocr_named_stems or set()
+    for stem in set(stems or ()) | set(ocr_named):
+        if stem in names and stem not in ocr_named:
+            continue
+        bom_name = bom_names.get(stem) or bom_names.get(stem.split("_")[0])
+        if bom_name:
+            names[stem] = bom_name
+    return names
 
 
 def _collect_placements(children, roots):

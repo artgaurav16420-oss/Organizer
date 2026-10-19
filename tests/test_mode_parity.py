@@ -24,6 +24,7 @@ def _decision_sets(ctx):
         "used_on_mismatches": sorted(ctx["used_on_mismatches"]),
         "titleblock_mismatches": sorted(ctx["titleblock_mismatches"]),
         "watermarks": sorted(ctx["watermarks"]),
+        "names": sorted(ctx["names"].items()),
     }
 
 

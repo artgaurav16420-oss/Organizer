@@ -4,6 +4,8 @@ from pathlib import Path
 
 from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
 from fermi_organizer.naming import (_collect_placements, _placement_len,
+                                    add_bom_name, bom_name_winners,
+                                    prefer_bom_names,
                                     build_folder_names, sanitize_folder_name)
 
 
@@ -21,6 +23,49 @@ def test_sanitize_folder_name_drops_control_and_bidi_chars():
 def test_sanitize_folder_name_keeps_legacy_substitutions():
     assert sanitize_folder_name('a"b/c<d>\\e|f?g*') == "ab-c-d--e-f-g-"
     assert sanitize_folder_name("  many   spaces ") == "many spaces"
+
+
+def test_bom_name_winners_takes_the_majority_description():
+    # Four parents list F10128174; one carries a stale description from an
+    # earlier revision. First-come would take the stale one (F10119081 sorts
+    # first), so the vote - not insertion order - decides.
+    votes = {}
+    for desc in ("NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",) * 3 + \
+                ("NUT PLATE, 1.33 DIA MINI-CONFLAT, #8-32 THD",):
+        add_bom_name(votes, "F10128174", desc)
+    assert bom_name_winners(votes) == {
+        "F10128174": "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"}
+
+
+def test_bom_name_winners_breaks_ties_deterministically():
+    votes = {}
+    for desc in ("B NAME", "A NAME"):
+        add_bom_name(votes, "F10126106", desc)
+    assert bom_name_winners(votes) == {"F10126106": "A NAME"}
+    # Blank/whitespace rows never win (or create) a name.
+    add_bom_name(votes, "F10126106", "   ")
+    add_bom_name(votes, "F10126107", "")
+    assert bom_name_winners(votes) == {"F10126106": "A NAME"}
+
+
+def test_prefer_bom_names_replaces_ocr_and_fills_missing():
+    # A scanned drawing's NAME is OCR output, so a parent's parts-list name
+    # wins; a text-layer drawing with its own NAME keeps it (authoritative); a
+    # drawing with no readable NAME at all is filled from the parts list rather
+    # than left as a bare drawing number.
+    names = {"F10128174_A_DWG1": "-CONFLAIL, NUT PLATE, MINI xX OQ.",
+             "F10187623_A_DWG1": "WELDMENT, BEAM PIPE END"}  # text layer
+    # bom_names is keyed by the BOM reference value (base), not by stem.
+    bom = {"F10128174": "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+           "F10199999": "SEAL, HEX, 154.8mm OD"}
+    stems = {"F10128174_A_DWG1", "F10187623_A_DWG1", "F10199999___DWG1",
+             "F10188888___DWG1"}
+    out = prefer_bom_names(names, {"F10128174_A_DWG1"}, bom, stems)
+    assert out["F10128174_A_DWG1"] == "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+    assert out["F10187623_A_DWG1"] == "WELDMENT, BEAM PIPE END"
+    assert out["F10199999___DWG1"] == "SEAL, HEX, 154.8mm OD"  # filled
+    assert "F10188888___DWG1" not in out  # no description available
+    assert names["F10128174_A_DWG1"] == "-CONFLAIL, NUT PLATE, MINI xX OQ."
 
 
 def test_shared_stem_deep_path_shortened_for_every_root():

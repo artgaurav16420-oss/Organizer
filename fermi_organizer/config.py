@@ -182,7 +182,7 @@ BAD_DESC_RE = re.compile(
 SIZE_RE = re.compile(r"^A\d$", re.IGNORECASE)
 SINGLE_LINE_RE = re.compile(
     r"^(F\d{1,8}[A-Za-z]?|FC\d{1,8}[A-Za-z]?)\s+"
-    r"([A-Za-z][A-Za-z0-9\s\-_/\\.]{3,})"
+    r"([A-Za-z][A-Za-z0-9\s\-_/\\.,]{3,})"
 )
 TOKEN_RE = re.compile(r"\b(F\d{1,8}[A-Za-z]?|FC\d{1,8}[A-Za-z]?)(?![\dA-Za-z])")
 USED_RE = re.compile(r"^USED\s*ON\s*$", re.IGNORECASE)

@@ -237,6 +237,77 @@ def test_run_full_execute_builds_tree_and_orphans(tmp_path, make_pdf):
     assert "Stored 1 orphan(s) in _orphans/" in text
 
 
+def test_run_full_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
+    # A scanned child's NAME is OCR output, so a misread still reads as a
+    # plausible part name. The parent's parts list carries the same name as a
+    # text layer and must win (F10187622 listing F10128174).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "Test Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", [])  # image-only: name comes from OCR
+
+    logged = []
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126107"}):
+        ctx = run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+    assert (out / "F10126106 Test Parent"
+            / "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126107.pdf").is_file()
+
+
+def test_run_full_fills_missing_name_from_parent_bom(tmp_path, make_pdf):
+    # A scanned child whose OCR read no NAME at all (and a text-layer child
+    # with an empty NAME cell) are named from the parent's parts list instead
+    # of being left as a bare drawing number.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 SPRING, COMPRESSION",
+        "F10126108 PLATE, SIDE",
+        "NAME",
+        "Test Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", [])          # image-only, no OCR name
+    make_pdf(in_dir / "F10126108.pdf", ["NAME"])    # text layer, empty NAME
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "SPRING, COMPRESSION"
+    assert ctx["names"]["F10126108"] == "PLATE, SIDE"
+    assert (out / "F10126106 Test Parent" / "F10126107 SPRING, COMPRESSION"
+            / "F10126107.pdf").is_file()
+
+
+def test_run_full_keeps_text_layer_name_over_bom(tmp_path, make_pdf):
+    # Only an OCR-read NAME is a guess: a text-layer drawing keeps its own
+    # title-block NAME even when a parent's parts list spells it differently.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 PARENT SPELLING",
+        "NAME",
+        "Test Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "Child part"
+    assert (out / "F10126106 Test Parent" / "F10126107 Child part"
+            / "F10126107.pdf").is_file()
+
+
 def test_run_incremental_adopts_stored_orphan(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
@@ -1117,6 +1188,32 @@ def test_run_incremental_prefers_text_copy_over_scanned_duplicate(tmp_path, make
     assert ctx["watermarks"] == []
 
 
+def test_run_incremental_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
+    # Same rule in incremental mode: a newly added scanned child takes its NAME
+    # from the parent's parts list, not from the OCR read.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST",
+        "F10126111 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "New assembly",
+    ])
+    make_pdf(in_dir / "F10126111.pdf", [])  # image-only child
+
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126111"}):
+        ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126111"] == "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+    assert (out / "F10126110 New assembly"
+            / "F10126111 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126111.pdf").is_file()
+
+
 def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
@@ -1133,6 +1230,37 @@ def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     assert (out / "_orphans" / "F10126110.pdf").is_file()
     assert "F10126110" in ctx["orphans"]
     assert "storing in _orphans/" in "\n".join(logged)
+
+
+def test_incremental_renames_stale_folder_to_parent_bom_name(tmp_path, make_pdf):
+    # Re-run scenario: a tree already holds the OCR-spelled folder. An
+    # incremental run normalizes it to the parent's parts-list name.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    parent = make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "Test Parent",
+    ])
+    child = make_pdf(in_dir / "F10126107.pdf", [])  # image-only child
+
+    # Pre-existing tree with the OCR-spelled folder name, byte-identical to the
+    # input (so both PDFs count as already organized).
+    stale = out / "F10126106 Test Parent" / "F10126107 -CONFLAIL, NUT PLATE, MINI xX OQ"
+    stale.mkdir(parents=True)
+    (out / "F10126106 Test Parent" / "F10126106.pdf").write_bytes(parent.read_bytes())
+    (stale / "F10126107.pdf").write_bytes(child.read_bytes())
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "New assembly"])
+
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126107"}):
+        run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert not stale.exists()
+    assert (out / "F10126106 Test Parent"
+            / "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126107.pdf").is_file()
 
 
 def test_incremental_roots_match_full_mode(tmp_path, make_pdf):

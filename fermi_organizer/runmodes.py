@@ -14,7 +14,8 @@ from .extraction import (resolve_jobs, title_task, org_task, survey_task,
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
                     break_cycles, find_used_on_mismatches, find_used_on_bugs,
                     collect_reachable, snap_ref, _edit1)
-from .naming import build_folder_names, folder_name_for
+from .naming import (build_folder_names, folder_name_for, add_bom_name,
+                     bom_name_winners, prefer_bom_names)
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
@@ -404,6 +405,23 @@ def _log_summary(rows, log):
 # ---------------------------------------------------------------------------
 # Scanning / graph phases
 # ---------------------------------------------------------------------------
+def _ocr_named_stems():
+    """Stems whose NAME was actually read by OCR this run.
+
+    A text-layer drawing keeps its own NAME: that one is authoritative. Only a
+    name OCR produced is a guess, and only then may a parent's parts list
+    replace it. Reading the OCR events (rather than the page's text length)
+    keeps --no-ocr runs and text-layer sheets untouched.
+    """
+    named = set()
+    for path, ev in OCR.events.items():
+        if path and ev.get("name"):
+            stem = canonical_stem(Path(path).stem)
+            if stem:
+                named.add(stem)
+    return named
+
+
 def _scan_boms(items, jobs, log, require_desc):
     """BOM extraction over sorted (stem, pdf) items.
 
@@ -412,9 +430,13 @@ def _scan_boms(items, jobs, log, require_desc):
     {stem: (filename, title block number, revision, NAME, scanned)},
     extraction warning count); require_desc keeps the run_full policy of
     storing a NAME only when the BOM row carries a description.
+
+    `ref_value: NAME` comes from the parts-list descriptions: parents can
+    disagree about a child (a stale parts list keeps an old revision's
+    wording), so the majority description wins (see naming.bom_name_winners).
     """
     bom_of = {}
-    bom_names = {}
+    bom_votes = {}
     watermarks = {}
     titleblocks = {}
     warnings = 0
@@ -439,15 +461,15 @@ def _scan_boms(items, jobs, log, require_desc):
         raw_values = sorted({v for v, *_rest in entries})
         bom_of[stem] = raw_values
         for e in entries:
-            if len(e) == 4 and e[0] not in bom_names and (e[3] or not require_desc):
-                bom_names[e[0]] = e[3]
+            if len(e) == 4 and (e[3] or not require_desc):
+                add_bom_name(bom_votes, e[0], e[3])
         used_on_of[stem] = used
         if name:
             used_names[stem] = name
         log(f"  {stem}: {len(raw_values)} unique FERMI# ({method})")
     log("")
-    return bom_of, bom_names, watermarks, titleblocks, warnings, \
-        used_on_of, used_names
+    return bom_of, bom_name_winners(bom_votes), watermarks, titleblocks, warnings, \
+        used_on_of, used_names, bom_votes
 
 
 def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
@@ -614,10 +636,15 @@ def _detect_supersede_pairs(new_index, old_new, organized, log):
     return supersede_pairs
 
 
-def _scan_organized(organized, all_stems, jobs, bom_names, log):
+def _scan_organized(organized, all_stems, jobs, bom_names, log, bom_votes):
     """BOM + USED ON scan over organized PDFs (placement context). Logs the
     missing-reference block; returns (org_boms, org_used_on, org_unmatched,
-    org_watermarks, org_titleblocks, org_names, extraction warning count)."""
+    org_watermarks, org_titleblocks, org_names, extraction warning count).
+
+    `bom_votes` accumulates this scan's parts-list descriptions so the caller
+    can re-decide a NAME once every parent has been read; `bom_names` keeps
+    the first-seen description (used for the missing-reference log).
+    """
     org_boms = {}
     org_used_on = {}
     org_watermarks = {}
@@ -645,8 +672,10 @@ def _scan_organized(organized, all_stems, jobs, bom_names, log):
         org_boms[stem] = sorted({v for v, *_rest in entries})
         org_used_on[stem] = used
         for e in entries:
-            if len(e) == 4 and e[0] not in bom_names:
-                bom_names[e[0]] = e[3]
+            if len(e) == 4:
+                add_bom_name(bom_votes, e[0], e[3])
+                if e[3] and e[0] not in bom_names:
+                    bom_names[e[0]] = e[3]
         log(f"  {stem}: {len(entries)} BOM row(s), {len(org_boms[stem])} unique FERMI# ({method})")
     # OCR near-miss refs: correct against the known stems before the missing
     # check, or a misread that snaps to a real stem (F0156241 -> F10156241) is
@@ -1388,7 +1417,7 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     single-pass USED ON figures (so the USED ON section reuses them)."""
     log("--- Scanning BOM tables ---")
     bom_of, bom_names, watermarks, titleblocks, warnings, used_on_of, \
-        used_names = _scan_boms(
+        used_names, _bom_votes = _scan_boms(
             sorted(index.items()), jobs, log, require_desc=True)
     rekeyed = {}
     if rekey:
@@ -1438,13 +1467,12 @@ def _full_build_edges(bom_of, index, bom_names, log):
 
 
 def _full_scan_used_on(index, jobs, log, used_on_of=None, names_of=None):
-    """USED ON + NAME scan + OCR snap + missing-NAME log."""
+    """USED ON + NAME scan + OCR snap (missing-NAME log follows the BOM fallback)."""
     used_on_of, names_of = _scan_used_on(sorted(index.items()), jobs,
                                          "--- Scanning USED ON fields ---", log,
                                          used_on_cache=used_on_of,
                                          names_cache=names_of)
     _snap_used_on(used_on_of, index, log)
-    _log_missing_names(index, names_of, log)
     return used_on_of, names_of
 
 
@@ -1605,6 +1633,11 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     used_on_of, names_of = _full_scan_used_on(index, jobs, log,
                                             used_on_of=_used_on_of,
                                             names_of=_used_names)
+    # A drawing's own NAME is authoritative only when a text layer carried it:
+    # an OCR-read name is a guess and a missing one leaves nothing to place, so
+    # in both cases the parents' parts-list description wins.
+    names_of = prefer_bom_names(names_of, _ocr_named_stems(), bom_names, index)
+    _log_missing_names(index, names_of, log)
 
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
@@ -1724,7 +1757,7 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
         new_index, new_duplicates, jobs, log)
     log("--- Scanning BOM tables (new PDFs) ---")
     new_boms, bom_names, new_watermarks, new_titleblocks, warnings, \
-        new_used_on, new_names = _scan_boms(
+        new_used_on, new_names, new_bom_votes = _scan_boms(
             sorted(new_index.items()), jobs, log, require_desc=False)
     all_stems = new_stems | org_stems
     rekeyed = {}
@@ -1748,7 +1781,7 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
     return (new_index, watermarked_dupes, new_boms, bom_names,
             new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
             scanned_new, all_stems, chk_stems, warnings, new_used_on,
-            new_names)
+            new_names, new_bom_votes)
 
 
 def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
@@ -1767,7 +1800,8 @@ def _incremental_new_missing(new_boms, all_stems, bom_names, chk_stems, log):
 
 
 def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
-                                new_watermarks, new_titleblocks, unmatched, log):
+                                new_watermarks, new_titleblocks, unmatched, log,
+                                bom_votes):
     """Organized scan + snaps + watermark/title-block merge.
     Returns (org_boms, org_used_on, watermarks, tb_mismatches, org_names,
     warnings)."""
@@ -1780,7 +1814,8 @@ def _incremental_scan_organized(organized, all_stems, jobs, bom_names,
     if organized:
         org_boms, org_used_on, org_unmatched, org_watermarks, \
             org_titleblocks, org_names, warnings = \
-            _scan_organized(organized, all_stems, jobs, bom_names, log)
+            _scan_organized(organized, all_stems, jobs, bom_names, log,
+                            bom_votes)
         # (_scan_organized snaps org_boms/org_used_on before its missing check.)
         unmatched.extend(org_unmatched)
         if org_watermarks:
@@ -2044,7 +2079,8 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
                           total_copies, total_moves, warning_count, unmatched,
                           chk_stems, roots_used_on, incr_mism, used_on_bugs,
                           tb_mismatches, watermarks, new_names,
-                          bom_names, org_names=None, superseded=(), planned=(),
+                          bom_names, org_names=None, merged_names=None,
+                          superseded=(), planned=(),
                           scan_res=None, refused=False,
                           skipped=()) -> RunContext:
     """Orphan retirement + summary + structured RunContext."""
@@ -2088,8 +2124,9 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
         "titleblock_mismatches": tb_mismatches,
         "scanned": OCR.scanned_stems(),
         "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(_merge_names(org_names or {}, new_names),
-                               unmatched, bom_names),
+        "names": _ctx_names(merged_names if merged_names is not None
+                            else _merge_names(org_names or {}, new_names),
+                            unmatched, bom_names),
         "placement_refused": refused,
         "skipped_roots": list(skipped),
     }
@@ -2157,8 +2194,8 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
     new_index, watermarked_dupes, new_boms, bom_names, new_watermarks, \
         new_titleblocks, rekeyed, new_stems, org_stems, scanned_new, \
-        all_stems, chk_stems, warning_count, _new_used_on, _new_names = \
-        _incremental_scan_new_boms(
+        all_stems, chk_stems, warning_count, _new_used_on, _new_names, \
+        bom_votes = _incremental_scan_new_boms(
             new_index, new_duplicates, jobs, log, rekey, organized, chk_stems)
     # Archive the watermarked duplicates that lost the pre-scan resolution.
     _ensure_lock(lock, log)
@@ -2171,12 +2208,18 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     org_boms, org_used_on, watermarks, tb_mismatches, org_names, \
         org_warnings = _incremental_scan_organized(
             organized, all_stems, jobs, bom_names, new_watermarks,
-            new_titleblocks, unmatched, log)
+            new_titleblocks, unmatched, log, bom_votes)
     warning_count += org_warnings
     new_used_on, new_names = _incremental_scan_new_used_on(new_index, jobs,
                                                            all_stems, log,
                                                            cached_used_on=_new_used_on,
                                                            cached_names=_new_names)
+    # A drawing's own NAME is a guess when OCR read it and absent when nothing
+    # read it; either way a parent's parts list names it. Both scans above fed
+    # bom_votes, so the vote now covers new + organized parents.
+    bom_names = bom_name_winners(bom_votes)
+    merged_names = prefer_bom_names(_merge_names(org_names or {}, new_names),
+                                    _ocr_named_stems(), bom_names, all_stems)
 
     # Cap check BEFORE any supersede swaps/moves: a refused run must not
     # mutate the tree. Uses the pre-merge new graph (cycle-broken, like the
@@ -2241,7 +2284,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             new_boms, org_boms, new_used_on, org_used_on,
             all_stems, new_stems, org_stems, log,
             merged_children=merged_children, merged_used_on=merged_used_on,
-            merged_names=_merge_names(org_names or {}, new_names))
+            merged_names=merged_names)
     # Break merged-graph cycles only now, exactly like full mode: the report
     # cross-checks above run on the unbroken merged graph, and the break exists
     # for the root/orphan split. Silent, so the "Cycle detection (new PDFs)"
@@ -2266,8 +2309,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     merged_index = {s: pick_shallowest(paths) for s, paths in organized.items() if paths}
     merged_index.update(new_index)
     folder_names = plan_folder_names(merged_children, reported_roots, merged_index,
-                                     _merge_names(org_names or {}, new_names),
-                                     output, log)
+                                     merged_names, output, log)
     # Make the live tree's folder names match that plan before placing anything
     # else, so a folder an earlier run named for a smaller tree cannot survive
     # as a stale spelling (see normalize_folder_names).
@@ -2323,6 +2365,7 @@ def _run_incremental_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                  used_on_bugs, tb_mismatches, watermarks,
                                  new_names, bom_names,
                                  org_names=org_names,
+                                 merged_names=merged_names,
                                  superseded=archived_new | set(swapped_old),
                                  planned=planned,
                                  scan_res=reused_scan_res,
