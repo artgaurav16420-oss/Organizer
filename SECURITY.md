@@ -19,9 +19,11 @@ Dependency advisories: see `THIRD_PARTY_NOTICES.md` for known PyMuPDF/Tesseract
 notes. GHSA-434w-92hw-f2m3 / CVE-2026-82035 (path traversal) is confined to the
 PyMuPDF **CLI** entry module (`src/__main__.py`), which this project never
 imports or invokes; the library API surface it does use never executes that
-module (verified 2026-10-08 against the advisory and PyPI; no fixed release
-exists yet — the first PyPI release containing upstream fix `b2c8f3a` must be
-adopted, see THIRD_PARTY_NOTICES.md for the standing action).
+module (verified 2026-10-08 against the advisory and PyPI). The fix
+(`b2c8f3a`) first shipped in pymupdf **2.0** on 2026-10-19, which requires
+Python `>=3.11` — adopting it is a floor decision this project has not taken
+yet, recorded in THIRD_PARTY_NOTICES.md together with the compensating
+control.
 
 ## Reporting a vulnerability
 

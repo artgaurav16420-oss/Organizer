@@ -28,12 +28,17 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
     `tests/test_no_dead_imports.py:89`
     (`test_no_pymupdf_cli_extract_objects_usage`), which rejects the vulnerable
     symbols and CLI invocation forms (`"pymupdf"` argv, `python -m pymupdf`).
-  - **Fix status:** upstream fix is commit `b2c8f3a`; as of 2026-10-08 **no
-    fixed release exists** (PyPI latest is 1.28.2, the pinned version). No pin
-    bump is possible today.
-  - **Standing action:** re-check PyPI on each PyMuPDF release; when the first
-    release containing `b2c8f3a` appears, bump `pyproject.toml`,
-    `requirements.txt`, and `requirements.lock` (re-lock) together.
+  - **Fix status:** upstream fix is commit `b2c8f3a`, first shipped in **pymupdf
+    2.0** (PyPI, uploaded 2026-10-19; verified 2026-10-22 against the PyPI JSON
+    API). The pin therefore still names the last affected release (1.28.2).
+  - **Why the pin has not moved:** pymupdf 2.0 declares `requires-python >=3.11`,
+    while this project declares `>=3.10` (`pyproject.toml`). Adopting 2.0 is
+    therefore a floor decision (pyproject, CI matrix, dev re-lock, full retest),
+    not a version bump — recorded as an open decision rather than re-derived.
+  - **Standing action:** when the floor decision is taken, bump `pyproject.toml`,
+    `requirements.txt`, and `requirements.lock` (re-lock) together. Until then the
+    compensating control is the enforcement below: the vulnerable module is never
+    imported or invoked.
 
 ## openpyxl 3.1.5
 

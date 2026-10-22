@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Full and incremental organization runs."""
+"""Full, incremental and repair organization runs."""
 import os
 import re
 import shutil
 import tempfile
+import time
 from collections import defaultdict, Counter
 from pathlib import Path
 from typing import TypedDict
@@ -26,7 +27,7 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                      longest_dest_path,
                      acquire_run_lock, release_run_lock, abandon_run_lock,
                     LockLostError, _ensure_lock, _same_bytes,
-                    _native, _exists, _islink, _staged_copy)
+                    _native, _exists, _islink, _staged_copy, _copy_atomic)
 
 
 class RunCounters(TypedDict):
@@ -41,6 +42,9 @@ class RunCounters(TypedDict):
 # Repair staging dirs still on disk, keyed by output tree, so a run that raises
 # before its cleanup removes only its own (see sweep_repair_staging).
 _REPAIR_STAGING: dict = {}
+# Prefix of every staging dir this tool creates in the temp dir; the stateless
+# sweep (sweep_stale_repair_staging) recognises abandoned dirs by it.
+_REPAIR_STAGING_PREFIX = "fermi_repair_"
 
 
 def _register_staging(output, staging):
@@ -778,7 +782,12 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
                 os.makedirs(_native(sup_dir), exist_ok=True)
                 _staged_copy(new_pdf, staging)
                 if archived:
-                    shutil.copy2(_native(p), _native(archive_target))
+                    # Atomic archive copy: a raw copy2 leaves a truncated PDF
+                    # under a real _superseded/ name if the write dies halfway,
+                    # and the next workbook lists that stub as a valid archived
+                    # revision (_copy_atomic stages + os.replace, or removes its
+                    # own staging file on failure).
+                    _copy_atomic(p, archive_target)
                 os.replace(_native(staging), _native(target_new))
             except OSError as e:
                 if _exists(staging):
@@ -1809,7 +1818,7 @@ def _stage_repair_candidates(candidates, log):
     """
     if not candidates:
         return {}, None
-    staged_dir = Path(tempfile.mkdtemp(prefix="fermi_repair_"))
+    staged_dir = Path(tempfile.mkdtemp(prefix=_REPAIR_STAGING_PREFIX))
     staged = {}
     for stem, path in sorted(candidates.items()):
         dst = staged_dir / f"{stem}.pdf"
@@ -1876,6 +1885,36 @@ def sweep_repair_staging(output, log):
     for staging in sorted(_REPAIR_STAGING.get(str(output), ())):
         repair_cleanup({"staging_dir": staging}, log)
     _REPAIR_STAGING.pop(str(output), None)
+
+
+def sweep_stale_repair_staging(log, max_age_secs=24 * 3600):
+    """Remove staging dirs a killed repair left behind in the temp dir.
+
+    The in-process sweep above only knows the dirs its own process created
+    (_REPAIR_STAGING is memory), so a SIGKILL, a crash outside Python or a
+    power loss left full copies of the drawings in %TEMP% forever - outside
+    the tree the operator controls and outside every later run's sweep. This
+    pass is stateless: anything carrying our prefix and older than
+    `max_age_secs` is abandoned (a live concurrent repair's directory is
+    minutes old, so the age gate leaves it alone). Never raises.
+    """
+    for path in sorted(Path(tempfile.gettempdir()).glob(f"{_REPAIR_STAGING_PREFIX}*")):
+        if not path.is_dir():
+            continue
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_secs:
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            log(f"  WARNING: could not remove abandoned repair staging dir "
+                f"{path}: {e}")
+            continue
+        _unregister_staging(path)
+        log(f"  Removed abandoned repair staging dir (left by a killed run): {path}")
 
 
 def _finish_repair_promotions(organized, archived, staged_stems, output,
@@ -2439,7 +2478,7 @@ def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
     return ctx
 
 
-def run_repair(folder, dry_run, log, jobs=0, *, hold_lock=False):
+def run_repair(folder, *, dry_run, log, jobs=0, hold_lock=False):
     """Repair mode: re-apply the current decisions to an existing output tree.
 
     Reads nothing outside `folder`. The tree's own `_orphans/` copies are
@@ -2452,8 +2491,16 @@ def run_repair(folder, dry_run, log, jobs=0, *, hold_lock=False):
     twin. Holds the output-tree lock like the other modes; with hold_lock=True
     returns (ctx, lock_path) and the caller releases it after its post-work.
     Raises NoPDFsFoundError when the folder holds no organized tree.
+
+    Every parameter after `folder` is keyword-only: repair has no separate
+    output folder (the tree is `folder`), and the natural cross-mode call
+    `run_repair(tree, output, log)` used to bind a truthy Path to `dry_run` and
+    return a clean exit 0 having changed nothing.
     """
     output = Path(folder).resolve()
+    if not dry_run:
+        # A dry run must not delete anything; the stale sweep is for real runs.
+        sweep_stale_repair_staging(log)
     lock = acquire_run_lock(output, dry_run, log)
     try:
         ctx = _run_repair_inner(output, dry_run, log, jobs, lock=lock)

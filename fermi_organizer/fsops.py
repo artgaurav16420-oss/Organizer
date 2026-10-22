@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 from collections import defaultdict
+from fnmatch import fnmatch
 from pathlib import Path
 
 from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH,
@@ -51,6 +52,49 @@ def _exists(path):
 def _islink(path):
     """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
     return os.path.islink(_native(path))
+
+
+def _strip_ext_prefix(path):
+    r"""Remove the `\\?\` / `\\?\UNC\` prefix `_native` adds to long paths.
+
+    Both sides of the link comparison below go through it: `_native` prefixes
+    only the side that crosses 260 chars, and `os.path.realpath` keeps the
+    prefix, so an unprefixed pair would report the first long directory in a
+    tree as a link (and prune its PDFs).
+    """
+    text = os.fspath(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[len("\\\\?\\UNC\\"):]
+    if text.startswith("\\\\?\\"):
+        return text[len("\\\\?\\"):]
+    return text
+
+
+def _is_dir_link(path):
+    """True for a directory that resolves somewhere other than its own name.
+
+    os.path.islink is False for an NTFS junction (a reparse point, not a
+    symlink), and os.walk(followlinks=False) does not prune junctions - so a
+    junction inside the input folder was traversed and its PDFs indexed as
+    drawings of this folder. Both cases are refused here, before the walk
+    descends: the documented invariant is that linked folders are never input.
+
+    Resolution is compared against the *resolved* parent, so an input folder
+    that itself sits under a junction (or a mapped share) does not mark every
+    child as a link, and a reparse point that is not a redirect (a OneDrive
+    placeholder) still resolves beside its parent and is kept.
+    """
+    if _islink(path):
+        return True
+    try:
+        parent = _strip_ext_prefix(os.path.realpath(_native(Path(path).parent)))
+        resolved = _strip_ext_prefix(os.path.realpath(_native(path)))
+    except (OSError, ValueError):
+        # Unreadable: let the walk decide (an unreadable entry is skipped by
+        # _classify_input_pdf like any other).
+        return False
+    expected = os.path.join(parent, Path(path).name)
+    return os.path.normcase(resolved) != os.path.normcase(expected)
 
 
 def _pdf_watermarked(path):
@@ -181,7 +225,27 @@ def build_pdf_index(folder, log=None, exclude=None):
     dupes = []
     skips = {"skip_output": 0, "skip_sys": 0}
     skipped_symlinks = 0
-    for p in sorted(folder.rglob("*.pdf")):
+    skipped_linked_dirs = 0
+    # os.walk with explicit pruning instead of rglob: rglob refuses directory
+    # symlinks but follows NTFS junctions, so a junction in the input folder
+    # would index PDFs from outside this folder under this folder's name (the
+    # per-file _islink guard below only catches file links). Sorted to keep the
+    # scan order deterministic, and the collected paths are sorted as a whole
+    # so duplicate resolution is unchanged from the old sorted(rglob()).
+    pdf_paths = []
+    for root, dirs, files in os.walk(folder, followlinks=False):
+        root_path = Path(root)
+        kept_dirs = []
+        for name in sorted(dirs):
+            if _is_dir_link(root_path / name):
+                skipped_linked_dirs += 1
+                continue
+            kept_dirs.append(name)
+        dirs[:] = kept_dirs
+        for name in sorted(files):
+            if fnmatch(name, "*.pdf"):
+                pdf_paths.append(root_path / name)
+    for p in sorted(pdf_paths):
         if _islink(p):
             skipped_symlinks += 1
             continue
@@ -209,6 +273,9 @@ def build_pdf_index(folder, log=None, exclude=None):
     _log_scan_skips(log, skips["skip_output"], skips["skip_sys"])
     if log and skipped_symlinks:
         log(f"Skipped {skipped_symlinks} PDF(s) that are symlinks (symlinks are never input)")
+    if skipped_linked_dirs and log is not None:
+        log(f"Skipped {skipped_linked_dirs} linked folder(s) "
+            "(symlinked/junction folders are never input)")
     _log_capped(log, f"WARNING: {len(dupes)} duplicate stem(s) across input subfolders "
                      "(shallowest path kept):",
                 dupes, lambda d: f"  {d[0]}  (kept {d[1]})")
@@ -666,11 +733,31 @@ def _holder_note(raw):
 
 
 def release_run_lock(lock):
-    """Remove our lock file; best-effort (a leftover only blocks the next run
-    until it goes stale, then it is stolen with a warning)."""
+    """Remove our lock file, but only while it still holds our token.
+
+    Best-effort in the ordinary case (a leftover only blocks the next run
+    until it goes stale, then it is stolen with a warning). The token check
+    matters on the paths that reach here after a steal — the CLI's finally
+    block, or a BaseException handler — where an unconditional unlink would
+    delete the new holder's live lock and hand the tree to a third run.
+    """
     if lock is None:
         return
+    item = _heartbeats.get(str(lock))
+    token = item[3] if item is not None else None
     _heartbeat_stop(lock)
+    if token is not None:
+        try:
+            if lock.read_bytes() != token:
+                return  # stolen: the file is the new holder's, leave it alone
+        except FileNotFoundError:
+            return  # already removed: nothing of ours left
+        except OSError:
+            # Unreadable (not gone). Return rather than unlink: ownership is
+            # unproven, and deleting a live holder's lock interleaves two
+            # writers. A leftover lock of our own only blocks the next run
+            # until it goes stale, then it is stolen with a warning.
+            return
     try:
         os.unlink(_native(lock))
     except OSError:
@@ -802,7 +889,12 @@ def scan_output_tree(output):
     tree, sup, orph = [], [], []
     if output.is_dir():
         out_root = output
-        for dirpath, _dirnames, filenames in os.walk(out_root):
+        for dirpath, dirnames, filenames in os.walk(out_root):
+            # Prune linked folders for the same reason the input scan does: a
+            # junction inside the tree would otherwise list PDFs from outside
+            # it as tree members (repair mode moves and deletes from this list).
+            dirnames[:] = [d for d in dirnames
+                           if not _is_dir_link(Path(dirpath) / d)]
             for name in filenames:
                 if not name.lower().endswith(".pdf"):
                     continue
@@ -837,7 +929,11 @@ def sweep_supersede_staging(output, dry_run, log):
         return
     staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
     copy_re = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
-    for dirpath, _dirnames, filenames in os.walk(output):
+    for dirpath, dirnames, filenames in os.walk(output):
+        # Never descend through a junction/symlinked folder: this sweep
+        # deletes files, and a link inside the tree would take it outside.
+        dirnames[:] = [d for d in dirnames
+                       if not _is_dir_link(Path(dirpath) / d)]
         for name in sorted(filenames):
             if not staging_re.search(name):
                 continue

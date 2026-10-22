@@ -87,7 +87,7 @@ def test_repair_reports_the_same_decisions_as_a_full_run(tmp_path, make_pdf):
     out = tmp_path / "out"
     run_full(in_dir, out, False, lambda m: None, jobs=1)
 
-    repaired = run_repair(out, False, lambda m: None, jobs=1)
+    repaired = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     full = run_full(in_dir, tmp_path / "out_full", False, lambda m: None, jobs=1)
     assert _decision_sets(repaired) == _decision_sets(full)
 

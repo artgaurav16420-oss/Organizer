@@ -41,7 +41,10 @@ batches are all handled.
 Tesseract is auto-detected via the `TESSERACT_EXE` environment variable, then `PATH`,
 then the common install directories (`C:\Program Files\Tesseract-OCR`,
 `C:\Program Files (x86)\Tesseract-OCR`, `%LOCALAPPDATA%\Programs\Tesseract-OCR`).
-Without it, scanned PDFs are still logged — they simply stay orphans.
+Without it, scanned (image-only) PDFs are still scanned and logged — but they are not
+orphaned by definition: a drawing that a *readable* parent's text-layer parts list
+names is still placed under that parent. `--no-ocr` removes the ability to read the
+scanned sheet itself (its own NAME and its own parts list), not placement by a parent.
 
 ## Install
 
@@ -92,7 +95,7 @@ Without `--output` the tree is organized **in place**, in the input folder itsel
 |---|---|
 | `--output <dir>` | Organized tree target (default: the input folder itself — in-place). |
 | `--dry-run` | Print the plan without copying files. Still rebuilds the `.xlsx` workbook and its history sidecar, and writes the timestamped `.txt` report when the output folder exists; a missing `--output` folder is created for the workbook only. Always run this first. |
-| `--incremental` | Process only stems not already in the output tree, plus stored `_orphans/` (adoption). Existing organized folders stay put, except when a new revision supersedes an old one or a parent adoption moves them. |
+| `--incremental` | Process only stems not already in the output tree, plus stored `_orphans/` (adoption). With nothing new to process the run stops after a zero-count summary and touches nothing. When the batch **has** new PDFs, existing organized folders stay in place but their **names are re-applied to this run's plan** — a folder you renamed by hand (or that older naming rules produced) is renamed back, and a folder whose planned parent changed is moved. A new revision still supersedes an old one. |
 | `--repair` | Re-apply the current decisions to an **existing** tree given as the positional folder (no source scan; rejects `--output`/`--incremental`/`--rekey-titleblock`). Renames folders to the current name plan, moves a folder onto its planned parent, adopts a drawing wrongly parked in `_orphans/`, promotes a `_superseded/` copy whose revision out-ranks the live drawing, and removes duplicate folders — deleting a folder only when every file in it has a byte-identical copy at a planned path. Places nothing that is absent from the tree. Read `--dry-run --repair` first: a hand-renamed or hand-moved folder is reverted. |
 | `--no-ocr` | Disable the OCR fallback for scanned PDFs. |
 | `--jobs N` | Parallel extraction workers (`0` = auto = CPU count, `1` = serial). |
@@ -108,11 +111,13 @@ named). A nested `sub/Output/` **is** scanned.
 | Code | Meaning |
 |---|---|
 | `0` | Normal outcome — orphans, `CHK` files and missing BOM references are reported but still exit 0. |
-| `1` | Nothing ran: input folder missing/not a directory, no PDFs found, output folder could not be created, or another run holds the lock. |
-| `2` | The run started but ended non-successfully: an over-cap placement refusal (see *Known limits*; report + workbook **are** written), a `--repair` run that left folders needing manual review (report + workbook **are** written), **or** the run lock was lost mid-run (report + workbook are **not** written — the tree may hold partial writes). |
+| `1` | Refused before writing: input folder missing/not a directory, no PDFs found, output folder could not be created, or another run holds the lock. Any *unexpected* crash also exits 1, and that one can happen **after** copies were written — so treat 1 as "check the tree" rather than "nothing happened". |
+| `2` | Ended non-successfully after starting: an over-cap placement refusal (see *Known limits*; report + workbook **are** written), a `--repair` run that left folders needing manual review (report + workbook **are** written), the run lock being lost mid-run (report + workbook are **not** written — the tree may hold partial writes), **or** an argument error (argparse rejects the flags before any run: no report, no workbook). |
 
 Scripts should treat `2` as "inspect the log and the output folder" rather than a
-crash: whether the artifacts exist tells the two `2` cases apart.
+crash. For the three run outcomes, whether the artifacts exist tells the cases apart
+(report + workbook present = placement refusal or repair review needed; absent = lock
+lost). An argument error never produces either.
 
 ## Outputs
 
@@ -194,6 +199,11 @@ directory once installed editable).
 
 ## Known limits
 
+- Paths are capped at 250 characters (`MAX_PATH`). A placement that would exceed it is
+  **skipped with a warning only** and the run still exits 0, so an incomplete tree can
+  look like a normal outcome — check the report's `Skipped N path(s) due to length
+  limits` line when the output root is deeply nested. At that depth the `.txt` report
+  and the workbook's history sidecar can also fail to save (warning, still exit 0).
 - Rare drawing layouts can defeat the parts-list detector. OCR values are
   shape-validated and only match indexed drawing numbers, so misreads are rare — but a
   misread that collides with a different indexed number can still attach a wrong BOM
@@ -264,13 +274,17 @@ is not required.
 
 ## Licensing and dependencies
 
-- Third-party licenses and the project's own pending license decision:
-  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+- Licence: **AGPL-3.0-only** (decided — see `LICENSE`). Third-party licences:
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). PyMuPDF is dual-licensed
+  AGPL/commercial, so redistributing a combined work carries the AGPL obligations
+  described there.
 - Security policy: [`SECURITY.md`](SECURITY.md).
-- PyMuPDF: watch for `>=1.28.3` (GHSA-434w-92hw-f2m3 / CVE-2026-82035 is a path
-  traversal in the PyMuPDF **CLI** font path — `extract_objects()` in
-  `src/__main__.py` — which this project does not use; upstream fix is commit
-  `b2c8f3a` and no fixed release exists yet).
+- PyMuPDF: **pin is on the last affected release** (GHSA-434w-92hw-f2m3 / CVE-2026-82035
+  is a path traversal in the PyMuPDF **CLI** font path — `extract_objects()` in
+  `src/__main__.py` — which this project does not use). Upstream fix is commit
+  `b2c8f3a`, first shipped in **pymupdf 2.0** (PyPI, 2026-10-19). Adopting it means
+  dropping the declared Python 3.10 floor: 2.0 requires `>=3.11`. The decision is
+  open — see `THIRD_PARTY_NOTICES.md`.
 - Tesseract OCR: 5.5.3 or newer recommended; note that eight model-file
   deserialization advisories (CVE-2026-88047..-88054, 2026-09-10) still apply to
   5.5.3 with **no fixed release yet** — they trigger only on a malicious

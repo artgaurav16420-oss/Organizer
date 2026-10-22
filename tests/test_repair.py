@@ -240,7 +240,7 @@ def test_reconcile_refuses_a_move_when_the_source_cannot_be_listed(tmp_path,
 def test_run_repair_is_a_no_op_on_a_clean_tree(tmp_path, make_pdf):
     _src, out = _clean_tree(tmp_path, make_pdf)
     lines = []
-    ctx = run_repair(out, False, lines.append, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lines.append, jobs=1)
 
     assert ctx["repair"]["moved"] == 0
     assert ctx["repair"]["copied"] == 0
@@ -264,7 +264,7 @@ def test_run_repair_dry_run_changes_nothing(tmp_path, make_pdf):
     shutil.move(str(child.parent), str(out / "WRONG PLACE"))
     before = _live_paths(out)
 
-    ctx = run_repair(out, True, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=True, log=lambda m: None, jobs=1)
     assert ctx["repair"]["moved"] == 1        # planned, not performed
     assert _live_paths(out) == before
 
@@ -280,7 +280,7 @@ def test_repair_adopts_a_wrongly_parked_orphan(tmp_path, make_pdf):
     assert not in_tree
 
     lines = []
-    ctx = run_repair(out, False, lines.append, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lines.append, jobs=1)
     assert ctx["repair"]["adopted"] == 1
     assert ctx["repair"]["review"] == []
     live = [p for p in out.rglob("F10197062.pdf")
@@ -309,7 +309,7 @@ def test_repair_promotes_an_archived_newer_revision(tmp_path, make_pdf):
     shutil.copy2(tmp_path / "staged.pdf", sup / "1.1.2.0 F10197062-B.pdf")
 
     lines = []
-    ctx = run_repair(out, False, lines.append, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lines.append, jobs=1)
     assert ctx["repair"]["promoted"] == 1
     assert ctx["repair"]["review"] == []
     live = {Path(p).name.lower() for p in _live_paths(out)}
@@ -322,7 +322,7 @@ def test_repair_promotes_an_archived_newer_revision(tmp_path, make_pdf):
     assert archived and all("F10197062" in name for name in archived)
 
     # Idempotent: the swap is stable and the archive is not re-opened.
-    again = run_repair(out, False, lambda m: None, jobs=1)
+    again = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert again["repair"]["promoted"] == 0
     assert again["repair"]["review"] == []
 
@@ -343,7 +343,7 @@ def test_repair_keeps_an_archived_chk_out_of_the_tree(tmp_path, make_pdf):
     make_pdf(tmp_path / "chk.pdf", ["NAME", "Unapproved"])
     shutil.copy2(tmp_path / "chk.pdf", sup / "1.1.2.0 F10197062-B-CHK.pdf")
 
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["promoted"] == 0
     assert (sup / "1.1.2.0 F10197062-B-CHK.pdf").exists()
     live = {Path(p).name.lower() for p in _live_paths(out)}
@@ -367,7 +367,7 @@ def test_repair_promotes_only_the_top_archived_revision(tmp_path, make_pdf):
     make_pdf(tmp_path / "c.pdf", ["NAME", "Revision C"])
     shutil.copy2(tmp_path / "b.pdf", sup / "1.1.2.0 F10197062-B.pdf")
     shutil.copy2(tmp_path / "c.pdf", sup / "1.1.3.0 F10197062-C.pdf")
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["promoted"] == 1
     live = {Path(p).name.lower() for p in _live_paths(out)}
     assert "f10197062_c.pdf" in live
@@ -396,7 +396,7 @@ def test_repair_promotes_every_sheet_at_the_top_archived_revision(tmp_path, make
         shutil.copy2(tmp_path / f"sheet{sheet}.pdf",
                      sup / f"1.1.2.0 F10197062-B_DWG{sheet}.pdf")
 
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["promoted"] == 2
     live = {Path(p).name.lower() for p in _live_paths(out)}
     assert {"f10197062_b_dwg1.pdf", "f10197062_b_dwg2.pdf"} <= live
@@ -411,7 +411,7 @@ def test_repair_keeps_a_correctly_archived_watermarked_loser(tmp_path, make_pdf)
     make_pdf(tmp_path / "dup.pdf", ["NAME", "Child part"])
     shutil.copy2(tmp_path / "dup.pdf", sup / "1.1.2.0 F10197062.pdf")
 
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["promoted"] == 0
     assert (sup / "1.1.2.0 F10197062.pdf").exists()
 
@@ -429,12 +429,12 @@ def test_repair_converges_a_damaged_tree_on_the_full_run_plan(tmp_path, make_pdf
     parent_folder.rename(out / "F10126999 STALE NAME")
     assert _live_paths(out) != _live_paths(reference)
 
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["review"] == []
     assert _live_paths(out) == _live_paths(reference)
 
     # Nothing left to reconcile, and the report agrees with a full run.
-    again = run_repair(out, False, lambda m: None, jobs=1)
+    again = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert again["repair"]["moved"] == 0
     assert again["repair"]["removed"] == 0
     assert again["repair"]["renamed"] == 0
@@ -447,7 +447,7 @@ def test_repair_reports_a_rename(tmp_path, make_pdf):
     child = next(out.rglob("F10197062.pdf"))
     child.parent.rename(child.parent.parent / "F10197062")
     lines = []
-    ctx = run_repair(out, False, lines.append, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lines.append, jobs=1)
     assert ctx["repair"]["renamed"] == 1
     assert any("--- Repair (tree reconciliation) ---" in line for line in lines)
     assert any("Folders renamed:        1" in line for line in lines)
@@ -457,7 +457,7 @@ def test_repair_needs_an_organized_tree(tmp_path, make_pdf):
     empty = tmp_path / "empty"
     empty.mkdir()
     with pytest.raises(Exception) as exc:
-        run_repair(empty, False, lambda m: None, jobs=1)
+        run_repair(empty, dry_run=False, log=lambda m: None, jobs=1)
     assert "No organized PDFs" in str(exc.value)
 
 
@@ -472,6 +472,33 @@ def test_repair_is_available_from_incremental_trees(tmp_path, make_pdf):
     make_pdf(src / "F10197062.pdf", ["NAME", "Child part"])
     run_incremental(src, out, False, lambda m: None, jobs=1)
 
-    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    ctx = run_repair(out, dry_run=False, log=lambda m: None, jobs=1)
     assert ctx["repair"]["review"] == []
     assert ctx["repair"]["moved"] == 0
+
+
+def test_sweep_stale_repair_staging_only_removes_old_prefixed_dirs(tmp_path, monkeypatch):
+    # A repair killed by SIGKILL leaves its staged drawing copies in %TEMP%:
+    # _REPAIR_STAGING is in memory, so the in-process sweep cannot see them.
+    # The stateless pass removes our prefix, but only when the directory is
+    # older than the age gate, so a live concurrent repair keeps its own.
+    import os
+    import time
+
+    from fermi_organizer import runmodes as rm
+
+    monkeypatch.setattr(rm.tempfile, "gettempdir", lambda: str(tmp_path))
+    stale = tmp_path / "fermi_repair_stale"
+    fresh = tmp_path / "fermi_repair_fresh"
+    other = tmp_path / "not_ours"
+    for path in (stale, fresh, other):
+        path.mkdir()
+    old = time.time() - 48 * 3600
+    os.utime(stale, (old, old))
+
+    logged = []
+    rm.sweep_stale_repair_staging(logged.append)
+
+    assert not stale.exists()
+    assert fresh.exists() and other.exists()
+    assert any("abandoned repair staging" in line for line in logged)

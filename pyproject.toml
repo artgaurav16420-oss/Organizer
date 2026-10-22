@@ -13,6 +13,9 @@ description = "Organize Fermilab PDF drawings into a BOM-derived folder tree"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-only"
+# The wheel is the shipped artifact: PyMuPDF is dual AGPL/commercial, so the
+# third-party notice has to travel with the AGPL code it explains.
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
     "pymupdf==1.28.2",
 ]
