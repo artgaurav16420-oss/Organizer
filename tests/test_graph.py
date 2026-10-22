@@ -5,7 +5,7 @@ from pathlib import Path
 from fermi_organizer.config import MAX_PATH
 from fermi_organizer.graph import (_edit1, is_chk_stem, revision_letter_rank,
                                    revision_rank, split_superseded,
-                                   match_pdfs, used_on_bases,
+                                   match_pdfs, StemIndex, used_on_bases,
                                    find_used_on_mismatches, find_used_on_bugs,
                                    collect_reachable, break_cycles,
                                    snap_ref, planned_paths)
@@ -384,16 +384,64 @@ def test_find_used_on_bugs_ignores_consistent_used_on():
     assert find_used_on_bugs(bom_edges, used_on_of, stems) == []
 
 
-def test_collect_reachable_bfs_cycles_and_self():
-    # Traversal semantics live here, on the helper the organizer calls.
-    children = {"A": {"B"}, "B": {"C"}, "C": set(), "X": {"Y"}, "Y": {"X"}}
-    assert collect_reachable(children, ["A"]) == {"A", "B", "C"}
-    assert collect_reachable(children, ["A"]) >= {"A"}      # root included
-    assert "A" not in collect_reachable(children, ["C"])    # edges are directed
-    assert collect_reachable(children, ["Y"]) == {"X", "Y"}  # cycle terminates
-    assert collect_reachable(children, ["A", "X"]) == {"A", "B", "C", "X", "Y"}
-    assert collect_reachable(children, []) == set()
-    assert collect_reachable(children, ["MISSING"]) == {"MISSING"}
+def test_match_pdfs_golden_results_are_unchanged_by_the_index():
+    # Expectations pinned from the pre-change scan-based implementation, so a
+    # future "optimisation" of the index has an oracle: the exact branch, the
+    # revision-prefix branch, the loose boundary, the sheet-set exception, CHK,
+    # FC component stems and plain misses.
+    stems = {
+        "F10126106", "F10126107_A", "F10126107_B", "F10126107_B___DWG1",
+        "F10126107_B___DWG2", "F10126107_B_XML2347", "F10126108", "FC10012345",
+        "F10126108_CHK", "F10126999_A",
+    }
+    expected = [
+        ("F10126107", ["F10126107_B", "F10126107_B___DWG1",
+                       "F10126107_B___DWG2"]),
+        ("F10126107_B", ["F10126107_B", "F10126107_B___DWG1",
+                         "F10126107_B___DWG2"]),
+        ("F10126108", ["F10126108"]),
+        ("F10126106", ["F10126106"]),
+        ("FC10012345", ["FC10012345"]),
+        ("F1012610", []),
+        ("F1012610X", []),
+        ("F10126999", ["F10126999_A"]),
+        ("F1012699", []),
+        ("ZZZ", []),
+        ("F10126107_B___DWG1", ["F10126107_B", "F10126107_B___DWG1",
+                               "F10126107_B___DWG2"]),
+        ("F10126108_CHK", ["F10126108_CHK"]),
+        ("", []),
+    ]
+    index = StemIndex(stems)
+
+    for value, want in expected:
+        assert match_pdfs(value, index) == want, value
+        assert match_pdfs(value, stems) == want, value
+
+
+def test_match_pdfs_stays_fast_with_an_index():
+    # Guard against the quadratic matcher coming back: with an index, 2,000
+    # references against 8,000 drawings (16,000 stems) take tens of
+    # milliseconds; the old rescan-per-reference was Θ(refs x stems). The bound
+    # is deliberately generous - a slow runner taking 40x longer still passes.
+    # (That the hot loops actually pass an index is pinned separately, in
+    # test_runmodes.py.)
+    import time
+
+    stems = set()
+    for i in range(8000):
+        stems.add(f"F{10000000 + i:08d}")
+        stems.add(f"F{10000000 + i:08d}_A")
+    refs = [f"F{10000000 + i:08d}" if i % 2 else f"F{20000000 + i:08d}"
+            for i in range(2000)]
+
+    index = StemIndex(stems)
+    start = time.perf_counter()
+    for ref in refs:
+        match_pdfs(ref, index)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"match_pdfs took {elapsed:.2f}s for 2,000 refs x 16,000 stems"
 
 
 def test_break_cycles_breaks_a_bom_cycle():
@@ -475,3 +523,15 @@ def test_planned_paths_lists_every_claimant():
     # it under each claimant, so repair must not collapse the pair.
     planned = planned_paths({"F1": {"F3"}, "F2": {"F3"}}, ["F1", "F2"], {})
     assert planned["F3"] == [("F1", "F3"), ("F2", "F3")]
+
+
+def test_collect_reachable_bfs_cycles_and_self():
+    # Traversal semantics live here, on the helper the organizer calls.
+    children = {"A": {"B"}, "B": {"C"}, "C": set(), "X": {"Y"}, "Y": {"X"}}
+    assert collect_reachable(children, ["A"]) == {"A", "B", "C"}
+    assert collect_reachable(children, ["A"]) >= {"A"}
+    assert "A" not in collect_reachable(children, ["C"])
+    assert collect_reachable(children, ["Y"]) == {"X", "Y"}
+    assert collect_reachable(children, ["A", "X"]) == {"A", "B", "C", "X", "Y"}
+    assert collect_reachable(children, []) == set()
+    assert collect_reachable(children, ["MISSING"]) == {"MISSING"}

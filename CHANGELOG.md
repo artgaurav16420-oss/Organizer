@@ -4,6 +4,35 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Performance: reference matching is indexed, and the name plan is bounded
+- `graph.match_pdfs` rescanned the whole stem set on every reference, so a
+  run's matching was Θ(refs × stems) — measured at 42% of a 1,000-drawing
+  incremental run, growing 4× per doubling. A `StemIndex` (built once per stem
+  set, reused by the loops over BOM, USED ON and title-block references) makes
+  each match a base lookup or a bisect prefix range. 2,000 references against
+  16,000 stems now take milliseconds; the equivalence with the plain-set path is
+  pinned by a test, and a linearity test guards the quadratic coming back.
+- `naming.build_folder_names` walks every root-to-leaf path to shorten names.
+  A diamond DAG in an existing tree made that exponential (measured 3.1M
+  placements / 805 MB on a 20-level ladder), and incremental/repair planned the
+  *merged* tree while the copy cap only charged the delta. The walk now stops at
+  `PLAN_PLACEMENT_FACTOR` (8) × the copy cap, on a pre-supersede check as well as
+  at plan time: incremental refuses before any swap or move, repair skips
+  reconcile and reports it for manual review (exit 2). A partial plan would have
+  named folders off a truncated walk.
+- Tests: `words_cached`'s acquisition half — ISO-scale normalisation, the OCR
+  timeout path and the engine-error mapping. Every OCR test stubbed the method
+  itself, so an inverted scale (`w[0] * scale`) stayed green. The no-new-PDF
+  early-exit context now pins its key set against `RunContext`, closing the
+  third hand-built builder. `match_pdfs` has a golden oracle pinned from the
+  pre-change implementation, and the `_graph_edges` loop is pinned to build one
+  `StemIndex` per reference set.
+
+### Added: ADR 0003 records the PyMuPDF CVE decision
+- `docs/adr/0003-pymupdf-cve-pin.md`: the standing choice between pymupdf 2.0
+  (fix shipped 2026-10-19) and the declared Python 3.10 floor, with the
+  compensating control that makes staying on 1.28.2 defensible.
+
 ### Fix: codebase-review Phase 1 (correctness, data safety, operator contract)
 - **A short text layer no longer loses its parts list when OCR reads nothing.**
   `extract_bom_from_text` skipped the native parser whenever the page was in the

@@ -2550,3 +2550,138 @@ def test_sweep_repair_staging_only_touches_its_own_tree(tmp_path):
     runmodes.sweep_repair_staging(tree_b, logged.append)
     assert not staged_b.exists()
     assert runmodes._REPAIR_STAGING == {}
+
+
+def test_no_new_ctx_carries_every_run_context_key(tmp_path):
+    # The run context is hand-built in three places; only the full and
+    # incremental-final builders were pinned. A key added to RunContext and
+    # those two left the no-new-PDF early exit short, and cli._refresh_workbook
+    # subscripts ctx[...] directly - a blank workbook sheet, exit 0.
+    from fermi_organizer.runmodes import RunContext, _incremental_no_new_ctx
+
+    ctx = _incremental_no_new_ctx({}, [], tmp_path, 0, 0, lambda m: None)
+
+    assert set(ctx) == set(RunContext.__annotations__)
+
+
+def test_graph_edges_builds_one_stem_index(monkeypatch):
+    # The quadratic matcher comes back the moment a loop builds its index inside
+    # the loop, so pin the count: one index per reference set, not per value.
+    from fermi_organizer import runmodes
+
+    built = []
+    real = runmodes.StemIndex
+
+    def counting(stems):
+        built.append(len(stems))
+        return real(stems)
+
+    monkeypatch.setattr(runmodes, "StemIndex", counting)
+    boms = {f"F{10126000 + i:08d}": [f"F{10126002 + i:08d}"] for i in range(50)}
+    stems = set(boms) | {f"F{10126002 + i:08d}" for i in range(50)}
+
+    runmodes._graph_edges(boms, stems)
+
+    assert built == [len(stems)]
+
+
+def test_incremental_refuses_before_mutating_when_the_plan_would_explode(
+        tmp_path, make_pdf, monkeypatch):
+    # The planning bound is checked before supersede swaps and before any move:
+    # a refused run must not mutate the tree (the invariant the copy cap already
+    # honours). Shrink both knobs so a small tree trips it, and put a pending
+    # supersede in the batch - without the pre-supersede check the old revision
+    # would be archived and the new one placed.
+    from fermi_organizer import runmodes
+
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126999.pdf",
+             ["FERMI PART LIST", "F10197062 CHILD PART", "NAME", "Parent part"])
+    # A placed root with its own child, so the pending revision swap below is a
+    # swap of a LIVE organized drawing (a BOM-less drawing would be parked in
+    # _orphans instead and prove nothing about supersede order).
+    make_pdf(src / "F10126106.pdf",
+             ["FERMI PART LIST", "F10126107 LEAF PART", "NAME", "PART ONE"])
+    make_pdf(src / "F10126107.pdf", ["NAME", "LEAF PART"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+
+    folder = next(p for p in out.iterdir()
+                  if p.is_dir() and p.name.startswith("F10126106"))
+    hand = folder.with_name(folder.name + " HAND")
+    folder.rename(hand)
+
+    # A newer revision of a placed drawing plus a claimed child: both would
+    # mutate the tree if the refusal came after the supersede block.
+    make_pdf(src / "F10126106_A.pdf", ["NAME", "PART ONE"])
+    make_pdf(src / "F10197062.pdf", ["NAME", "Child part"])
+    monkeypatch.setattr(runmodes, "MAX_PLANNED_COPIES", 1)
+    monkeypatch.setattr(runmodes, "PLAN_PLACEMENT_FACTOR", 1)
+    lines = []
+
+    ctx = run_incremental(src, out, False, lines.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["counters"]["copies"] == 0
+    assert hand.is_dir()                       # nothing renamed
+    assert not list(out.rglob("F10197062.pdf"))  # nothing placed
+    assert not (out / "_superseded").exists()  # nothing archived
+    assert any(p.name == "F10126106.pdf" for p in out.rglob("*.pdf"))
+    assert any("planning bound" in line for line in lines)
+
+
+def test_repair_reports_manual_review_when_the_plan_would_explode(
+        tmp_path, make_pdf, monkeypatch):
+    # Repair has no supersede pair to prove, but its over-bound branch must
+    # report for manual review (exit 2) and leave the tree alone.
+    from fermi_organizer import runmodes
+    from fermi_organizer.runmodes import run_repair
+
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126999.pdf",
+             ["FERMI PART LIST", "F10197062 CHILD PART", "NAME", "Parent part"])
+    make_pdf(src / "F10197062.pdf", ["NAME", "Child part"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+    before = sorted(p.relative_to(out).as_posix() for p in out.rglob("*.pdf"))
+
+    monkeypatch.setattr(runmodes, "MAX_PLANNED_COPIES", 1)
+    monkeypatch.setattr(runmodes, "PLAN_PLACEMENT_FACTOR", 1)
+    lines = []
+
+    ctx = run_repair(out, dry_run=False, log=lines.append, jobs=1)
+
+    assert ctx["repair_required"] is True
+    assert ctx["repair"]["moved"] == 0 and ctx["repair"]["removed"] == 0
+    assert any("planning bound" in entry for entry in ctx["repair"]["review"])
+    assert sorted(p.relative_to(out).as_posix()
+                  for p in out.rglob("*.pdf")) == before
+
+
+def test_incremental_places_a_branchy_bom_cycle_instead_of_refusing(
+        tmp_path, make_pdf):
+    # The planning bound counts the cycle-broken graph, like the plan does. An
+    # unbroken branchy cycle is counted to TREE_MAX_DEPTH with every step
+    # multiplied, which refused batches full mode places (76-digit count).
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126100.pdf",
+             ["NAME", "ROOT", "FERMI PART LIST", "F10126101 A PART"])
+    make_pdf(src / "F10126101.pdf",
+             ["NAME", "A PART", "FERMI PART LIST", "F10126102 B PART",
+              "F10126103 C PART"])
+    make_pdf(src / "F10126102.pdf",
+             ["NAME", "B PART", "FERMI PART LIST", "F10126101 A PART"])
+    make_pdf(src / "F10126103.pdf",
+             ["NAME", "C PART", "FERMI PART LIST", "F10126101 A PART"])
+
+    out = tmp_path / "out"
+    lines = []
+    ctx = run_incremental(src, out, False, lines.append, jobs=1)
+
+    assert ctx["placement_refused"] is False
+    assert ctx["counters"]["cycles"] >= 1
+    assert ctx["counters"]["copies"] >= 4
+    assert not any("planning bound" in line for line in lines)

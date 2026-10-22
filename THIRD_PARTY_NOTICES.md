@@ -34,7 +34,10 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
   - **Why the pin has not moved:** pymupdf 2.0 declares `requires-python >=3.11`,
     while this project declares `>=3.10` (`pyproject.toml`). Adopting 2.0 is
     therefore a floor decision (pyproject, CI matrix, dev re-lock, full retest),
-    not a version bump — recorded as an open decision rather than re-derived.
+    not a version bump - recorded as `docs/adr/0003-pymupdf-cve-pin.md` rather
+    than re-derived each time. The ADR is Proposed: the recommended decision is
+    to stay on 1.28.2 until a 1.28.x backport ships or the 3.10 floor is dropped
+    for another reason.
   - **Standing action:** when the floor decision is taken, bump `pyproject.toml`,
     `requirements.txt`, and `requirements.lock` (re-lock) together. Until then the
     compensating control is the enforcement below: the vulnerable module is never
