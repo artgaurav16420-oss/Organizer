@@ -27,5 +27,6 @@ Thumbs.db
 .code-review-cache/
 graphify-out/
 .hermes/
+uv.lock
 *.corrupt
 *.history.json.tmp

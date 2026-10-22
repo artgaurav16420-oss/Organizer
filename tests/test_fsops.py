@@ -95,7 +95,9 @@ def test_run_lock_missing_output_dir_skips_silently(tmp_path):
 
 def test_run_lock_heartbeat_refreshes_while_held(tmp_path, monkeypatch):
     # A live holder re-touches its lock so a long run never looks stealable;
-    # release stops the heartbeat.
+    # release stops the heartbeat. Wait for the beat instead of sleeping a
+    # fixed interval: a loaded runner can stall the daemon thread past 0.25 s,
+    # which made this the one test that could fail without a code defect.
     import time
 
     monkeypatch.setattr(fsops, "RUN_LOCK_HEARTBEAT_SECS", 0.05)
@@ -104,12 +106,63 @@ def test_run_lock_heartbeat_refreshes_while_held(tmp_path, monkeypatch):
 
     lock = acquire_run_lock(out, False, lambda m: None)
     first = os.path.getmtime(lock)
-    time.sleep(0.25)
+    deadline = time.time() + 5.0
+    while time.time() < deadline and os.path.getmtime(lock) <= first:
+        time.sleep(0.01)
     assert os.path.getmtime(lock) > first
     assert str(lock) in fsops._heartbeats
     release_run_lock(lock)
     assert str(lock) not in fsops._heartbeats
     assert not lock.exists()
+
+
+def test_release_run_lock_leaves_a_stolen_lock_alone(tmp_path):
+    # Review finding: release unlinked the path without comparing our token, so
+    # a run that resumed after its lock was stolen (paused past the stale
+    # window) deleted the new holder's lock on the way out - handing the tree
+    # to a third run. The token is already in _heartbeats; compare it.
+    import json
+
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = acquire_run_lock(out, False, lambda m: None)
+    stolen = json.dumps({"pid": 424242, "host": "other",
+                         "created": 0.0}).encode("utf-8")
+    lock.write_bytes(stolen)
+    assert run_lock_lost(lock) is True
+
+    release_run_lock(lock)
+
+    assert lock.exists()               # the stealer's lock survives
+    assert lock.read_bytes() == stolen
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
+    # Review finding: rglob descends through junctions, so PDFs from outside
+    # the input folder were indexed as drawings of it and republished while the
+    # log said "Skipped 0 PDF(s) that are symlinks".
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    make_pdf(outside / "F10126106.pdf", ["NAME", "OUTSIDE PART"])
+    inp = tmp_path / "in"
+    inp.mkdir()
+    make_pdf(inp / "F10126999.pdf", ["NAME", "INSIDE PART"])
+
+    link = inp / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        logged = []
+        index, _dupes = build_pdf_index(inp, logged.append)
+        assert set(index) == {"F10126999"}
+        assert "Skipped 1 linked folder(s)" in "\n".join(logged)
+    finally:
+        os.rmdir(link)
 
 
 def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
@@ -1695,3 +1748,20 @@ def test_symlink_guard_checks_through_native_prefix(tmp_path, monkeypatch):
         fsops._native(src),
         fsops._native(tmp_path / "_superseded" / "F10126106.pdf"),
     ]
+
+
+def test_strip_ext_prefix_round_trips_both_forms():
+    # _native prefixes only the side of a comparison that crosses 260 chars, so
+    # the link check strips it from both: an unprefixed pair reported the first
+    # long directory in a tree as a link and pruned its PDFs.
+    assert fsops._strip_ext_prefix(r"\\?\C:\tree\a") == r"C:\tree\a"
+    assert fsops._strip_ext_prefix(r"\\?\UNC\srv\share\a") == r"\\srv\share\a"
+    assert fsops._strip_ext_prefix(r"C:\tree\a") == r"C:\tree\a"
+    assert fsops._strip_ext_prefix(r"\\srv\share\a") == r"\\srv\share\a"
+
+
+def test_is_dir_link_is_false_for_a_plain_directory(tmp_path):
+    plain = tmp_path / "plain"
+    (plain / "nested").mkdir(parents=True)
+    assert fsops._is_dir_link(plain) is False
+    assert fsops._is_dir_link(plain / "nested") is False

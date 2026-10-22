@@ -1005,6 +1005,54 @@ def test_extract_title_block_ocr_failure_recorded_not_silent(monkeypatch, tmp_pa
     doc.close()
 
 
+def test_short_text_parts_list_survives_ocr_reading_nothing(monkeypatch, tmp_path,
+                                                            make_pdf):
+    # Review finding (DA escalation): analyze_page memoizes every page it sees,
+    # including one where OCR read no words, and extract_bom_from_text skipped
+    # the native parser on the memo key alone - so a page under OCR_MIN_CHARS
+    # lost its text-layer parts-list row whenever Tesseract was configured but
+    # returned nothing. The child edge vanished and the drawing was parked in
+    # _orphans/ with exit 0. The autouse OCR-off fixture hid it from the suite.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "F10126107 CHILD PART"])
+    doc = fitz.open(pdf)
+    # Force the image-only branch on a page that does carry a text-layer list.
+    monkeypatch.setattr(extraction, "OCR_MIN_CHARS", 10_000)
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+    # The OCR engine finds no words: words_cached memoizes an empty word list.
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr",
+                        lambda self, **kw: None)
+
+    entries = extraction.extract_bom_from_text(doc, [])
+
+    assert [e[0] for e in entries] == ["F10126107"]
+    doc.close()
+
+
+def test_short_text_parts_list_survives_ocr_used_on_only(monkeypatch, tmp_path,
+                                                         make_pdf):
+    # Same branch, the other half: OCR read a USED ON value but no rows. That
+    # is not a reason to skip the native parser either - and the value OCR
+    # called USED ON stays excluded, because it is a title-block parent.
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "F10126107 CHILD PART"])
+    doc = fitz.open(pdf)
+    monkeypatch.setattr(extraction, "OCR_MIN_CHARS", 10_000)
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+
+    monkeypatch.setattr(extraction.OCR, "analyze_page",
+                        lambda *a, **k: (["F10150000"], None, []))
+    assert [e[0] for e in extraction.extract_bom_from_text(doc, [])] == ["F10126107"]
+
+    # A value OCR identified as USED ON is never re-added as a row.
+    monkeypatch.setattr(extraction.OCR, "analyze_page",
+                        lambda *a, **k: (["F10126107"], None, []))
+    assert extraction.extract_bom_from_text(doc, []) == []
+    doc.close()
+
+
 def test_subprocess_env_scoped_not_global(monkeypatch, tmp_path):
     # Our CLI children get an explicit env; the process-global export exists
     # only for PyMuPDF's in-process OCR (which offers no env parameter).

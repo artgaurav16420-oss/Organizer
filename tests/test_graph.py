@@ -7,7 +7,7 @@ from fermi_organizer.graph import (_edit1, is_chk_stem, revision_letter_rank,
                                    revision_rank, split_superseded,
                                    match_pdfs, used_on_bases,
                                    find_used_on_mismatches, find_used_on_bugs,
-                                   can_reach, collect_reachable, break_cycles,
+                                   collect_reachable, break_cycles,
                                    snap_ref, planned_paths)
 from fermi_organizer.naming import (sanitize_folder_name,
                                     folder_name_for, build_folder_names)
@@ -384,15 +384,16 @@ def test_find_used_on_bugs_ignores_consistent_used_on():
     assert find_used_on_bugs(bom_edges, used_on_of, stems) == []
 
 
-def test_can_reach_bfs_and_cycles():
+def test_collect_reachable_bfs_cycles_and_self():
+    # Traversal semantics live here, on the helper the organizer calls.
     children = {"A": {"B"}, "B": {"C"}, "C": set(), "X": {"Y"}, "Y": {"X"}}
-    assert can_reach(children, "A", "B")
-    assert can_reach(children, "A", "C")
-    assert not can_reach(children, "C", "A")
-    assert can_reach(children, "A", "A")          # start == target
-    assert not can_reach(children, "X", "C")
-    assert can_reach(children, "Y", "X")          # cycle terminates
-    assert not can_reach(children, "A", "MISSING")
+    assert collect_reachable(children, ["A"]) == {"A", "B", "C"}
+    assert collect_reachable(children, ["A"]) >= {"A"}      # root included
+    assert "A" not in collect_reachable(children, ["C"])    # edges are directed
+    assert collect_reachable(children, ["Y"]) == {"X", "Y"}  # cycle terminates
+    assert collect_reachable(children, ["A", "X"]) == {"A", "B", "C", "X", "Y"}
+    assert collect_reachable(children, []) == set()
+    assert collect_reachable(children, ["MISSING"]) == {"MISSING"}
 
 
 def test_break_cycles_breaks_a_bom_cycle():

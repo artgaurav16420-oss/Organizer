@@ -36,9 +36,8 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>/Output" --dry-run
    ```
-3. Report the dry-run plan to the user. If the dry run succeeds and reports no warnings, proceeds automatically to the real run; only ask for go-ahead if it failed or warned.
-   Trigger phrase for the agent: say "Run" to execute immediately after a successful dry run.
-4. Real run after the successful dry run:
+3. Report the dry-run plan to the user, then **wait for their go-ahead**. Never start the real run on your own judgement, however clean the dry run looked: it creates folders and copies PDFs. Ask, and use the words "Run" as the trigger only when the user has said it.
+4. Real run, only after the user approves the dry run:
    ```
    python -m fermi_organizer.cli "<input>" --output "<input>/Output"
    ```
@@ -75,7 +74,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 |---|---|
 | `--output <dir>` | Target folder for the organized tree. Default: the input folder (in-place). |
 | `--dry-run` | Print the plan, copy nothing. Rebuilds the Excel workbook, and writes the text report only if the output folder exists. |
-| `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. Existing folders stay, except supersede swaps and parent-adoption moves. |
+| `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. With nothing new it stops after a zero-count summary and touches nothing. When the batch has new PDFs, existing folders stay but their names are re-applied to this run's plan (a hand-titled folder is renamed back; a folder whose planned parent changed is moved), plus supersede swaps. |
 | `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
 | `--jobs N` | Extraction workers. `0` = auto (CPU count, default), `1` = serial. |
@@ -108,7 +107,7 @@ Skipped roots are usually "bag" drawings such as procurement-kit lists, not real
 | Symptom | Action |
 |---|---|
 | `No module named fermi_organizer` | Use the venv interpreter, or reinstall editable: `uv pip install -e .` |
-| `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install -r requirements.txt pytest -e .` |
+| `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install -r requirements.txt -r requirements-dev.txt -e .` (the dev lock provides ruff, pytest-cov and coverage) |
 | `OCR: unavailable` | Tesseract is not installed. A scanned PDF has no readable BOM of its own. It is placed only if a readable parent BOM references it by filename; otherwise it lands in `_orphans/`. Offer installing Tesseract. |
 | Exit 2 with a placement-refused log line | Fan-out cap hit, not a crash. See Placement refusal above. |
 | `Report NOT saved (output folder missing)` on a dry run | The text report is skipped because the folder does not exist yet. The workbook step runs next and creates the folder, so it exists afterward. |

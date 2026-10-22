@@ -1331,15 +1331,23 @@ def extract_bom_from_text(doc, issues=None):
     header = _doc_has_parts_header(doc)
     for page_num, page in enumerate(doc, 1):
         text = page.get_text()
+        blocked = ()
         if len(text.strip()) < OCR_MIN_CHARS:
-            # Scanned (image-only) page: OCR decides its content.  If strip
-            # re-OCR found parts-list values they are added directly; the
-            # native line parser never sees the unstructured OCR text.
+            # Scanned (image-only) page: OCR decides its content. If the
+            # strip/zoom passes found parts-list rows they are added directly
+            # and the native parser never sees the unstructured OCR text.
             used_vals, _ocr_name, ocr_bom = OCR.analyze_page(page, issues, f"page {page_num}")
             if ocr_bom:
                 entries.extend((v, page_num, "ocr") for v in ocr_bom)
-            if used_vals or ocr_bom or OCR.doc_key(page) in OCR.words_memo:
                 continue
+            # OCR produced no rows, so the short text layer may still carry the
+            # parts list: a memo entry is not content (analyze_page memoizes
+            # every page it sees, including one where OCR read no words at
+            # all), and one USED ON value is not content either. Values OCR
+            # identified as USED ON are title-block parents, not rows, so the
+            # native result excludes them (same guard _partslist_from_words
+            # applies to the OCR rows).
+            blocked = tuple(used_vals or ())
         if "FERMI" not in text.upper():
             continue
         lines = [l.strip() for l in text.splitlines()]
@@ -1349,14 +1357,16 @@ def extract_bom_from_text(doc, issues=None):
         # balloon's part number is read as a child (F10202541).
         words = _page_words(page)
         band = _partslist_band(words)
+        page_entries = []
         if header:
             line_entries = _line_bom_entries(lines, page_num)
             if band is not None:
                 in_band = _fermi_values_in_band(words, band)
                 line_entries = [e for e in line_entries if e[0] in in_band]
-            entries.extend(line_entries)
-        _positional_row_entries(page, page_num, entries, issues, band)
-        entries.extend(_extract_bom_positional(page, page_num, issues, band, words))
+            page_entries.extend(line_entries)
+        _positional_row_entries(page, page_num, page_entries, issues, band)
+        page_entries.extend(_extract_bom_positional(page, page_num, issues, band, words))
+        entries.extend(e for e in page_entries if e[0] not in blocked)
     return entries
 
 

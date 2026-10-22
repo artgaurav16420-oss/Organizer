@@ -4,6 +4,57 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: codebase-review Phase 1 (correctness, data safety, operator contract)
+- **A short text layer no longer loses its parts list when OCR reads nothing.**
+  `extract_bom_from_text` skipped the native parser whenever the page was in the
+  OCR word memo, and `analyze_page` memoizes every page it sees - including one
+  where OCR returned no words at all. A page under `OCR_MIN_CHARS` that did carry
+  a text-layer `FERMI #` list therefore dropped its rows the moment Tesseract was
+  installed, losing the child edge and parking the child in `_orphans/` with exit
+  0. The skip now keys on actual OCR content. The suite's autouse OCR-off fixture
+  had hidden this; the new test runs with OCR enabled.
+- **Lock release is ownership-checked.** `release_run_lock` deleted the lock path
+  without comparing the token it wrote, so a run that resumed after its lock was
+  stolen (paused past the stale window) removed the *new* holder's lock on the way
+  out and let a third run mutate the same tree. It now compares the bytes held in
+  `_heartbeats` and leaves a stolen file alone.
+- **Directory junctions in the input and output trees are not followed.** The
+  input scan used `rglob`, which follows NTFS junctions (pathlib already refuses
+  directory symlinks), so PDFs from outside the input folder were indexed as its
+  drawings and republished (the log said "Skipped 0 PDF(s) that are symlinks").
+  The scan now prunes them and reports `Skipped N linked folder(s)`; the output
+  tree scans and the staging sweep prune them too, so repair never lists or
+  deletes through a link. File-level symlink refusal is unchanged.
+- **Supersede archives atomically.** The archive leg used raw `shutil.copy2`;
+  a failed write left a truncated PDF under a real `_superseded/` name that the
+  next workbook listed as a valid archived revision. It now goes through
+  `_copy_atomic` (stage + replace).
+- **A killed repair no longer strands drawing copies in `%TEMP%`.** The
+  in-process sweep only knows the directories its own process created. Every
+  real (non-dry-run) repair now starts with a stateless pass that removes
+  `fermi_repair_*` dirs older than 24 h.
+- **`run_repair` is keyword-only after `folder`.** `run_repair(tree, output, log)`
+  bound a truthy `Path` to `dry_run` and returned a clean exit 0 having changed
+  nothing; it now raises `TypeError`.
+- **Packaging:** the wheel ships `THIRD_PARTY_NOTICES.md`
+  (`license-files`), and the packaging CI job installs it into a clean venv so
+  its `Requires-Dist` is actually resolved instead of riding on the hashed lock.
+- **Docs:** corrected the operator contract - `--incremental` re-applies folder
+  names to the current plan once its batch has new PDFs (with nothing new it
+  stops after a zero-count summary and touches nothing); `--no-ocr` does not
+  orphan a drawing a readable parent names;
+  exit 1 can follow writes (a crash is not "nothing ran"); the fourth exit-2 case
+  (argparse usage error, no artifacts); `MAX_PATH` placement skips exit 0; the
+  licence is AGPL-3.0-only; the runbook no longer tells an agent to start the real
+  run without the operator's go-ahead; the venv-recreate recipe uses the dev
+  lock; the package build clears `build dist` first. CVE-2026-82035's fix status
+  is corrected in README, SECURITY.md and THIRD_PARTY_NOTICES.md (pymupdf 2.0
+  shipped it on 2026-10-19; adopting it means dropping the 3.10 floor).
+- **Removed:** the tracked `uv.lock` nothing consumes (one `uv sync` in this repo
+  uninstalled pytest, ruff, pytest-cov, openpyxl and setuptools); the dead
+  `graph.can_reach` helper (its BFS semantics are now pinned on
+  `collect_reachable`, the helper the organizer actually calls).
+
 ### Added: `--repair` re-applies the current decisions to an existing tree
 - New mode: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` takes an
   existing output folder as its **only** input (no source scan, no `--output`)

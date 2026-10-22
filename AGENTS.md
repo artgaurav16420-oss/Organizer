@@ -9,14 +9,14 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 - Use the repo venv: `.venv\Scripts\python.exe` (Windows) / `.venv/bin/python` (Linux/macOS). Python >=3.10. No pip; install with `uv pip install --python .venv\Scripts\python.exe ...`.
 - Run: `python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental] [--repair] [--no-ocr] [--jobs N] [--rekey-titleblock]` (also `python -m fermi_organizer.cli ...`, or `fermi-organize` after install). Never run `fermi_organizer\cli.py` directly (relative imports fail).
 - Repair: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` re-applies the current decisions to an existing output tree (no source scan; `--output`/`--incremental`/`--rekey-titleblock` are rejected with it).
-- Tests: `.venv\Scripts\python.exe -m pytest -q` (~15s; 457 passed + 8 skipped symlink tests without dev-mode privilege). Single file/case: `... -m pytest tests/test_graph.py -q` / `... "tests/test_graph.py::test_name" -q`. No Tesseract needed (autouse OCR fixture).
+- Tests: `.venv\Scripts\python.exe -m pytest -q` (~15s; 464 passed + 8 skipped symlink tests without dev-mode privilege). Single file/case: `... -m pytest tests/test_graph.py -q` / `... "tests/test_graph.py::test_name" -q`. No Tesseract needed (autouse OCR fixture).
 - Lint: `.venv\Scripts\ruff.exe check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py` (ruff 0.16.10, no config file; plain `ruff check` is not equivalent).
 - Pre-push order: lint -> pytest.
-- Package build: `python -m build --wheel --no-isolation` (setuptools floor >=80).
+- Package build: `rm -rf build dist && python -m build --wheel --no-isolation` (setuptools floor >=80). The clean-up is not optional: `--no-isolation` reuses the working-tree `build/lib`, so a stale or deleted module still ships in the wheel (verified: a ghost module copied into `build/lib` ended up in the wheel).
 
 ## Setup / env
 
-- Add deps: edit `requirements.txt`, then `uv pip compile requirements.txt --generate-hashes -o requirements.lock`; dev tools via `requirements-dev.in` -> `requirements-dev.txt` (`--universal --python-version 3.10`). The root `uv.lock` is consumed by nothing; do not regenerate or "fix" it.
+- Add deps: edit `requirements.txt`, then `uv pip compile requirements.txt --generate-hashes -o requirements.lock`; dev tools via `requirements-dev.in` -> `requirements-dev.txt` (`--universal --python-version 3.10`). There is no `uv.lock` in the repo (a tracked one nothing consumed was removed; `uv.lock` is gitignored, so a local `uv sync` recreates it as untracked noise - delete it, never commit it).
 - Always `import pymupdf`, never the `fitz` shim (deprecation notice leaks into captured stdout). Pinned `pymupdf==1.28.2`; `openpyxl==3.1.5` is optional (workbook skipped on ImportError).
 - Python >=3.10. CI runs Ubuntu 3.10 and 3.11, so do not use 3.11-only stdlib (`tomllib`, `datetime.UTC`, `except*` groups). Setuptools floor is >=80 because older releases reject the SPDX `license` string.
 - Tesseract only for scanned PDFs: resolution order `TESSERACT_EXE` -> PATH -> common Windows dirs.
@@ -51,11 +51,11 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 
 - Default output is the input folder (in-place). Prefer `--output <input>/Output` to keep the tree separate.
 - Dry-run copies nothing; skips the `.txt` when the output folder does not exist yet but still writes the workbook.
-- `--incremental`: only stems missing from the tree plus parked `_orphans/`; existing folders stay except supersede swaps / parent-adoption. A claimed child nested under a live parent is copied to every claimant; only a top-level organized root is re-homed (moved). Target an existing tree with `--output <input>/Output`.
+- `--incremental`: only stems missing from the tree plus parked `_orphans/`; existing folders stay except supersede swaps / parent-adoption, and (only when the batch has new PDFs) `normalize_folder_names` renames a folder that differs from this run's plan - with nothing new the run takes the zero-count early exit and touches nothing. A claimed child nested under a live parent is copied to every claimant; only a top-level organized root is re-homed (moved). Target an existing tree with `--output <input>/Output`.
 - `--jobs`: 0=auto, 1=serial, >1 uses a spawn ProcessPool (do not switch to fork). `--rekey-titleblock` re-keys text-layer PDFs only, only when that number is not already in the run.
 - `--repair`: the positional folder is the tree (no source). It reports a `--- Repair (tree reconciliation) ---` block (renamed/moved/copied/removed/emptied/adopted/promoted/review), after a `Candidates examined` summary (the tree's own `_orphans/`+`_superseded/` copies, not new arrivals). A hand-renamed or hand-moved folder counts as a difference from the plan and is reverted - read `--dry-run --repair` first.
 - Long runs: allow >=10 min on multi-thousand-file folders; a quiet `--- Scanning BOM tables ---` phase is normal, not a hang. `--jobs 4` (or CPU count) for thousands of text PDFs.
-- Exit: 0 normal (orphans/CHK/missing refs still 0); 1 fatal (bad path, no PDFs, uncreatable output, crash, lock held); 2 placement refusal OR a repair that needs manual review (report + workbook written) OR run-lock loss (no artifacts). Distinguish by whether the report exists.
+- Exit: 0 normal (orphans/CHK/missing refs still 0); 1 refused before writing (bad path, no PDFs, uncreatable output, lock held) **or an unexpected crash, which can happen after copies were written**; 2 placement refusal OR a repair that needs manual review (report + workbook written) OR run-lock loss (no artifacts) OR an argparse usage error (no artifacts either). Distinguish the run outcomes by whether the report exists.
 
 ## Testing
 
@@ -68,5 +68,5 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 ## Noise / local gotchas
 
 - Exclude `.opencode/node_modules/` from globs/greps. `graphify-out/`, `.code-review-cache/` are generated, not source.
-- `build/`, `dist/`, `fermi_pdf_organizer.egg-info/` are gitignored packaging leftovers; `build/lib/fermi_organizer/*.py` is a stale copy (older than `fermi_organizer/`); never read/edit it as source.
-- Recreate venv: `uv venv --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.txt pytest -e .`
+- `build/`, `dist/`, `fermi_pdf_organizer.egg-info/` are gitignored packaging leftovers. `build/lib/` holds a working-tree copy the `--no-isolation` build **reuses** (do not read or edit it as source, and never build without clearing it first — see the package-build command above).
+- Recreate venv: `uv venv --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.txt -r requirements-dev.txt -e .` (the dev lock is what provides ruff, pytest-cov and coverage, i.e. the lint -> pytest -> coverage order below).

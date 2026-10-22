@@ -248,21 +248,6 @@ def snap_ref(ref, stems, bases=None):
     return cands.pop()
 
 
-def can_reach(children, start, target):
-    """True if target is reachable from start following children edges (BFS)."""
-    visited = set()
-    todo = [start]
-    while todo:
-        cur = todo.pop()
-        if cur == target:
-            return True
-        if cur in visited:
-            continue
-        visited.add(cur)
-        todo.extend(children.get(cur, ()))
-    return False
-
-
 def collect_reachable(children, roots):
     """All nodes reachable from any of roots following children edges
     (the roots themselves included)."""

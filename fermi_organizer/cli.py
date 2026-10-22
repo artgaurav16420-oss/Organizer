@@ -159,8 +159,8 @@ def main():
 
     try:
         if args.repair:
-            ctx, held = run_repair(folder, args.dry_run, log, jobs,
-                                   hold_lock=True)
+            ctx, held = run_repair(folder, dry_run=args.dry_run, log=log,
+                                   jobs=jobs, hold_lock=True)
         elif args.incremental:
             ctx, held = run_incremental(folder, output, args.dry_run, log, jobs,
                                         rekey=args.rekey_titleblock,

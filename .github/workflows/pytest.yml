@@ -52,12 +52,19 @@ jobs:
       # no-isolation: the build backend (setuptools) comes from the hashed
       # dev lock instead of an unpinned PyPI fetch inside an ephemeral venv.
       - run: python -m build --wheel --no-isolation
-      - run: pip install --no-deps dist/*.whl
+      # Resolve the wheel's own Requires-Dist in a clean venv: installing with
+      # --no-deps on top of the hashed lock proves nothing, so deleting pymupdf
+      # from the metadata left this job green while a real `pip install` fails.
+      - name: Install the wheel in a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/wheelenv"
+          "$RUNNER_TEMP/wheelenv/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/wheelenv/bin/pip" install dist/*.whl
       - name: Smoke the installed wheel from a foreign cwd
         working-directory: ${{ runner.temp }}
         run: |
-          fermi-organize --help > /dev/null
-          python -c "import fermi_report_xlsx"
+          "$RUNNER_TEMP/wheelenv/bin/fermi-organize" --help > /dev/null
+          "$RUNNER_TEMP/wheelenv/bin/python" -c "import fermi_report_xlsx"
   ruff:
     runs-on: ubuntu-latest
     steps:
