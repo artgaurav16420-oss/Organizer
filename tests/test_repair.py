@@ -89,6 +89,27 @@ def test_folder_removable_does_not_vouch_for_its_own_copy(tmp_path):
     assert any("no identical copy" in line for line in review)
 
 
+def test_folder_removable_refuses_a_symlinked_planned_target(tmp_path):
+    # A planned target that is a symlink to an outside file is not an
+    # independent in-tree copy, so it cannot justify deleting the duplicate.
+    root = tmp_path / "out"
+    dup, good = root / "OLD", root / "A" / "NEW"
+    dup.mkdir(parents=True)
+    good.mkdir(parents=True)
+    (dup / "F10197062.pdf").write_bytes(b"%PDF-1.4\nsame")
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\nsame")
+    try:
+        (good / "F10197062.pdf").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+
+    ok, reason = _folder_removable(dup, {"F10197062": [("A", "NEW")]}, root)
+
+    assert not ok
+    assert "no identical copy" in reason
+
+
 def test_folder_removable_keeps_a_symlink_entry(tmp_path):
     # A symlink is a manual entry even when it is broken; is_file() alone
     # would skip it and the folder would be removed around it.
@@ -195,6 +216,26 @@ def test_reconcile_rehomes_a_root_and_refuses_a_long_path(tmp_path):
 
 
 # --- run_repair -----------------------------------------------------------
+
+def test_reconcile_refuses_a_move_when_the_source_cannot_be_listed(tmp_path,
+                                                                   monkeypatch):
+    # longest_dest_path returns None when the subtree cannot be listed; moving
+    # anyway would skip the MAX_PATH guard, so the move is refused and
+    # reported instead.
+    from fermi_organizer import fsops
+    root = tmp_path / "out"
+    (root / "WRONG" / "F2").mkdir(parents=True)
+    (root / "WRONG" / "F2" / "F2.pdf").write_bytes(b"%PDF-1.4\nchild")
+    organized = {"F2": [root / "WRONG" / "F2" / "F2.pdf"]}
+    monkeypatch.setattr(fsops, "longest_dest_path", lambda target, folder: None)
+
+    counts, review = reconcile_tree(organized, {"F2": [("A", "F2")]}, root,
+                                    False, lambda m: None, {})
+
+    assert counts["moved"] == 0
+    assert any("refused" in line for line in review)
+    assert (root / "WRONG" / "F2" / "F2.pdf").exists()
+
 
 def test_run_repair_is_a_no_op_on_a_clean_tree(tmp_path, make_pdf):
     _src, out = _clean_tree(tmp_path, make_pdf)
@@ -335,6 +376,30 @@ def test_repair_promotes_only_the_top_archived_revision(tmp_path, make_pdf):
     # promoted revision (that would be archive churn).
     assert sorted(p.name for p in sup.glob("*.pdf")) == [
         "1.1.2.0 F10197062-B.pdf", "F10197062.pdf"]
+
+
+def test_repair_promotes_every_sheet_at_the_top_archived_revision(tmp_path, make_pdf):
+    # Two DWG sheets archived at the same revision: promoting one alone would
+    # leave the other tied with the new live rank and never reconsidered.
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126999.pdf",
+             ["FERMI PART LIST", "F10197062 CHILD PART", "NAME", "Parent part"])
+    make_pdf(src / "F10197062.pdf", ["NAME", "Live revision"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+
+    sup = out / "_superseded"
+    sup.mkdir(exist_ok=True)
+    for sheet in ("1", "2"):
+        make_pdf(tmp_path / f"sheet{sheet}.pdf", ["NAME", f"Sheet {sheet}"])
+        shutil.copy2(tmp_path / f"sheet{sheet}.pdf",
+                     sup / f"1.1.2.0 F10197062-B_DWG{sheet}.pdf")
+
+    ctx = run_repair(out, False, lambda m: None, jobs=1)
+    assert ctx["repair"]["promoted"] == 2
+    live = {Path(p).name.lower() for p in _live_paths(out)}
+    assert {"f10197062_b_dwg1.pdf", "f10197062_b_dwg2.pdf"} <= live
 
 
 def test_repair_keeps_a_correctly_archived_watermarked_loser(tmp_path, make_pdf):

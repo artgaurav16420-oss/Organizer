@@ -10,8 +10,9 @@ All notable changes to the Fermi PDF organizer are recorded here.
   and re-applies the current code's decisions to it: it renames live folders to
   the current name plan, moves a folder onto its planned parent, adopts a
   drawing a previous run wrongly parked in `_orphans/`, promotes a `_superseded/`
-  copy whose revision out-ranks the live drawing (never an unapproved CHK), and
-  removes duplicate folders. Nothing is placed that is absent from the tree.
+  copy whose revision out-ranks the live drawing (every sheet at that revision
+  travels together; never an unapproved CHK), and removes duplicate folders.
+  Nothing is placed that is absent from the tree.
 - A tree built by older code (or by an unknown batch order) can therefore be
   corrected in place instead of deleting the output and rebuilding from every
   source folder in order; `_superseded/` history is preserved.

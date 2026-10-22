@@ -1,5 +1,6 @@
 """End-to-end run_full / run_incremental on generated PDFs (tmp dirs only)."""
 import re
+from collections import Counter
 
 import pymupdf as fitz
 import pytest
@@ -2505,3 +2506,47 @@ def test_run_incremental_keeps_prior_batch_names(tmp_path, make_pdf):
 
     assert ctx["names"].get("F10126106") == "Test Parent"
     assert ctx["names"].get("F10126107") == "Child part"
+
+
+def test_snap_bom_votes_rekeys_a_near_miss_reference():
+    # A description read from a scanned parent is filed under the raw ref; the
+    # BOM snap corrects the ref, so the vote must follow it or the child never
+    # finds the name for its folder.
+    votes = {"F0156241": Counter({"CHILD PART": 1, "OTHER NAME": 1})}
+    logged = []
+
+    runmodes._snap_bom_votes(votes, {"F10156241_A_DWG1"}, logged.append)
+
+    assert list(votes) == ["F10156241"]
+    assert votes["F10156241"]["CHILD PART"] == 1
+    assert any("corrected to" in msg for msg in logged)
+
+
+def test_snap_bom_votes_leaves_a_matching_reference_alone():
+    votes = {"F10156241": Counter({"CHILD PART": 1})}
+
+    runmodes._snap_bom_votes(votes, {"F10156241_A_DWG1"}, lambda msg: None)
+
+    assert list(votes) == ["F10156241"]
+
+
+def test_sweep_repair_staging_only_touches_its_own_tree(tmp_path):
+    # The registry is keyed by tree: a concurrent repair on another output must
+    # keep its staged candidates while it places them.
+    tree_a, tree_b = tmp_path / "a", tmp_path / "b"
+    tree_a.mkdir()
+    tree_b.mkdir()
+    staged_a, staged_b = tmp_path / "stage-a", tmp_path / "stage-b"
+    staged_a.mkdir()
+    staged_b.mkdir()
+    runmodes._register_staging(tree_a, staged_a)
+    runmodes._register_staging(tree_b, staged_b)
+
+    logged = []
+    runmodes.sweep_repair_staging(tree_a, logged.append)
+
+    assert not staged_a.exists()
+    assert staged_b.exists()
+    runmodes.sweep_repair_staging(tree_b, logged.append)
+    assert not staged_b.exists()
+    assert runmodes._REPAIR_STAGING == {}

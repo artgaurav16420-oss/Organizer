@@ -17,6 +17,7 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    - First: "Input folder (the folder containing the PDFs)?"
    - After the answer: "What output folder path should I use?"
    Use plain text messages for both - no `question` tool, no options list. If the user replies nothing to the output question, fall back to the default `<input>/Output`.
+   A repair-only request (the tree itself needs correcting) has no source: ask for that one tree folder instead of the pair, and run step 8 against it.
    Wait for the answer before asking the next question; do not batch them into one prompt.
    Do NOT ask about run mode, flags, dry-run, jobs, or anything else - the agent decides all of that.
    Then echo the resolved paths back and ask for confirmation before proceeding.
@@ -90,7 +91,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `2` | Placement refused: planned fan-out exceeds 10,000 copies. The report and workbook are written. | Do not retry. Inspect the BOM graph and ask the user first. See the refusal section below. |
 | `2` | Repair left folders needing manual review (`Needs manual review: N` in the Repair block). The report and workbook are written. | Read the review lines in the report; do not retry. The tree is otherwise reconciled. |
 
-Both `2` rows share a code. Tell them apart by the log: a refusal writes `Report saved to:` and the workbook; a lost lock or argument error does not.
+These three `2` rows share a code. Tell them apart by the log: a placement refusal or a repair review writes `Report saved to:` and the workbook; a lost lock or argument error does not.
 
 ## Placement refusal
 

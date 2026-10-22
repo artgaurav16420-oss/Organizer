@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pathlib import Path
 from typing import TypedDict
 
@@ -38,9 +38,20 @@ class RunCounters(TypedDict):
     warnings: int
 
 
-# Repair staging dirs currently on disk, so a run that raises before its
-# cleanup still removes them (see sweep_repair_staging).
-_REPAIR_STAGING: set = set()
+# Repair staging dirs still on disk, keyed by output tree, so a run that raises
+# before its cleanup removes only its own (see sweep_repair_staging).
+_REPAIR_STAGING: dict = {}
+
+
+def _register_staging(output, staging):
+    """Track one staging dir under the tree the repair is working on."""
+    _REPAIR_STAGING.setdefault(str(output), set()).add(Path(staging))
+
+
+def _unregister_staging(staging):
+    """Forget a staging dir once it is gone from disk."""
+    for dirs in _REPAIR_STAGING.values():
+        dirs.discard(Path(staging))
 
 
 class RunContext(TypedDict):
@@ -227,6 +238,26 @@ def _snap_boms(bom_of, stems, log):
     bases = {s.split("_")[0] for s in stems}
     for stem in sorted(bom_of):
         bom_of[stem] = _snap_values(stem, bom_of[stem], stems, log, bases=bases)
+
+
+def _snap_bom_votes(bom_votes, stems, log):
+    """Re-key parts-list votes filed under an OCR near-miss reference.
+
+    `_snap_boms` corrects the BOM value, but the description vote is filed
+    under the raw reference, so a description read from a scanned parent would
+    never reach the child that corrected reference names.
+    """
+    if not bom_votes:
+        return
+    bases = {s.split("_")[0] for s in stems}
+    for raw in sorted(bom_votes):
+        if not is_processable_ref(raw) or match_pdfs(raw, stems):
+            continue
+        snapped = snap_ref(raw, stems, bases=bases)
+        if not snapped or snapped == raw:
+            continue
+        log(f"  OCR ref {raw} corrected to {snapped}")
+        bom_votes.setdefault(snapped, Counter()).update(bom_votes.pop(raw))
 
 
 def _snap_used_on(used_on_of, stems, log):
@@ -1416,7 +1447,7 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     single-pass USED ON figures (so the USED ON section reuses them)."""
     log("--- Scanning BOM tables ---")
     bom_of, bom_names, watermarks, titleblocks, warnings, used_on_of, \
-        used_names, _bom_votes = _scan_boms(
+        used_names, bom_votes = _scan_boms(
             sorted(index.items()), jobs, log, require_desc=True)
     rekeyed = {}
     if rekey:
@@ -1433,8 +1464,12 @@ def _full_scan_boms(index, jobs, log, rekey, chk_stems):
     # Filename vs title block: number, revision, title (report only; with
     # --rekey-titleblock a misnamed file is re-keyed first).
     tb_mismatches = _titleblock_mismatches(titleblocks, log)
-    # OCR near-miss refs: correct against the known stems before edges.
+    # OCR near-miss refs: correct against the known stems before edges. The
+    # description votes are re-keyed with them, or the corrected child finds
+    # no parts-list name for its folder.
     _snap_boms(bom_of, index, log)
+    _snap_bom_votes(bom_votes, index, log)
+    bom_names = bom_name_winners(bom_votes)
     return (index, bom_of, bom_names, watermarks, tb_mismatches, rekeyed,
             chk_stems, warnings, used_on_of, used_names)
 
@@ -1743,14 +1778,20 @@ def _repair_candidates(scan_res, organized):
         base = stem.split("_")[0]
         if base not in live_rank or revision_rank(stem) <= live_rank[base]:
             continue
-        # One candidate per base - the highest revision. Handing the batch
-        # several revisions of one base would make split_superseded demote the
-        # losers into old_new, and prepare would then archive copies that are
-        # already in the archive (a second entry under a different name).
+        # One revision per base - the highest. Handing the batch several
+        # revisions of one base would make split_superseded demote the losers
+        # into old_new, and prepare would then archive copies that are already
+        # in the archive. Distinct sheets at that one revision travel together:
+        # the sheet exception keeps them all active, and promoting a single
+        # sheet would leave its siblings tied with the new live rank and never
+        # reconsidered.
+        rank = revision_rank(stem)
         current = best.get(base)
-        if current is None or revision_rank(stem) > revision_rank(current):
-            best[base] = stem
-    keep = set(best.values())
+        if current is None or rank > current[0]:
+            best[base] = (rank, [stem])
+        elif rank == current[0]:
+            current[1].append(stem)
+    keep = {s for _rank, sheets in best.values() for s in sheets}
     return {stem: path for stem, path in
             ((canonical_stem(p.stem), p) for p in sorted(scan_res["sup"]))
             if stem in keep}
@@ -1769,7 +1810,6 @@ def _stage_repair_candidates(candidates, log):
     if not candidates:
         return {}, None
     staged_dir = Path(tempfile.mkdtemp(prefix="fermi_repair_"))
-    _REPAIR_STAGING.add(staged_dir)
     staged = {}
     for stem, path in sorted(candidates.items()):
         dst = staged_dir / f"{stem}.pdf"
@@ -1801,6 +1841,8 @@ def _repair_prepare(output, dry_run, log):
         raise NoPDFsFoundError("No organized PDFs found in the tree.")
     archived = _repair_candidates(scan_res, organized)
     staged, staged_dir = _stage_repair_candidates(archived, log)
+    if staged_dir is not None:
+        _register_staging(output, staged_dir)
     prepared = _incremental_prepare_from_index(
         staged, {}, output, dry_run, log, scan_res, False,
         allow_archived=True,
@@ -1814,23 +1856,26 @@ def repair_cleanup(meta, log):
     staging = (meta or {}).get("staging_dir")
     if not staging:
         return
-    _REPAIR_STAGING.discard(Path(staging))
     try:
         shutil.rmtree(staging)
     except OSError as e:
         log(f"  WARNING: could not remove repair staging dir "
             f"{staging}: {e}")
+        return
+    _unregister_staging(staging)
 
 
-def sweep_repair_staging(log):
-    """Remove staging dirs a repair that raised before cleanup left behind.
+def sweep_repair_staging(output, log):
+    """Remove this tree's staging dirs if the repair raised before cleanup.
 
     `_stage_repair_candidates` copies every candidate before extraction,
     placement and the lock checks run, so a failure there would otherwise leak
-    the copies for the life of the temp dir.
+    the copies for the life of the temp dir. Keyed by tree: a concurrent repair
+    on another output keeps its own candidates while it places them.
     """
-    for staging in sorted(_REPAIR_STAGING):
+    for staging in sorted(_REPAIR_STAGING.get(str(output), ())):
         repair_cleanup({"staging_dir": staging}, log)
+    _REPAIR_STAGING.pop(str(output), None)
 
 
 def _finish_repair_promotions(organized, archived, staged_stems, output,
@@ -1878,7 +1923,7 @@ def _repair_reconcile(output, children, roots, folder_names, dry_run, log,
     planned = planned_paths(children, roots, folder_names)
     counts, review = reconcile_tree(organized, planned, output, dry_run, log,
                                     moved_dirs, lock=lock)
-    counts["emptied"] = remove_empty_dirs(output, dry_run, log)
+    counts["emptied"] = remove_empty_dirs(output, dry_run, log, lock=lock)
     return counts, review, organized
 
 
@@ -1981,8 +2026,11 @@ def _incremental_scan_new_boms(new_index, new_duplicates, jobs, log, rekey,
             if old in new_names:
                 new_names[new] = new_names.pop(old)
     _log_watermarks(new_watermarks, log)
-    # OCR near-miss refs: correct against the known stems before edges.
+    # OCR near-miss refs: correct against the known stems before edges; the
+    # description votes are re-keyed with them (see _snap_bom_votes).
     _snap_boms(new_boms, all_stems, log)
+    _snap_bom_votes(new_bom_votes, all_stems, log)
+    bom_names = bom_name_winners(new_bom_votes)
     return (new_index, watermarked_dupes, new_boms, bom_names,
             new_watermarks, new_titleblocks, rekeyed, new_stems, org_stems,
             scanned_new, all_stems, chk_stems, warnings, new_used_on,
@@ -2416,7 +2464,7 @@ def run_repair(folder, dry_run, log, jobs=0, *, hold_lock=False):
         release_run_lock(lock)
         raise
     finally:
-        sweep_repair_staging(log)
+        sweep_repair_staging(output, log)
     if hold_lock:
         return ctx, lock
     release_run_lock(lock)
@@ -2492,7 +2540,9 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                                            cached_names=_new_names)
     # A drawing's own NAME is a guess when OCR read it and absent when nothing
     # read it; either way a parent's parts list names it. Both scans above fed
-    # bom_votes, so the vote now covers new + organized parents.
+    # bom_votes, so the vote now covers new + organized parents; re-key any
+    # vote filed under a reference the BOM snap corrected.
+    _snap_bom_votes(bom_votes, all_stems, log)
     bom_names = bom_name_winners(bom_votes)
     merged_names = prefer_bom_names(_merge_names(org_names or {}, new_names),
                                     _ocr_named_stems(), bom_names, all_stems)

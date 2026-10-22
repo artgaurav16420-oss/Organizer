@@ -1208,12 +1208,14 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     return retired
 
 
-def remove_empty_dirs(output, dry_run, log):
+def remove_empty_dirs(output, dry_run, log, lock=None):
     """Delete empty folders under an output tree, deepest first.
 
     Top-level system dirs (any "_" prefix) and the output root itself are never
     removed, and a folder holding anything - including a file the tool did not
-    write - is left alone. Returns the number of folders removed.
+    write - is left alone. `lock` is the run's lock path (None = unlocked) and
+    is re-checked before each removal, so a run stolen mid-sweep stops instead
+    of deleting folders another run now owns. Returns the number removed.
     """
     removed = 0
     dirs = sorted((p for p in output.rglob("*") if p.is_dir()),
@@ -1230,6 +1232,7 @@ def remove_empty_dirs(output, dry_run, log):
         if dry_run:
             log(f"  [DRY-RUN] rmdir {rel}")
         else:
+            _ensure_lock(lock, log)
             try:
                 path.rmdir()
             except OSError as e:
@@ -1283,11 +1286,12 @@ def _folder_removable(folder, planned_by_stem, output):
         stem = canonical_stem(path.stem)
         targets = [output.joinpath(*rel) / path.name
                    for rel in planned_by_stem.get(stem, ())]
-        # The twin must be a different file: a drawing already at its own
-        # planned path would otherwise vouch for the folder it lives in, and
-        # removing that folder would delete its only copy.
-        if not any(t != path and t.exists() and _same_bytes(path, t)
-                   for t in targets):
+        # The twin must be a different, regular file: a drawing already at its
+        # own planned path would otherwise vouch for the folder it lives in,
+        # and a symlinked "twin" points outside the tree, so neither is an
+        # independent planned copy.
+        if not any(not _islink(t) and t != path and t.exists()
+                   and _same_bytes(path, t) for t in targets):
             return False, f"{path.name} has no identical copy at its planned path"
     return True, ""
 
@@ -1329,7 +1333,13 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
             f"(manual review): {target.relative_to(output)}")
         return False
     longest = longest_dest_path(target, folder)
-    if longest is not None and len(str(longest)) > MAX_PATH:
+    if longest is None:
+        # Cannot list the subtree, so its deepest path is unknown; a move would
+        # skip the MAX_PATH guard and could fail half-way. Refuse it.
+        log(f"  WARNING: {stem}: cannot list source folder, skipping move "
+            f"(manual review): {target.relative_to(output)}")
+        return False
+    if len(str(longest)) > MAX_PATH:
         log(f"  WARNING: {stem}: path too long ({len(str(longest))} chars), "
             f"skipping move: {target}")
         return False
