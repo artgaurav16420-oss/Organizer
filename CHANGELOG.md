@@ -77,12 +77,6 @@ All notable changes to the Fermi PDF organizer are recorded here.
   PDFs stored deeply in renamed/moved input trees no longer fail with a
   misleading 'no such file' error while reading BOM etc.
 
-### Fix: long-path input handling during BOM extraction
-- Extraction now routes PDF open calls through `fsops._native`, adding
-  the Windows `\\?\` extended prefix for input paths >=260 chars so
-  PDFs stored deeply in renamed/moved input trees no longer fail with a
-  misleading 'no such file' error while reading BOM etc.
-
 ### Performance: single PDF open per phase
 - `survey_task` extracts BOM, USED ON, title block, name, watermark and
   scanned state from one opened PDF document instead of separate BOM and

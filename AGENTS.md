@@ -9,7 +9,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 - Use the repo venv: `.venv\Scripts\python.exe` (Windows) / `.venv/bin/python` (Linux/macOS). Python >=3.10. No pip; install with `uv pip install --python .venv\Scripts\python.exe ...`.
 - Run: `python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental] [--repair] [--no-ocr] [--jobs N] [--rekey-titleblock]` (also `python -m fermi_organizer.cli ...`, or `fermi-organize` after install). Never run `fermi_organizer\cli.py` directly (relative imports fail).
 - Repair: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` re-applies the current decisions to an existing output tree (no source scan; `--output`/`--incremental`/`--rekey-titleblock` are rejected with it).
-- Tests: `.venv\Scripts\python.exe -m pytest -q` (~15s; 449 passed + 6 skipped symlink tests without dev-mode privilege). Single file/case: `... -m pytest tests/test_graph.py -q` / `... "tests/test_graph.py::test_name" -q`. No Tesseract needed (autouse OCR fixture).
+- Tests: `.venv\Scripts\python.exe -m pytest -q` (~15s; 452 passed + 7 skipped symlink tests without dev-mode privilege). Single file/case: `... -m pytest tests/test_graph.py -q` / `... "tests/test_graph.py::test_name" -q`. No Tesseract needed (autouse OCR fixture).
 - Lint: `.venv\Scripts\ruff.exe check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py` (ruff 0.16.10, no config file; plain `ruff check` is not equivalent).
 - Pre-push order: lint -> pytest.
 - Package build: `python -m build --wheel --no-isolation` (setuptools floor >=80).

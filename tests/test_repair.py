@@ -64,6 +64,49 @@ def test_folder_removable_only_with_identical_copies(tmp_path):
     assert "non-PDF" in reason
 
 
+def test_folder_removable_does_not_vouch_for_its_own_copy(tmp_path):
+    # A drawing already at its planned path must not count as its own twin:
+    # the stale folder then holds a correctly placed child, and removing it
+    # would delete that drawing's only copy.
+    root = tmp_path / "out"
+    stale_child = root / "STALE" / "F10197063"
+    stale_child.mkdir(parents=True)
+    (stale_child / "F10197063.pdf").write_bytes(b"%PDF-1.4\nonly copy")
+    (root / "STALE" / "F10197062.pdf").write_bytes(b"%PDF-1.4\nstale")
+    (root / "KEEP").mkdir()
+    (root / "KEEP" / "F10197062.pdf").write_bytes(b"%PDF-1.4\nstale")
+    organized = {"F10197062": [root / "STALE" / "F10197062.pdf",
+                               root / "KEEP" / "F10197062.pdf"],
+                 "F10197063": [stale_child / "F10197063.pdf"]}
+    planned = {"F10197062": [("KEEP",)],
+               "F10197063": [("STALE", "F10197063")]}
+
+    counts, review = reconcile_tree(organized, planned, root, False,
+                                    lambda m: None, {})
+
+    assert counts["removed"] == 0
+    assert (stale_child / "F10197063.pdf").exists()
+    assert any("no identical copy" in line for line in review)
+
+
+def test_folder_removable_keeps_a_symlink_entry(tmp_path):
+    # A symlink is a manual entry even when it is broken; is_file() alone
+    # would skip it and the folder would be removed around it.
+    root = tmp_path / "out"
+    dup, good = root / "OLD", root / "A" / "NEW"
+    dup.mkdir(parents=True)
+    good.mkdir(parents=True)
+    (dup / "F10197062.pdf").write_bytes(b"%PDF-1.4\nsame")
+    (good / "F10197062.pdf").write_bytes(b"%PDF-1.4\nsame")
+    try:
+        (dup / "manual-link").symlink_to(dup / "does-not-exist")
+    except OSError:
+        pytest.skip("symlink creation not permitted")
+    ok, reason = _folder_removable(dup, {"F10197062": [("A", "NEW")]}, root)
+    assert not ok
+    assert "non-PDF" in reason
+
+
 def test_reconcile_moves_a_misplaced_folder(tmp_path):
     root = tmp_path / "out"
     (root / "A" / "F1").mkdir(parents=True)
@@ -145,6 +188,9 @@ def test_reconcile_rehomes_a_root_and_refuses_a_long_path(tmp_path):
     counts, review = reconcile_tree(organized, planned, root, False,
                                     lambda m: None, {})
     assert counts["moved"] == 0
+    # A refused move must reach the review list: otherwise the CLI exits 0
+    # with the tree still off plan.
+    assert len(review) == 1 and "refused" in review[0]
     assert (root / "B" / "SHORT" / "F10197063.pdf").exists()
 
 
@@ -200,8 +246,9 @@ def test_repair_adopts_a_wrongly_parked_orphan(tmp_path, make_pdf):
             if not p.relative_to(out).parts[0].startswith("_")]
     assert len(live) == 1
     assert live[0].parent.parent.name.startswith("F10126999")
-    # The parked copy is retired once the drawing is back in the tree.
-    assert not list(orphans.glob("*.pdf"))
+    # The parked copy is retired once the drawing is back in the tree. The
+    # parked folder was moved in, so the check must recurse.
+    assert not list(orphans.rglob("*.pdf"))
 
 
 def test_repair_promotes_an_archived_newer_revision(tmp_path, make_pdf):

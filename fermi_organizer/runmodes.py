@@ -38,6 +38,11 @@ class RunCounters(TypedDict):
     warnings: int
 
 
+# Repair staging dirs currently on disk, so a run that raises before its
+# cleanup still removes them (see sweep_repair_staging).
+_REPAIR_STAGING: set = set()
+
+
 class RunContext(TypedDict):
     """Structured run context consumed by the Excel workbook."""
     counters: RunCounters
@@ -1758,11 +1763,13 @@ def _stage_repair_candidates(candidates, log):
     so a promoted copy must be placed as "{stem}.pdf" or the tree gets that
     prefix. Staging in the system temp dir keeps the output folder untouched
     even in a dry run. Returns (staged_index, staging_dir_or_None); the caller
-    removes the directory (see repair_cleanup).
+    removes the directory (see repair_cleanup, and sweep_repair_staging for the
+    exception path).
     """
     if not candidates:
         return {}, None
     staged_dir = Path(tempfile.mkdtemp(prefix="fermi_repair_"))
+    _REPAIR_STAGING.add(staged_dir)
     staged = {}
     for stem, path in sorted(candidates.items()):
         dst = staged_dir / f"{stem}.pdf"
@@ -1804,17 +1811,30 @@ def _repair_prepare(output, dry_run, log):
 
 def repair_cleanup(meta, log):
     """Remove the repair staging directory (never the tree's own files)."""
-    if not meta or not meta.get("staging_dir"):
+    staging = (meta or {}).get("staging_dir")
+    if not staging:
         return
+    _REPAIR_STAGING.discard(Path(staging))
     try:
-        shutil.rmtree(meta["staging_dir"])
+        shutil.rmtree(staging)
     except OSError as e:
         log(f"  WARNING: could not remove repair staging dir "
-            f"{meta['staging_dir']}: {e}")
+            f"{staging}: {e}")
+
+
+def sweep_repair_staging(log):
+    """Remove staging dirs a repair that raised before cleanup left behind.
+
+    `_stage_repair_candidates` copies every candidate before extraction,
+    placement and the lock checks run, so a failure there would otherwise leak
+    the copies for the life of the temp dir.
+    """
+    for staging in sorted(_REPAIR_STAGING):
+        repair_cleanup({"staging_dir": staging}, log)
 
 
 def _finish_repair_promotions(organized, archived, staged_stems, output,
-                              dry_run, log):
+                              dry_run, log, lock=None):
     """Delete promoted archive sources whose live copy is verified.
 
     A promotion copies the archived drawing into the tree and leaves the
@@ -1822,7 +1842,8 @@ def _finish_repair_promotions(organized, archived, staged_stems, output,
     original is a duplicate of a live revision, so it goes. A missing or
     differing live copy keeps it - nothing is ever lost. `live_index` must be
     a post-reconcile scan: an index taken before a rename points at a path that
-    no longer exists. Returns the number removed.
+    no longer exists. This is a delete, so the lock is re-checked first.
+    Returns the number removed.
     """
     removed = 0
     for stem in sorted(staged_stems):
@@ -1834,6 +1855,7 @@ def _finish_repair_promotions(organized, archived, staged_stems, output,
             log(f"  WARNING: {stem}: promoted archive copy kept "
                 "(no verified live copy)")
             continue
+        _ensure_lock(lock, log)
         try:
             src.unlink()
             removed += 1
@@ -2393,6 +2415,8 @@ def run_repair(folder, dry_run, log, jobs=0, *, hold_lock=False):
     except BaseException:
         release_run_lock(lock)
         raise
+    finally:
+        sweep_repair_staging(log)
     if hold_lock:
         return ctx, lock
     release_run_lock(lock)
@@ -2621,7 +2645,7 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         if repair_meta is not None:
             repair_counts["promoted_archive_cleaned"] = _finish_repair_promotions(
                 live_index, repair_meta["archived"], promoted_stems,
-                output, dry_run, log)
+                output, dry_run, log, lock=lock)
         # The tree changed after placement: finalize must see it as it is now,
         # so do not hand it the pre-reconcile scan.
         reused_scan_res = None

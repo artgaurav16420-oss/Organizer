@@ -250,7 +250,10 @@ def test_run_full_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
         "NAME",
         "Test Parent",
     ])
-    make_pdf(in_dir / "F10126107.pdf", [])  # image-only: name comes from OCR
+    # The child carries the misread name and the mock marks its stem as
+    # OCR-named, so this exercises replacement rather than a blank-name fill.
+    make_pdf(in_dir / "F10126107.pdf",
+             ["NAME", "NUT PLATE, MINI -CONFLAIL, xX OQ."])
 
     logged = []
     with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126107"}):

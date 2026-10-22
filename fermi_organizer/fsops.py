@@ -1267,16 +1267,27 @@ def _folder_removable(folder, planned_by_stem, output):
     and it holds no non-PDF file. Returns (ok, reason) for the review line.
     """
     try:
-        entries = [p for p in folder.rglob("*") if p.is_file()]
+        entries = list(folder.rglob("*"))
     except OSError as e:
         return False, f"cannot list ({e})"
     for path in entries:
+        # A symlink (live or broken) or any other non-PDF entry is a manual
+        # addition: is_file() is False for a broken or directory symlink, and
+        # omitting one would let the folder be removed around it.
+        if not _islink(path) and path.is_dir():
+            continue
+        if _islink(path) or not path.is_file():
+            return False, f"holds non-PDF entry {path.name}"
         if path.suffix.lower() != ".pdf":
             return False, f"holds non-PDF file {path.name}"
         stem = canonical_stem(path.stem)
         targets = [output.joinpath(*rel) / path.name
                    for rel in planned_by_stem.get(stem, ())]
-        if not any(t.exists() and _same_bytes(path, t) for t in targets):
+        # The twin must be a different file: a drawing already at its own
+        # planned path would otherwise vouch for the folder it lives in, and
+        # removing that folder would delete its only copy.
+        if not any(t != path and t.exists() and _same_bytes(path, t)
+                   for t in targets):
             return False, f"{path.name} has no identical copy at its planned path"
     return True, ""
 
@@ -1407,6 +1418,13 @@ def reconcile_tree(organized, planned, output, dry_run, log, moved_dirs,
                                 moved_dirs, organized, lock):
                     counts["moved"] += 1
                     keep.append(target)
+                else:
+                    # A refused move leaves the stem off plan, so the run must
+                    # report it: silently continuing would let the CLI exit 0
+                    # on an unreconciled tree.
+                    note(stem, f"move to {target.relative_to(output)} refused; "
+                               f"stale copy kept at "
+                               f"{folder.relative_to(output)}")
                 continue
             if not keep:
                 note(stem, f"stale copy kept at {folder.relative_to(output)} "

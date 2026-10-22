@@ -124,7 +124,10 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     # --psm was silently dropped and the pass ran at the default psm 3
     # (F10051459's title-block NAME came back empty).
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "X"])
-    page = fitz.open(pdf)[0]
+    # Hold the document: the page belongs to it, and opening inline would leave
+    # only the page alive as a temporary.
+    src_doc = fitz.open(pdf)
+    page = src_doc[0]
     seen = []
 
     def fake_run(args, timeout):
@@ -134,6 +137,7 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     monkeypatch.setattr(extraction, "_tesseract_run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract")
     extraction._ocr_words_zoom(page, fitz.Rect(0, 0, 100, 50), 2, "6")
+    src_doc.close()
 
     assert seen, "tesseract was not invoked"
     argv = seen[0]

@@ -21,7 +21,7 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    Do NOT ask about run mode, flags, dry-run, jobs, or anything else - the agent decides all of that.
    Then echo the resolved paths back and ask for confirmation before proceeding.
    Always quote paths that contain spaces in the final commands.
-   If the pasted paths are wrapped in quotes, strip the quotes before echoing them back. If a path does not exist, say so and ask again instead of guessing.
+   If the pasted paths are wrapped in quotes, strip the quotes before echoing them back. If the input folder does not exist, say so and ask again instead of guessing; a missing output folder is fine - the run creates it.
    Run mode (full vs `--incremental` vs `--repair`) is the agent's decision, never a user question:
    - Output folder does not exist, or exists but holds no PDFs outside `_`-prefixed dirs -> full run.
    - Output folder already holds PDFs (an existing organized tree) -> `--incremental`.
