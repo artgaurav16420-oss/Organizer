@@ -8,7 +8,7 @@ from fermi_organizer.graph import (_edit1, is_chk_stem, revision_letter_rank,
                                    match_pdfs, used_on_bases,
                                    find_used_on_mismatches, find_used_on_bugs,
                                    can_reach, collect_reachable, break_cycles,
-                                   snap_ref)
+                                   snap_ref, planned_paths)
 from fermi_organizer.naming import (sanitize_folder_name,
                                     folder_name_for, build_folder_names)
 
@@ -457,3 +457,20 @@ def test_build_folder_names_shortens_to_path_limit(tmp_path):
         assert names[stem] != folder_name_for(stem, names_of)
     assert any("folder name shortened" in m for m in logged)
     assert not any("still exceed" in m for m in logged)
+
+
+def test_planned_paths_mirrors_placement():
+    children = {"F1": {"F2", "F3"}, "F2": {"F4"}}
+    names = {"F1": "F1 ROOT PART", "F2": "F2 MID", "F4": "F4 LEAF"}
+    planned = planned_paths(children, ["F1"], names)
+    assert planned["F1"] == [("F1 ROOT PART",)]
+    assert planned["F2"] == [("F1 ROOT PART", "F2 MID")]
+    assert planned["F3"] == [("F1 ROOT PART", "F3")]        # name falls back to stem
+    assert planned["F4"] == [("F1 ROOT PART", "F2 MID", "F4 LEAF")]
+
+
+def test_planned_paths_lists_every_claimant():
+    # A part claimed by two parents is planned at both paths: placement copies
+    # it under each claimant, so repair must not collapse the pair.
+    planned = planned_paths({"F1": {"F3"}, "F2": {"F3"}}, ["F1", "F2"], {})
+    assert planned["F3"] == [("F1", "F3"), ("F2", "F3")]

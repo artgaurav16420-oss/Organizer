@@ -36,6 +36,11 @@ def test_build_parser_and_run_mode_label():
     assert run_mode_label(False, False) == "EXECUTE"
     assert run_mode_label(True, True) == "INCREMENTAL (DRY-RUN)"
     assert run_mode_label(False, True) == "INCREMENTAL"
+    assert run_mode_label(False, repair=True) == "REPAIR"
+    assert run_mode_label(True, repair=True) == "REPAIR (DRY-RUN)"
+    assert args.repair is False
+    repair_help = next(a for a in parser._actions if a.dest == "repair").help
+    assert "Places nothing new" in repair_help
     # Help must not promise "no folders": the workbook creates the output
     # folder, and the report/workbook are still written in dry-run.
     dry_help = next(a for a in parser._actions if a.dest == "dry_run").help

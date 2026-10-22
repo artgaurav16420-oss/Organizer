@@ -277,6 +277,30 @@ def collect_reachable(children, roots):
     return reachable
 
 
+def planned_paths(children, roots, folder_names):
+    """Relative folder path(s) of every stem in the planned tree.
+
+    Mirrors fsops.place_files' traversal: a root sits in
+    output/<folder name>, every child in its parent's folder/<folder name>.
+    A stem listed by several parents is planned at several paths, because the
+    tool copies a claimed part to every claimant. Values are path-component
+    tuples, so this stays free of filesystem I/O; cycles must be broken first
+    (place_files assumes the same) and depth stops at TREE_MAX_DEPTH.
+    """
+    planned = defaultdict(list)
+    stack = [(r, ()) for r in sorted(roots)]
+    while stack:
+        stem, rel = stack.pop()
+        here = rel + (folder_names.get(stem) or stem,)
+        planned[stem].append(here)
+        if len(here) >= TREE_MAX_DEPTH:
+            continue
+        stack.extend((c, here) for c in children.get(stem, ()))
+    for paths in planned.values():
+        paths.sort()
+    return planned
+
+
 def break_cycles(children, parents, log):
     """Break cycles by removing back-edges (BOM graph is the only edge source).
 

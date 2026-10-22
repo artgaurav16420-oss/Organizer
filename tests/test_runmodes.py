@@ -1,5 +1,6 @@
 """End-to-end run_full / run_incremental on generated PDFs (tmp dirs only)."""
 import re
+from collections import Counter
 
 import pymupdf as fitz
 import pytest
@@ -235,6 +236,80 @@ def test_run_full_execute_builds_tree_and_orphans(tmp_path, make_pdf):
     assert re.search(r"Cycles broken:\s+0", text)
     assert re.search(r"PDF copies written:\s+3", text)
     assert "Stored 1 orphan(s) in _orphans/" in text
+
+
+def test_run_full_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
+    # A scanned child's NAME is OCR output, so a misread still reads as a
+    # plausible part name. The parent's parts list carries the same name as a
+    # text layer and must win (F10187622 listing F10128174).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "Test Parent",
+    ])
+    # The child carries the misread name and the mock marks its stem as
+    # OCR-named, so this exercises replacement rather than a blank-name fill.
+    make_pdf(in_dir / "F10126107.pdf",
+             ["NAME", "NUT PLATE, MINI -CONFLAIL, xX OQ."])
+
+    logged = []
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126107"}):
+        ctx = run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+    assert (out / "F10126106 Test Parent"
+            / "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126107.pdf").is_file()
+
+
+def test_run_full_fills_missing_name_from_parent_bom(tmp_path, make_pdf):
+    # A scanned child whose OCR read no NAME at all (and a text-layer child
+    # with an empty NAME cell) are named from the parent's parts list instead
+    # of being left as a bare drawing number.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 SPRING, COMPRESSION",
+        "F10126108 PLATE, SIDE",
+        "NAME",
+        "Test Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", [])          # image-only, no OCR name
+    make_pdf(in_dir / "F10126108.pdf", ["NAME"])    # text layer, empty NAME
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "SPRING, COMPRESSION"
+    assert ctx["names"]["F10126108"] == "PLATE, SIDE"
+    assert (out / "F10126106 Test Parent" / "F10126107 SPRING, COMPRESSION"
+            / "F10126107.pdf").is_file()
+
+
+def test_run_full_keeps_text_layer_name_over_bom(tmp_path, make_pdf):
+    # Only an OCR-read NAME is a guess: a text-layer drawing keeps its own
+    # title-block NAME even when a parent's parts list spells it differently.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 PARENT SPELLING",
+        "NAME",
+        "Test Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", ["NAME", "Child part"])
+
+    ctx = run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126107"] == "Child part"
+    assert (out / "F10126106 Test Parent" / "F10126107 Child part"
+            / "F10126107.pdf").is_file()
 
 
 def test_run_incremental_adopts_stored_orphan(tmp_path, make_pdf):
@@ -1117,6 +1192,32 @@ def test_run_incremental_prefers_text_copy_over_scanned_duplicate(tmp_path, make
     assert ctx["watermarks"] == []
 
 
+def test_run_incremental_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
+    # Same rule in incremental mode: a newly added scanned child takes its NAME
+    # from the parent's parts list, not from the OCR read.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    run_full(in_dir, out, False, lambda m: None, jobs=1)
+
+    make_pdf(in_dir / "F10126110.pdf", [
+        "FERMI PART LIST",
+        "F10126111 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "New assembly",
+    ])
+    make_pdf(in_dir / "F10126111.pdf", [])  # image-only child
+
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126111"}):
+        ctx = run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert ctx["names"]["F10126111"] == "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+    assert (out / "F10126110 New assembly"
+            / "F10126111 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126111.pdf").is_file()
+
+
 def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
@@ -1133,6 +1234,37 @@ def test_run_incremental_parks_standalone_new_pdf(tmp_path, make_pdf):
     assert (out / "_orphans" / "F10126110.pdf").is_file()
     assert "F10126110" in ctx["orphans"]
     assert "storing in _orphans/" in "\n".join(logged)
+
+
+def test_incremental_renames_stale_folder_to_parent_bom_name(tmp_path, make_pdf):
+    # Re-run scenario: a tree already holds the OCR-spelled folder. An
+    # incremental run normalizes it to the parent's parts-list name.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    parent = make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD",
+        "NAME",
+        "Test Parent",
+    ])
+    child = make_pdf(in_dir / "F10126107.pdf", [])  # image-only child
+
+    # Pre-existing tree with the OCR-spelled folder name, byte-identical to the
+    # input (so both PDFs count as already organized).
+    stale = out / "F10126106 Test Parent" / "F10126107 -CONFLAIL, NUT PLATE, MINI xX OQ"
+    stale.mkdir(parents=True)
+    (out / "F10126106 Test Parent" / "F10126106.pdf").write_bytes(parent.read_bytes())
+    (stale / "F10126107.pdf").write_bytes(child.read_bytes())
+    make_pdf(in_dir / "F10126109.pdf", ["NAME", "New assembly"])
+
+    with patch.object(runmodes, "_ocr_named_stems", return_value={"F10126107"}):
+        run_incremental(in_dir, out, False, lambda m: None, jobs=1)
+
+    assert not stale.exists()
+    assert (out / "F10126106 Test Parent"
+            / "F10126107 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"
+            / "F10126107.pdf").is_file()
 
 
 def test_incremental_roots_match_full_mode(tmp_path, make_pdf):
@@ -2374,3 +2506,47 @@ def test_run_incremental_keeps_prior_batch_names(tmp_path, make_pdf):
 
     assert ctx["names"].get("F10126106") == "Test Parent"
     assert ctx["names"].get("F10126107") == "Child part"
+
+
+def test_snap_bom_votes_rekeys_a_near_miss_reference():
+    # A description read from a scanned parent is filed under the raw ref; the
+    # BOM snap corrects the ref, so the vote must follow it or the child never
+    # finds the name for its folder.
+    votes = {"F0156241": Counter({"CHILD PART": 1, "OTHER NAME": 1})}
+    logged = []
+
+    runmodes._snap_bom_votes(votes, {"F10156241_A_DWG1"}, logged.append)
+
+    assert list(votes) == ["F10156241"]
+    assert votes["F10156241"]["CHILD PART"] == 1
+    assert any("corrected to" in msg for msg in logged)
+
+
+def test_snap_bom_votes_leaves_a_matching_reference_alone():
+    votes = {"F10156241": Counter({"CHILD PART": 1})}
+
+    runmodes._snap_bom_votes(votes, {"F10156241_A_DWG1"}, lambda msg: None)
+
+    assert list(votes) == ["F10156241"]
+
+
+def test_sweep_repair_staging_only_touches_its_own_tree(tmp_path):
+    # The registry is keyed by tree: a concurrent repair on another output must
+    # keep its staged candidates while it places them.
+    tree_a, tree_b = tmp_path / "a", tmp_path / "b"
+    tree_a.mkdir()
+    tree_b.mkdir()
+    staged_a, staged_b = tmp_path / "stage-a", tmp_path / "stage-b"
+    staged_a.mkdir()
+    staged_b.mkdir()
+    runmodes._register_staging(tree_a, staged_a)
+    runmodes._register_staging(tree_b, staged_b)
+
+    logged = []
+    runmodes.sweep_repair_staging(tree_a, logged.append)
+
+    assert not staged_a.exists()
+    assert staged_b.exists()
+    runmodes.sweep_repair_staging(tree_b, logged.append)
+    assert not staged_b.exists()
+    assert runmodes._REPAIR_STAGING == {}

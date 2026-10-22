@@ -75,6 +75,12 @@ python organize_fermi_pdfs.py "D:\data\drawings" --output "D:\data\drawings\Outp
 # 3. later batches feeding the SAME output tree (input folder may differ)
 python organize_fermi_pdfs.py "D:\data\more-pdfs" --incremental --output "D:\data\drawings\Output" --dry-run
 python organize_fermi_pdfs.py "D:\data\more-pdfs" --incremental --output "D:\data\drawings\Output"
+
+# 4. an existing tree needs correcting (naming/placement rules changed since it
+#    was built, a drawing was parked in _orphans/ or archived by mistake):
+#    repair reads ONLY the tree, and never a source folder
+python organize_fermi_pdfs.py "D:\data\drawings\Output" --repair --dry-run
+python organize_fermi_pdfs.py "D:\data\drawings\Output" --repair
 ```
 
 Without `--output` the tree is organized **in place**, in the input folder itself.
@@ -87,6 +93,7 @@ Without `--output` the tree is organized **in place**, in the input folder itsel
 | `--output <dir>` | Organized tree target (default: the input folder itself — in-place). |
 | `--dry-run` | Print the plan without copying files. Still rebuilds the `.xlsx` workbook and its history sidecar, and writes the timestamped `.txt` report when the output folder exists; a missing `--output` folder is created for the workbook only. Always run this first. |
 | `--incremental` | Process only stems not already in the output tree, plus stored `_orphans/` (adoption). Existing organized folders stay put, except when a new revision supersedes an old one or a parent adoption moves them. |
+| `--repair` | Re-apply the current decisions to an **existing** tree given as the positional folder (no source scan; rejects `--output`/`--incremental`/`--rekey-titleblock`). Renames folders to the current name plan, moves a folder onto its planned parent, adopts a drawing wrongly parked in `_orphans/`, promotes a `_superseded/` copy whose revision out-ranks the live drawing, and removes duplicate folders — deleting a folder only when every file in it has a byte-identical copy at a planned path. Places nothing that is absent from the tree. Read `--dry-run --repair` first: a hand-renamed or hand-moved folder is reverted. |
 | `--no-ocr` | Disable the OCR fallback for scanned PDFs. |
 | `--jobs N` | Parallel extraction workers (`0` = auto = CPU count, `1` = serial). |
 | `--rekey-titleblock` | Trust the title block over the filename: re-key a misnamed **text-layer** PDF to its title-block drawing number (revision adopted, copied file renamed). Only when no drawing of that number already exists in the run; scanned (OCR) numbers never rename a file. |
@@ -102,7 +109,7 @@ named). A nested `sub/Output/` **is** scanned.
 |---|---|
 | `0` | Normal outcome — orphans, `CHK` files and missing BOM references are reported but still exit 0. |
 | `1` | Nothing ran: input folder missing/not a directory, no PDFs found, output folder could not be created, or another run holds the lock. |
-| `2` | The run started but ended non-successfully: an over-cap placement refusal (see *Known limits*; report + workbook **are** written) **or** the run lock was lost mid-run (report + workbook are **not** written — the tree may hold partial writes). |
+| `2` | The run started but ended non-successfully: an over-cap placement refusal (see *Known limits*; report + workbook **are** written), a `--repair` run that left folders needing manual review (report + workbook **are** written), **or** the run lock was lost mid-run (report + workbook are **not** written — the tree may hold partial writes). |
 
 Scripts should treat `2` as "inspect the log and the output folder" rather than a
 crash: whether the artifacts exist tells the two `2` cases apart.
@@ -115,7 +122,7 @@ Everything is written under the output folder:
 |---|---|
 | `<Output>/` | The organized tree: `{DRAWING_NUMBER} {PART NAME}` folders nested per the BOM hierarchy. |
 | `<Output>/_superseded/` | Older revisions and `CHK` files replaced by an approved `DWG` counterpart, plus watermarked duplicates of a revision that a non-watermarked copy won. |
-| `<Output>/_orphans/` | Drawings with no parent seen yet; a future incremental run adopts them automatically when their parent arrives. |
+| `<Output>/_orphans/` | Drawings with no parent seen yet; a future incremental or repair run adopts them automatically when their parent arrives. |
 | `<Output>/organize_fermi_report.xlsx` | Live status workbook, rebuilt after every run (see sheets below). |
 | `<Output>/organize_fermi_pdfs_report_*.txt` | Full text log of each run, including missing BOM references and OCR recovery details. |
 
@@ -234,10 +241,10 @@ fermi_organizer/
   cli.py                   argparse + logging + report wiring
   config.py                constants + regexes + OCR geometry
   extraction.py            BOM/USED ON/NAME extraction + OCR fallback + run-scoped OCR context
-  graph.py                 pure algorithms: revision ranking, matching, cycles
+  graph.py                 pure algorithms: revision ranking, matching, cycles, planned paths
   naming.py                folder naming + path-length shortening
-  fsops.py                 input indexing, placement, tree scans, supersede/orphan copies
-  runmodes.py              run_full + run_incremental (return a structured run context)
+  fsops.py                 input indexing, placement, tree scans, supersede/orphan copies, repair reconcile
+  runmodes.py              run_full + run_incremental + run_repair (return a structured run context)
   report_glue.py           tree-derived NAME fallback
 tests/                     pytest suite (PDFs generated at test time)
 ```

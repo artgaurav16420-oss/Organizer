@@ -99,6 +99,19 @@ The reported scope of incremental therefore changes from delta to whole-tree
 (roots, mismatches). That is intended: a delta-only Roots section was the
 inconsistency being fixed.
 
+### NAME source for scanned drawings
+
+An image-only drawing's NAME is OCR output, so a misread still reads as a
+plausible part name (`NUT PLATE, MINI-CONFLAT` → `-CONFLAIL, NUT PLATE, MINI xX
+OQ`). Both modes therefore replace a name that OCR produced with the part name
+from the parents' PARTS LIST rows (`naming.prefer_bom_names`), decided by
+majority description with a lexicographic tie-break
+(`naming.bom_name_winners`) so a parent whose parts list still carries an old
+revision's wording cannot outvote the current name. A text-layer drawing keeps
+its own NAME — that one is authoritative — and an OCR name survives when no
+parent describes the part. Both modes call the same two functions, and `names`
+is now part of the parity comparison in `tests/test_mode_parity.py`.
+
 ## Rejected alternative: one merged algorithm
 
 Making `full` a degenerate `incremental` (empty tree) was rejected: it routes

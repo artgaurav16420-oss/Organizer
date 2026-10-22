@@ -4,6 +4,80 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Added: `--repair` re-applies the current decisions to an existing tree
+- New mode: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` takes an
+  existing output folder as its **only** input (no source scan, no `--output`)
+  and re-applies the current code's decisions to it: it renames live folders to
+  the current name plan, moves a folder onto its planned parent, adopts a
+  drawing a previous run wrongly parked in `_orphans/`, promotes a `_superseded/`
+  copy whose revision out-ranks the live drawing (every sheet at that revision
+  travels together; never an unapproved CHK), and removes duplicate folders.
+  Nothing is placed that is absent from the tree.
+- A tree built by older code (or by an unknown batch order) can therefore be
+  corrected in place instead of deleting the output and rebuilding from every
+  source folder in order; `_superseded/` history is preserved.
+- Delete rule: a folder is removed only when every file in its subtree is a PDF
+  and every one is byte-identical to a copy at a planned path. Anything else is
+  kept, reported, and makes the run exit 2 (`Needs manual review`). Nothing is
+  ever removed from `_superseded/` except the promoted source, once its live
+  copy is verified.
+- `_superseded/` stops being a one-way door, but only for copies the current
+  ranking disagrees with: correctly archived copies (older revisions, CHK,
+  watermarked losers) are untouched, so a repair over a freshly built tree
+  reports all zeros.
+- Repair shares the incremental executor (`_run_delta_inner`) and the whole
+  decision layer, so its report matches a full run's
+  (`tests/test_mode_parity.py`).
+
+### Names come from a parent's parts list when the drawing is scanned
+- A scanned drawing's own NAME is OCR output, so a misread still looks like a
+  real name (`F10128174` was named `-CONFLAIL, NUT PLATE, MINI xX OQ.`). The
+  parents' PARTS LIST rows carry the same name as a text layer, so a name read
+  by OCR is replaced by the BOM description, and a drawing whose NAME could not
+  be read at all is filled from it instead of staying a bare drawing number
+  (both run modes, folders and the workbook). A text-layer drawing keeps its
+  own title-block NAME.
+- Parents can disagree (a stale parts list keeps an old revision's wording), so
+  the description is chosen by majority vote with a deterministic
+  lexicographic tie-break instead of first-seen.
+- `SINGLE_LINE_RE` now allows commas, so a parts-list row keeps its full
+  description (`NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD`) instead of the stub up
+  to the first comma.
+
+### Fix: view-balloon part numbers are not BOM rows
+- A sheet can print a part number next to a circled item balloon (`11
+  F10218071`) in a view, away from the parts list. Both the line parser and the
+  Format 4 positional parser read those as children, so `F10202541` (12 rows in
+  its PARTS LIST) got 14 folders. Every BOM row is now required to sit in the
+  page's parts-list FERMI# column: the column is anchored on the `FERMI #`
+  header label, falling back to the densest aligned column of F-numbers, and is
+  used for the line, Format 4 and positional paths. Pages where no column can
+  be found keep the old behaviour.
+- A Format 1 description that is an item digit or a stray letter (`F`) is no
+  longer kept as a part NAME.
+
+### Fix: title-block OCR ran at the wrong page-segmentation mode
+- The high-zoom title-block pass invoked Tesseract as `... stdout tsv --psm 6`.
+  Tesseract parses options *before* the config file, so `--psm` was silently
+  dropped and the pass always ran at the default psm 3, which garbles a title
+  block. Options now precede `tsv`, so the intended psm 6 applies: across the
+  55 scanned drawings in the test database this gained 13 NAMEs and 1 USED ON
+  value, lost 1 garbled NAME (its parent's parts list supplies the correct
+  one), and changed no BOM row.
+
+### Fix: OCR NAME words kept in reading order
+- The NAME words were ordered by `round(y)` before being joined, so two boxes
+  on the same visual line whose top edges straddled a half-point boundary were
+  split into separate rows and the later one was emitted first (`F10128174`
+  read `-CONFLAIL, NUT PLATE, MINI xX OQ.`). Rows are now grouped by the same
+  y tolerance the next-row drop uses, so the name reads left to right.
+
+### Fix: long-path input handling during BOM extraction
+- Extraction now routes PDF open calls through `fsops._native`, adding
+  the Windows `\\?\` extended prefix for input paths >=260 chars so
+  PDFs stored deeply in renamed/moved input trees no longer fail with a
+  misleading 'no such file' error while reading BOM etc.
+
 ### Performance: single PDF open per phase
 - `survey_task` extracts BOM, USED ON, title block, name, watermark and
   scanned state from one opened PDF document instead of separate BOM and

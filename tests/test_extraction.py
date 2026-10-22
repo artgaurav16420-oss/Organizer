@@ -1,5 +1,6 @@
 """BOM / USED ON / NAME extraction from generated PDFs."""
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,18 @@ def test_single_line_desc_containing_reference_is_kept(tmp_path, make_pdf):
     assert ("F10126107", 1, "text-fallback", "CLAMP REF F10126108") in entries
 
 
+def test_single_line_desc_keeps_commas(tmp_path, make_pdf):
+    # F10187622-style parts list: the description is a comma-separated part
+    # name. The char class used to stop at the first comma, truncating
+    # 'NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD' to 'NUT PLATE' and feeding that
+    # stub to a scanned child's folder name.
+    pdf = make_pdf(tmp_path / "F10187622.pdf",
+                   ["FERMI PART LIST", "F10128174 NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD"])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert ("F10128174", 1, "text-fallback",
+            "NUT PLATE, MINI-CONFLAT, M4 X 0.7 THD") in entries
+
+
 def test_cross_reference_connector_forms():
     # The tokenizer must not mangle connectors: "W/" stays "W/" (it is in
     # the connector set), so every spelling of a pure pointer is rejected
@@ -104,6 +117,80 @@ def test_split_line_column_headers_enable_fallback(tmp_path, make_pdf):
     values = {v for v, *_rest in entries}
     assert "F10126107" in values
     assert "F10126108" not in values
+
+
+def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, monkeypatch):
+    # Tesseract parses options before the config file: with 'tsv' first, every
+    # --psm was silently dropped and the pass ran at the default psm 3
+    # (F10051459's title-block NAME came back empty).
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "X"])
+    # Hold the document: the page belongs to it, and opening inline would leave
+    # only the page alive as a temporary.
+    src_doc = fitz.open(pdf)
+    page = src_doc[0]
+    seen = []
+
+    def fake_run(args, timeout):
+        seen.append(list(args))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(extraction, "_tesseract_run", fake_run)
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract")
+    extraction._ocr_words_zoom(page, fitz.Rect(0, 0, 100, 50), 2, "6")
+    src_doc.close()
+
+    assert seen, "tesseract was not invoked"
+    argv = seen[0]
+    assert argv[-1] == "tsv"
+    assert argv.index("--psm") < argv.index("tsv")
+    assert argv[argv.index("--psm") + 1] == "6"
+    # F10202541-style sheet: the parts list is a FERMI# column at x=450 and a
+    # view balloon prints a bare part number at x=100. The balloon used to
+    # become a phantom child (and an extra folder for a real PDF in the tree).
+    doc = fitz.open()
+    page = doc.new_page(width=1400, height=900)
+    page.insert_text((400, 450), "FERMI PART LIST", fontsize=11)
+    for text, x in [("ITEM", 400), ("FERMI", 450), ("#", 490),
+                    ("PART", 530), ("NAME", 575), ("QTY", 630)]:
+        page.insert_text((x, 470), text, fontsize=11)
+    for text, x, y in [("F10126109", 100, 300),
+                       ("F10126107 CHILD PART", 450, 500),
+                       ("F10126108 CHILD TWO", 450, 520)]:
+        page.insert_text((x, y), text, fontsize=11)
+    pdf = tmp_path / "F10202541.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    page = fitz.open(pdf)[0]
+    words = extraction._page_words(page)
+    band = extraction._partslist_band(words)
+    assert band is not None
+    in_band = extraction._fermi_values_in_band(words, band)
+    assert "F10126107" in in_band and "F10126108" in in_band
+    # ...and it sits outside the parts-list column, so it is not a row.
+    assert "F10126109" not in in_band
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert [v for v, *_rest in entries] == ["F10126107", "F10126108"]
+
+
+def test_desc_plausible_rejects_item_digits_and_stray_letters():
+    assert not extraction._desc_plausible("")
+    assert not extraction._desc_plausible("F")
+    assert not extraction._desc_plausible("11")
+    assert extraction._desc_plausible("SEAL")
+    assert extraction._desc_plausible("O-RING")
+    # A numeric catalogue name is a real description (F10149343's FC0078646).
+    assert extraction._desc_plausible("8020-30-3030")
+
+
+def test_multiline_bom_keeps_row_but_drops_junk_description(tmp_path, make_pdf):
+    # Format 1 takes the line below the FERMI# verbatim; a bare letter there is
+    # not a part name (F10202541's balloon row read a description of 'F').
+    pdf = make_pdf(tmp_path / "F10126106.pdf",
+                   ["FERMI PART LIST", "1", "F10126107", "F", "2"])
+    entries, _method, _issues = extraction.extract_bom_entries(pdf)
+    assert [v for v, *_rest in entries] == ["F10126107"]
+    assert entries[0][3] == ""
 
 
 def test_multiline_bom_skips_note_lines_until_qty(tmp_path, make_pdf):
@@ -488,6 +575,28 @@ def test_name_from_anchor_strict_row_wins_over_tall_noise():
     ]
     anchor = extraction._find_name_anchor(words)
     assert extraction._name_from_anchor(words, anchor) == "REAL VALUE"
+
+
+def test_name_from_anchor_reads_the_row_left_to_right():
+    # F10128174's real OCR word boxes: the fragment '-CONFLAIL,' (OCR of
+    # 'MINI-CONFLAT,') starts half a point higher than its neighbours, so the
+    # old 'round(y)' sort key bucketed it into an earlier row and emitted it
+    # first ('-CONFLAIL, NUT PLATE, MINI xX OQ.'). The name must read in x
+    # order; the second line (misread 'THD' as 'TAD') stays out.
+    words = [
+        (823.5, 729.6, 842.0, 734.4, "NAME", 0, 0, 0),
+        (831.6, 747.6, 858.6, 756.8, "NUT", 0, 0, 0),
+        (871.1, 747.6, 924.8, 758.6, "PLATE,", 0, 0, 0),
+        (940.3, 747.6, 973.8, 756.8, "MINI", 0, 0, 0),
+        (980.8, 747.1, 1062.3, 760.6, "-CONFLAIL,", 0, 0, 0),
+        (1077.3, 747.6, 1094.5, 756.8, "M4", 0, 0, 0),
+        (1106.8, 747.6, 1114.1, 756.8, "xX", 0, 0, 0),
+        (1126.4, 747.6, 1153.4, 756.8, "OQ.", 0, 0, 0),
+        (979.0, 761.1, 1006.1, 770.4, "TAD", 0, 0, 0),
+    ]
+    anchor = extraction._find_name_anchor(words)
+    assert extraction._name_from_anchor(words, anchor) == (
+        "NUT PLATE, MINI -CONFLAIL, xX OQ.")
 
 
 def test_find_name_anchor_keeps_label_with_distant_part_note():

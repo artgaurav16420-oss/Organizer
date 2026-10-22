@@ -1206,3 +1206,258 @@ def retire_adopted_orphans(stored_orphans, folder, dry_run, log, superseded=(),
     if retired:
         log(f"Retired {retired} orphan copy(ies) from _orphans/ (adopted into tree)")
     return retired
+
+
+def remove_empty_dirs(output, dry_run, log, lock=None):
+    """Delete empty folders under an output tree, deepest first.
+
+    Top-level system dirs (any "_" prefix) and the output root itself are never
+    removed, and a folder holding anything - including a file the tool did not
+    write - is left alone. `lock` is the run's lock path (None = unlocked) and
+    is re-checked before each removal, so a run stolen mid-sweep stops instead
+    of deleting folders another run now owns. Returns the number removed.
+    """
+    removed = 0
+    dirs = sorted((p for p in output.rglob("*") if p.is_dir()),
+                  key=lambda p: len(p.parts), reverse=True)
+    for path in dirs:
+        rel = path.relative_to(output)
+        if not rel.parts or rel.parts[0].startswith("_"):
+            continue
+        try:
+            if any(path.iterdir()):
+                continue
+        except OSError:
+            continue
+        if dry_run:
+            log(f"  [DRY-RUN] rmdir {rel}")
+        else:
+            _ensure_lock(lock, log)
+            try:
+                path.rmdir()
+            except OSError as e:
+                log(f"  WARNING: could not remove empty folder {rel}: {e}")
+                continue
+        removed += 1
+    if removed:
+        log(f"Removed {removed} empty folder(s)")
+    return removed
+
+
+def longest_dest_path(target_path, current):
+    """Longest file path a copy of `current` under `target_path` would create.
+
+    place_files guards every target against MAX_PATH; the folder-level MAX_DIR
+    check alone does not bound descendant files, which fail mid-copy on
+    Windows and force partial-tree cleanup. Returns None when `current` cannot
+    be listed (callers treat that as "do not act").
+    """
+    try:
+        entries = list(current.rglob("*"))
+    except OSError:
+        return None
+    if not entries:
+        return target_path
+    return max((target_path / e.relative_to(current) for e in entries),
+               key=lambda p: len(str(p)))
+
+
+def _folder_removable(folder, planned_by_stem, output):
+    """True when every file under `folder` also exists at a planned path.
+
+    The rule that makes repair safe: a folder leaves the tree only after every
+    PDF in its subtree is byte-identical to the copy the plan gives that stem,
+    and it holds no non-PDF file. Returns (ok, reason) for the review line.
+    """
+    try:
+        entries = list(folder.rglob("*"))
+    except OSError as e:
+        return False, f"cannot list ({e})"
+    for path in entries:
+        # A symlink (live or broken) or any other non-PDF entry is a manual
+        # addition: is_file() is False for a broken or directory symlink, and
+        # omitting one would let the folder be removed around it.
+        if not _islink(path) and path.is_dir():
+            continue
+        if _islink(path) or not path.is_file():
+            return False, f"holds non-PDF entry {path.name}"
+        if path.suffix.lower() != ".pdf":
+            return False, f"holds non-PDF file {path.name}"
+        stem = canonical_stem(path.stem)
+        targets = [output.joinpath(*rel) / path.name
+                   for rel in planned_by_stem.get(stem, ())]
+        # The twin must be a different, regular file: a drawing already at its
+        # own planned path would otherwise vouch for the folder it lives in,
+        # and a symlinked "twin" points outside the tree, so neither is an
+        # independent planned copy.
+        if not any(not _islink(t) and t != path and t.exists()
+                   and _same_bytes(path, t) for t in targets):
+            return False, f"{path.name} has no identical copy at its planned path"
+    return True, ""
+
+
+def _remap_folder(folder, moved_dirs):
+    """Folder after earlier moves this run (exact or ancestor match)."""
+    for old, new in moved_dirs.items():
+        if folder == old or folder.is_relative_to(old):
+            return new.joinpath(*folder.relative_to(old).parts)
+    return folder
+
+
+def _drop_organized_under(organized, folder):
+    """Forget every organized path inside a folder that no longer exists."""
+    for stem, paths in organized.items():
+        kept = [p for p in paths if not p.is_relative_to(folder)]
+        if len(kept) != len(paths):
+            organized[stem] = kept
+
+
+def _remap_organized_under(organized, old, new):
+    """Point every organized path inside `old` at `new` after a folder move."""
+    for stem, paths in organized.items():
+        organized[stem] = [new.joinpath(*p.relative_to(old).parts)
+                           if p.is_relative_to(old) else p for p in paths]
+
+
+def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
+                 organized, lock):
+    """Move a folder (with its subtree) to `target`; False when refused.
+
+    Refused for an existing destination, a resulting path over MAX_PATH, or a
+    failed move - each logged, never fatal. A folder shared with another
+    drawing is not refused: repair moves whole subtrees on purpose, and any
+    child that belongs elsewhere is reconciled by its own pass afterwards.
+    """
+    if _exists(target):
+        log(f"  WARNING: {stem}: destination exists, not merging "
+            f"(manual review): {target.relative_to(output)}")
+        return False
+    longest = longest_dest_path(target, folder)
+    if longest is None:
+        # Cannot list the subtree, so its deepest path is unknown; a move would
+        # skip the MAX_PATH guard and could fail half-way. Refuse it.
+        log(f"  WARNING: {stem}: cannot list source folder, skipping move "
+            f"(manual review): {target.relative_to(output)}")
+        return False
+    if len(str(longest)) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({len(str(longest))} chars), "
+            f"skipping move: {target}")
+        return False
+    if dry_run:
+        log(f"  [DRY-RUN] move {folder.relative_to(output)} -> "
+            f"{target.relative_to(output)}")
+    else:
+        _ensure_lock(lock, log)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(folder), str(target))
+        except (OSError, ValueError) as e:
+            log(f"  WARNING: {stem}: move failed ({target}): {e}")
+            return False
+    moved_dirs[folder] = target
+    _remap_organized_under(organized, folder, target)
+    return True
+
+
+def _place_copy(stem, organized, target, output, dry_run, log, lock):
+    """Copy a stem's PDF into a second planned folder (multi-claimant case)."""
+    if _exists(target):
+        return False
+    live = [p for p in organized.get(stem, []) if p.exists()]
+    src = pick_shallowest(live or organized[stem])
+    dst = target / src.name
+    if len(str(target)) > MAX_DIR or len(str(dst)) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({len(str(dst))} chars), "
+            f"skipping: {dst}")
+        return False
+    if dry_run:
+        log(f"  [DRY-RUN] mkdir+copy {src.name} -> {target.relative_to(output)}")
+        return True
+    _ensure_lock(lock, log)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        _copy_atomic(src, dst)
+    except (OSError, ValueError) as e:
+        log(f"  WARNING: {stem}: copy failed ({dst}): {e}")
+        return False
+    organized.setdefault(stem, []).append(dst)
+    return True
+
+
+def reconcile_tree(organized, planned, output, dry_run, log, moved_dirs,
+                   lock=None):
+    """Move live folders onto the planned tree; prune verified duplicates.
+
+    `organized` (stem -> live PDF paths) and `moved_dirs` are updated in
+    place: a relocation is recorded so later passes follow it, and every
+    organized path under a moved or removed folder is remapped or dropped.
+    `planned` is graph.planned_paths output. A folder is deleted only when
+    _folder_removable proves every file in it has a byte-identical twin at a
+    planned path, so a stem's last copy is never deleted.
+
+    Stems are visited roots-first (by planned depth), so a parent's move lands
+    before its children are inspected. Returns (counts, review) with counts
+    {moved, copied, removed, review} and review = ["stem: reason", ...].
+    """
+    counts = {"moved": 0, "copied": 0, "removed": 0, "review": 0}
+    review = []
+
+    def note(stem, msg):
+        counts["review"] += 1
+        review.append(f"{stem}: {msg}")
+        log(f"  WARNING: {stem}: {msg} (manual review)")
+
+    for stem in sorted(planned,
+                       key=lambda s: (min(len(r) for r in planned[s]), s)):
+        paths = organized.get(stem)
+        if not paths:
+            continue
+        targets = [output.joinpath(*rel) for rel in planned[stem]]
+        current = []
+        for path in paths:
+            folder = _remap_folder(path.parent, moved_dirs)
+            if folder not in current:
+                current.append(folder)
+        keep = [f for f in current if f in targets]
+        extra = [f for f in current if f not in targets]
+        missing = [t for t in targets if t not in current]
+        for folder in extra:
+            if missing and not _exists(missing[0]):
+                target = missing.pop(0)
+                if _move_folder(stem, folder, target, output, dry_run, log,
+                                moved_dirs, organized, lock):
+                    counts["moved"] += 1
+                    keep.append(target)
+                else:
+                    # A refused move leaves the stem off plan, so the run must
+                    # report it: silently continuing would let the CLI exit 0
+                    # on an unreconciled tree.
+                    note(stem, f"move to {target.relative_to(output)} refused; "
+                               f"stale copy kept at "
+                               f"{folder.relative_to(output)}")
+                continue
+            if not keep:
+                note(stem, f"stale copy kept at {folder.relative_to(output)} "
+                           "(no planned copy yet)")
+                continue
+            ok, reason = _folder_removable(folder, planned, output)
+            if not ok:
+                note(stem, f"stale copy kept at {folder.relative_to(output)}: "
+                           f"{reason}")
+                continue
+            if dry_run:
+                log(f"  [DRY-RUN] remove duplicate folder "
+                    f"{folder.relative_to(output)}")
+            else:
+                _ensure_lock(lock, log)
+                try:
+                    shutil.rmtree(folder)
+                except OSError as e:
+                    note(stem, f"remove failed: {e}")
+                    continue
+                _drop_organized_under(organized, folder)
+            counts["removed"] += 1
+        for target in missing:
+            if _place_copy(stem, organized, target, output, dry_run, log, lock):
+                counts["copied"] += 1
+    return counts, review

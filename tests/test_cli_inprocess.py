@@ -45,6 +45,43 @@ def test_cli_main_dry_run_writes_report_and_xlsx(monkeypatch, tmp_path, make_pdf
     assert not list(out.rglob("*.pdf"))
 
 
+def test_cli_main_repair_writes_report_and_exits_clean(monkeypatch, tmp_path, make_pdf):
+    from fermi_organizer.runmodes import run_full
+    src = tmp_path / "src"
+    src.mkdir()
+    make_pdf(src / "F10126106.pdf", [
+        "FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
+    make_pdf(src / "F10126107.pdf", ["NAME", "Child part"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(out), "--repair",
+                         "--no-ocr", "--jobs", "1"])
+    assert cli_module.main() is None
+
+    report = max(out.glob("organize_fermi_pdfs_report_*.txt"))
+    text = report.read_text(encoding="utf-8")
+    assert "Mode: REPAIR" in text
+    assert "--- Repair (tree reconciliation) ---" in text
+    assert "Needs manual review:    0" in text
+
+
+@pytest.mark.parametrize("extra", [
+    ["--incremental"],
+    ["--output", "somewhere"],
+    ["--rekey-titleblock"],
+])
+def test_cli_main_repair_rejects_conflicting_flags(monkeypatch, tmp_path, extra):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(tree), "--repair"] + extra)
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main()
+    assert exc.value.code == 2
+
+
 def _minimal_ctx():
     return {
         "counters": {"scanned": 0, "roots": 0, "copies": 0, "cycles": 0,
