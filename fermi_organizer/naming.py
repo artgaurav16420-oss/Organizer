@@ -79,13 +79,24 @@ def prefer_bom_names(names_of, ocr_named_stems, bom_names, stems=()):
     return names
 
 
-def _collect_placements(children, roots):
+class PlacementPlanTooLarge(RuntimeError):
+    """The name plan would enumerate more root-to-leaf paths than allowed.
+
+    Raised from the placement walk as soon as the limit is passed, so a diamond
+    DAG in the tree cannot exhaust time and memory before the caller's fan-out
+    cap is consulted (measured: 3.1M placements / 805 MB on a 41-node ladder).
+    """
+
+
+def _collect_placements(children, roots, limit=None):
     """Root-to-leaf component tuples, pre-order; roots and children sorted.
 
     Every root-to-leaf path is collected: a stem shared by two parents must
     be shortened for both chains (place_files copies it under both), so the
     walk must not stop at a stem's first visit. Cycles are broken before
     placement; the depth cap bounds any cyclic input that slips through.
+    With `limit`, the walk stops by raising PlacementPlanTooLarge as soon as
+    more than `limit` distinct paths have been collected.
     """
     placements = []
     seen = set()
@@ -103,6 +114,8 @@ def _collect_placements(children, roots):
                 continue
             seen.add(key)
             placements.append(key)
+            if limit is not None and len(placements) > limit:
+                raise PlacementPlanTooLarge(len(placements))
             for child in reversed(sorted(children.get(stem, ()))):
                 stack.append((child, comps + (child,), depth + 1))
     return placements
@@ -176,8 +189,14 @@ def _log_name_shortening(placements, names, get_name, index, names_of, total_len
             log(f"  NOTE: folder name shortened to fit path limit: {full!r} -> {names[stem]!r}")
 
 
-def build_folder_names(children, roots, index, names_of, base_folder, log):
-    """Compute folder names for a subtree, shortened so all target paths fit the Windows limit."""
+def build_folder_names(children, roots, index, names_of, base_folder, log,
+                       limit=None):
+    """Compute folder names for a subtree, shortened so all target paths fit the Windows limit.
+
+    `limit` bounds the placement walk (see _collect_placements): the plan is
+    refused, not truncated, because a partial plan would name folders that the
+    full walk would have shortened differently.
+    """
     names = {}
 
     def get_name(stem):
@@ -185,7 +204,7 @@ def build_folder_names(children, roots, index, names_of, base_folder, log):
             names[stem] = folder_name_for(stem, names_of)
         return names[stem]
 
-    placements = _collect_placements(children, roots)
+    placements = _collect_placements(children, roots, limit=limit)
 
     def total_len(comps):
         return _placement_len(comps, base_folder, index, get_name)

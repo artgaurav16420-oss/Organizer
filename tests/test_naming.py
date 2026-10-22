@@ -1,12 +1,16 @@
 """Unit tests: folder naming + path-limit shortening."""
 import os
+from collections import defaultdict
 from pathlib import Path
+
+import pytest
 
 from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
 from fermi_organizer.naming import (_collect_placements, _placement_len,
                                     add_bom_name, bom_name_winners,
                                     prefer_bom_names,
-                                    build_folder_names, sanitize_folder_name)
+                                    build_folder_names, sanitize_folder_name,
+                                    PlacementPlanTooLarge)
 
 
 def test_sanitize_folder_name_drops_control_and_bidi_chars():
@@ -248,3 +252,44 @@ def test_placement_len_base_folder_variations():
     base_empty = ""
     expected_path_empty = os.sep.join(["", "F10126106 FOLDER", "F10126106.pdf"])
     assert _placement_len(comps, base_empty, index, get_name) == len(expected_path_empty)
+
+
+def test_build_folder_names_refuses_an_explosive_plan():
+    # The placement walk is bounded: a diamond ladder doubles the number of
+    # distinct root-to-leaf paths per level (the review measured 3.1M
+    # placements / 805 MB on a 20-level ladder), so it must stop early and tell
+    # the caller, not enumerate.
+    children = defaultdict(set)
+    depth = 12
+    for i in range(depth):
+        children[f"A{i}"] = {f"B{i}", f"C{i}"}
+        children[f"B{i}"] = {f"A{i + 1}"}
+        children[f"C{i}"] = {f"A{i + 1}"}
+    children[f"A{depth}"] = set()
+    index = {s: Path(f"{s}.pdf") for s in children}
+
+    with pytest.raises(PlacementPlanTooLarge):
+        build_folder_names(children, ["A0"], index, {}, Path("C:/out"),
+                           lambda m: None, limit=1000)
+
+
+def test_plan_folder_names_returns_none_when_over_cap(tmp_path, monkeypatch):
+    # The mode-layer contract: no plan rather than a partial one, so the caller
+    # refuses placement/reconcile instead of naming folders off a truncated map.
+    from fermi_organizer import runmodes
+
+    # Shrink the bound so the ladder is rejected in a few thousand steps.
+    monkeypatch.setattr(runmodes, "MAX_PLANNED_COPIES", 100)
+    children = defaultdict(set)
+    depth = 12
+    for i in range(depth):
+        children[f"A{i}"] = {f"B{i}", f"C{i}"}
+        children[f"B{i}"] = {f"A{i + 1}"}
+        children[f"C{i}"] = {f"A{i + 1}"}
+    children[f"A{depth}"] = set()
+    index = {s: tmp_path / f"{s}.pdf" for s in children}
+    logged = []
+
+    assert runmodes.plan_folder_names(children, ["A0"], index, {}, tmp_path,
+                                      logged.append) is None
+    assert any("root-to-leaf paths exceed" in line for line in logged)

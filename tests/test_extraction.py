@@ -1618,3 +1618,89 @@ def test_ocr_strip_tokens_cleanup_on_pix_save_failure(monkeypatch, tmp_path, mak
     tmp_file = created_tempfiles[0]
     assert not os.path.exists(tmp_file), f"Temporary file {tmp_file} was not cleaned up on pix.save failure!"
     doc.close()
+
+
+def test_words_cached_normalises_ocr_words_to_iso_points(monkeypatch, tmp_path,
+                                                        make_pdf):
+    # OCR runs at a render dpi that has nothing to do with page points, so the
+    # word boxes are divided by the page's ISO scale before any label-relative
+    # window looks at them. Nothing tested this: every OCR test stubs
+    # words_cached itself, so an inverted scale stayed green.
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+    monkeypatch.setattr(extraction, "iso_page_scale", lambda w, h: 2.0)
+    monkeypatch.setattr(extraction, "_ocr_render_dpi", lambda p: 100)
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr",
+                        lambda self, **kw: object())
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_text",
+                        lambda self, *a, **k: [
+                            (100.0, 200.0, 140.0, 220.0, "HELLO", 0, 0, 0)])
+
+    words = extraction.OCR.words_cached(page)
+
+    assert words[0][:4] == (50.0, 100.0, 70.0, 110.0)
+    assert words[0][4] == "HELLO"
+    assert extraction.OCR.page_scale[extraction.OCR.doc_key(page)] == 2.0
+    doc.close()
+
+
+def test_words_cached_timeout_is_recorded_not_raised(monkeypatch, tmp_path,
+                                                     make_pdf):
+    # A hung tesseract must cost one page, not the run: the worker is abandoned,
+    # the timeout is reported, and the empty result is memoized so the next
+    # caller does not wait again.
+    import threading
+
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(extraction, "OCR_INPROCESS_TIMEOUT_SEC", 0.01)
+
+    def blocked(self, **kw):
+        started.set()
+        release.wait(5)
+        return None
+
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr", blocked)
+    issues = []
+    try:
+        words = extraction.OCR.words_cached(page, issues, "page 1")
+        assert words == []
+        assert issues == ["page 1: OCR timed out after 0.01s "
+                          "(tesseract process may still finish in background)"]
+        key = extraction.OCR.doc_key(page)
+        assert extraction.OCR.words_memo[key] == []   # memoized, not retried
+    finally:
+        # Let the abandoned worker finish before teardown restores the real
+        # engine method (it must not call it after the document is closed).
+        # Thread.start() returns before run() is entered, so wait for the fake.
+        assert started.wait(5)
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "ocr-timeout":
+                thread.join(timeout=5)
+    doc.close()
+
+
+def test_words_cached_engine_error_is_recorded_as_an_issue(monkeypatch, tmp_path,
+                                                           make_pdf):
+    # pymupdf surfaces mupdf failures as RuntimeError; they must reach the run's
+    # issue list instead of escaping (or silently vanishing).
+    pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
+    doc = fitz.open(pdf)
+    page = doc[0]
+
+    def boom(self, **kw):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr", boom)
+    issues = []
+
+    assert extraction.OCR.words_cached(page, issues, "page 1") == []
+    assert issues == ["page 1: OCR failed: engine gone"]
+    doc.close()

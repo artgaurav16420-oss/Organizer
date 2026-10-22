@@ -10,14 +10,16 @@ from pathlib import Path
 from typing import TypedDict
 
 from .config import (canonical_stem, filename_title, TB_NUM_VAL_RE,
-                     is_processable_ref, MAX_DIR, MAX_PATH, TREE_MAX_DEPTH)
+                     is_processable_ref, MAX_DIR, MAX_PATH, MAX_PLANNED_COPIES,
+                     PLAN_PLACEMENT_FACTOR, TREE_MAX_DEPTH)
 from .extraction import (resolve_jobs, title_task, org_task, survey_task,
                          dup_meta_task, run_parallel, OCR)
 from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
-                    break_cycles, find_used_on_mismatches, find_used_on_bugs,
-                    collect_reachable, snap_ref, _edit1, planned_paths)
+                    StemIndex, break_cycles, find_used_on_mismatches,
+                    find_used_on_bugs, collect_reachable, snap_ref, _edit1,
+                    planned_paths)
 from .naming import (build_folder_names, folder_name_for, add_bom_name,
-                     bom_name_winners, prefer_bom_names)
+                     bom_name_winners, prefer_bom_names, PlacementPlanTooLarge)
 from .fsops import (place_files, build_pdf_index, pick_shallowest,
                     scan_output_tree, find_organized_pdfs, find_latest_report,
                     copy_superseded, copy_watermarked_duplicates, copy_orphans,
@@ -27,7 +29,8 @@ from .fsops import (place_files, build_pdf_index, pick_shallowest,
                      longest_dest_path,
                      acquire_run_lock, release_run_lock, abandon_run_lock,
                     LockLostError, _ensure_lock, _same_bytes,
-                    _native, _exists, _islink, _staged_copy, _copy_atomic)
+                    _native, _exists, _islink, _staged_copy, _copy_atomic,
+                    planned_copy_count)
 
 
 class RunCounters(TypedDict):
@@ -117,11 +120,12 @@ def _collect_missing(boms, stems, bom_names, header, log):
     [(referencing stem, ref)] in sorted order; logs nothing when empty.
     """
     missing = []
+    idx = StemIndex(stems)
     for stem, vals in sorted(boms.items()):
         for v in vals:
             if not is_processable_ref(v):
                 continue
-            if not match_pdfs(v, stems):
+            if not match_pdfs(v, idx):
                 missing.append((stem, v))
     if missing:
         _log_missing_refs(f"Skipped {len(missing)} {header}", missing, bom_names, log)
@@ -223,13 +227,18 @@ def _titleblock_mismatches(titleblocks, log):
 
 
 def _snap_values(stem, vals, stems, log, bases=None):
-    """Correct OCR near-miss refs to a unique known stem (in place per value)."""
+    """Correct OCR near-miss refs to a unique known stem (in place per value).
+
+    `stems` is a stem collection or a StemIndex; pass an index from a loop over
+    stems so the set is not re-scanned per value.
+    """
     out = []
+    idx = stems if isinstance(stems, StemIndex) else StemIndex(stems)
     if bases is None:
-        bases = {s.split("_")[0] for s in stems}
+        bases = idx.bases
     for v in vals:
-        if is_processable_ref(v) and not match_pdfs(v, stems):
-            s = snap_ref(v, stems, bases=bases)
+        if is_processable_ref(v) and not match_pdfs(v, idx):
+            s = snap_ref(v, idx, bases=bases)
             if s:
                 log(f"  {stem}: OCR ref {v} corrected to {s}")
                 v = s
@@ -239,9 +248,9 @@ def _snap_values(stem, vals, stems, log, bases=None):
 
 def _snap_boms(bom_of, stems, log):
     """Snap OCR near-misses in BOM values before edge/missing computation."""
-    bases = {s.split("_")[0] for s in stems}
+    idx = StemIndex(stems)
     for stem in sorted(bom_of):
-        bom_of[stem] = _snap_values(stem, bom_of[stem], stems, log, bases=bases)
+        bom_of[stem] = _snap_values(stem, bom_of[stem], idx, log, bases=idx.bases)
 
 
 def _snap_bom_votes(bom_votes, stems, log):
@@ -253,11 +262,11 @@ def _snap_bom_votes(bom_votes, stems, log):
     """
     if not bom_votes:
         return
-    bases = {s.split("_")[0] for s in stems}
+    idx = StemIndex(stems)
     for raw in sorted(bom_votes):
-        if not is_processable_ref(raw) or match_pdfs(raw, stems):
+        if not is_processable_ref(raw) or match_pdfs(raw, idx):
             continue
-        snapped = snap_ref(raw, stems, bases=bases)
+        snapped = snap_ref(raw, idx, bases=idx.bases)
         if not snapped or snapped == raw:
             continue
         log(f"  OCR ref {raw} corrected to {snapped}")
@@ -266,9 +275,10 @@ def _snap_bom_votes(bom_votes, stems, log):
 
 def _snap_used_on(used_on_of, stems, log):
     """Snap OCR near-misses in USED ON values (keeps cross-checks aligned)."""
-    bases = {s.split("_")[0] for s in stems}
+    idx = StemIndex(stems)
     for stem in sorted(used_on_of):
-        used_on_of[stem] = _snap_values(stem, used_on_of[stem], stems, log, bases=bases)
+        used_on_of[stem] = _snap_values(stem, used_on_of[stem], idx, log,
+                                        bases=idx.bases)
 
 
 def _rekey_misnamed(index, bom_of, watermarks, titleblocks, stems, log):
@@ -282,6 +292,7 @@ def _rekey_misnamed(index, bom_of, watermarks, titleblocks, stems, log):
     updated maps plus {old_stem: new_stem} for the re-keyed files.
     """
     rekeyed = {}
+    stems_idx = StemIndex(stems)
     for stem in sorted(list(titleblocks)):
         fname, number, rev, _name, scanned = titleblocks[stem]
         base = stem.split("_")[0]
@@ -289,7 +300,7 @@ def _rekey_misnamed(index, bom_of, watermarks, titleblocks, stems, log):
             continue
         if not TB_NUM_VAL_RE.match(number):
             continue
-        if match_pdfs(number, stems):
+        if match_pdfs(number, stems_idx):
             log(f"  {stem}: title block says {number} but that drawing exists "
                 f"- keeping filename (report only)")
             continue
@@ -572,11 +583,12 @@ def _graph_edges(boms, stems):
     """(children, parents) edge maps implied by BOM values matched against stems."""
     children = defaultdict(set)
     parents = defaultdict(set)
+    idx = StemIndex(stems)
     for stem, vals in sorted(boms.items()):
         for v in vals:
             if not is_processable_ref(v):
                 continue
-            for m in match_pdfs(v, stems):
+            for m in match_pdfs(v, idx):
                 if m == stem:
                     continue
                 children[stem].add(m)
@@ -840,6 +852,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
     later claimants. Only a child whose sole copy is this folder moves."""
     moves = 0
     copies = 0
+    org_idx = StemIndex(org_stems)
     for s2 in swapped:
         s_paths = organized.get(s2, [])
         if not s_paths:
@@ -848,7 +861,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
         for v in org_boms.get(s2, []):
             if not is_processable_ref(v):
                 continue
-            for c in match_pdfs(v, org_stems):
+            for c in match_pdfs(v, org_idx):
                 if c == s2:
                     continue
                 child_paths = organized.get(c, [])
@@ -1313,8 +1326,21 @@ def plan_folder_names(children, roots, index, names_of, output, log):
     gets the same name wherever it lands. Full mode calls this over its whole
     graph; incremental calls it over the merged graph (new + already
     organized), which is why the two modes agree on the tree's shape.
+
+    Returns None (after logging) when the tree's root-to-leaf walk exceeds the
+    placement bound (PLAN_PLACEMENT_FACTOR x the copy cap): the walk stops
+    instead of enumerating, and the caller must refuse placement/reconcile
+    rather than plan from a partial map.
     """
-    return build_folder_names(children, roots, index, names_of, output, log)
+    try:
+        return build_folder_names(children, roots, index, names_of, output, log,
+                                  limit=MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR)
+    except PlacementPlanTooLarge:
+        log(f"  WARNING: the tree's root-to-leaf paths exceed the "
+            f"{MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR}-path planning bound "
+            f"(copy cap {MAX_PLANNED_COPIES}) - no name plan, placement and "
+            "reconcile skipped (check the BOM graph)")
+        return None
 
 
 def _place_subassembly_of(R, P, org_par, new_children, new_index, new_names,
@@ -1488,6 +1514,7 @@ def _full_build_edges(bom_of, index, bom_names, log):
     children = defaultdict(set)
     parents = defaultdict(set)
     skipped_fc = set()
+    idx = StemIndex(index)
     for stem, raw_values in sorted(bom_of.items()):
         for val in raw_values:
             if val.startswith("FC"):
@@ -1495,7 +1522,7 @@ def _full_build_edges(bom_of, index, bom_names, log):
                 continue
             if not is_processable_ref(val):
                 continue
-            for m in match_pdfs(val, index):
+            for m in match_pdfs(val, idx):
                 if m == stem:
                     continue
                 children[stem].add(m)
@@ -1556,9 +1583,14 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     total_copies = 0
     if kept:
         folder_names = plan_folder_names(children, kept, index, names_of, output, log)
-        total_copies = place_files(children, kept, index, output, dry_run,
-                                   log, names_of, folder_names, renames=renames,
-                                   lock=lock)
+        if folder_names is None:
+            # Cap consulted before the name plan as well: an over-cap path count
+            # refuses placement instead of planning from a partial map.
+            refused = True
+        else:
+            total_copies = place_files(children, kept, index, output, dry_run,
+                                       log, names_of, folder_names, renames=renames,
+                                       lock=lock)
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).
@@ -2630,6 +2662,43 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                                                    extra=_pre_extra)
     refused = bool(_pre_dropped)
 
+    # Placement-walk bound, on the same pre-supersede view. `fit_roots_within_cap`
+    # above bounds the delta's copies; the name plan later walks every
+    # root-to-node path of the MERGED tree, which a diamond DAG in the EXISTING
+    # tree can multiply exponentially (measured: 3.1M paths / 805 MB on a
+    # 20-level ladder). Checking it only at plan time meant a refused run had
+    # already applied supersede swaps. _copy_counter memoizes by node, so this
+    # costs O(nodes) instead of enumerating, and it runs before any swap/move.
+    walk_refused = False
+    if not refused:
+        _walk_stems = new_stems | org_stems
+        _walk_boms = {**org_boms, **new_boms}
+        _walk_children, _walk_parents = _graph_edges(_walk_boms, _walk_stems)
+        # Break cycles first, exactly as the plan does: a cyclic graph has no
+        # roots, and _copy_counter has no cycle guard, so an unbroken branchy
+        # cycle is counted to TREE_MAX_DEPTH with every step multiplied - which
+        # refused batches full mode places happily (and under-counted a closed
+        # cycle component, letting the backstop fire after a supersede).
+        break_cycles(_walk_children, _walk_parents, lambda msg: None)
+        _walk_roots, _ = _classify_roots(_walk_stems, _walk_parents,
+                                         _walk_boms, _walk_children)
+        # The count is exact for this graph. It differs from the plan's graph in
+        # one corner: this view holds BOTH revisions of a pending supersede,
+        # while the plan sees only the post-swap stems, and a base-number
+        # reference that exact-matched the old plain stem then prefix-matches
+        # the new revision - so a pathological subtree can still be refused by
+        # the backstop after the swap. The walk stays bounded either way (that
+        # is what the backstop is for), and archive-before-replace holds, so
+        # this is a reporting-order corner, not a data-safety one.
+        _walk_planned = planned_copy_count(_walk_children, _walk_roots)
+        _walk_limit = MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR
+        if _walk_planned > _walk_limit:
+            log(f"  WARNING: the merged tree plans {_walk_planned} paths, over "
+                f"the {_walk_limit}-path planning bound - placement refused "
+                "before any swap or move (check the BOM graph)")
+            refused = True
+            walk_refused = True
+
     swapped_old: list = []
     if refused:
         moved_dirs, total_moves = {}, 0
@@ -2681,24 +2750,32 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # path limit and be skipped instead of placed.
     merged_index = {s: pick_shallowest(paths) for s, paths in organized.items() if paths}
     merged_index.update(new_index)
-    folder_names = plan_folder_names(merged_children, reported_roots, merged_index,
-                                     merged_names, output, log)
+    folder_names = None if walk_refused else plan_folder_names(
+        merged_children, reported_roots, merged_index, merged_names, output, log)
     # Make the live tree's folder names match that plan before placing anything
     # else, so a folder an earlier run named for a smaller tree cannot survive
-    # as a stale spelling (see normalize_folder_names).
-    renamed_folders = normalize_folder_names(organized, folder_names, output,
-                                             dry_run, log, moved_dirs,
-                                             lock=lock)
+    # as a stale spelling (see normalize_folder_names). An over-cap plan is None
+    # (see plan_folder_names): no renames, no placement, no reconcile - an empty
+    # plan would fall back to bare stem names and move the whole tree.
+    if folder_names is not None:
+        renamed_folders = normalize_folder_names(organized, folder_names, output,
+                                                 dry_run, log, moved_dirs,
+                                                 lock=lock)
+    else:
+        renamed_folders = 0
 
     # Placement always runs through the backstop fit below (authoritative,
     # on the post-supersede graph): a full refusal drops everything there and
     # places nothing, exactly as before.
-    (worklist, total_copies, total_moves, place_refused,
-     skipped) = _incremental_place(
-        new_stems, new_parents, org_parents_of, org_children_of, new_children,
-        new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
-        output, dry_run, log, rekeyed, total_copies, total_moves,
-        lock=lock, folder_names=folder_names)
+    if folder_names is not None:
+        (worklist, total_copies, total_moves, place_refused,
+         skipped) = _incremental_place(
+            new_stems, new_parents, org_parents_of, org_children_of, new_children,
+            new_index, new_names, new_boms, organized, moved_dirs, stored_orphans,
+            output, dry_run, log, rekeyed, total_copies, total_moves,
+            lock=lock, folder_names=folder_names)
+    else:
+        worklist, place_refused, skipped = [], True, []
     # Reported roots use the SAME rule and scope as full mode: every stem of
     # the merged tree (new + already organized) with no parent and at least one
     # child edge. Organically parentless BOM-less standalones are orphans, not
@@ -2732,9 +2809,20 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # Finalize retires adopted orphans (deletes), so the lock is re-checked.
     _ensure_lock(lock, log)
     if repair:
-        repair_counts, repair_review, live_index = _repair_reconcile(
-            output, merged_children, reported_roots, folder_names, dry_run, log,
-            moved_dirs, lock=lock)
+        if folder_names is not None:
+            repair_counts, repair_review, live_index = _repair_reconcile(
+                output, merged_children, reported_roots, folder_names, dry_run, log,
+                moved_dirs, lock=lock)
+        else:
+            # Over the planning bound: no plan exists, so reconcile would have
+            # to guess. Leave the reconcile pass alone (supersede swaps from
+            # this run, if any, already applied) and hand it to a human (exit 2).
+            repair_counts = {"moved": 0, "copied": 0, "removed": 0,
+                             "emptied": 0}
+            repair_review = ["planning bound: the tree's root-to-node paths "
+                             f"exceed {MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR} "
+                             "- reconcile skipped"]
+            live_index = organized
         repair_counts["adopted"] = len(planned)
         repair_counts["renamed"] = renamed_folders
         promoted_stems = {s for s, o in supersede_pairs if o in set(swapped_old)}

@@ -284,7 +284,7 @@ is not required.
   `src/__main__.py` — which this project does not use). Upstream fix is commit
   `b2c8f3a`, first shipped in **pymupdf 2.0** (PyPI, 2026-10-19). Adopting it means
   dropping the declared Python 3.10 floor: 2.0 requires `>=3.11`. The decision is
-  open — see `THIRD_PARTY_NOTICES.md`.
+  open and written up in [`docs/adr/0003-pymupdf-cve-pin.md`](docs/adr/0003-pymupdf-cve-pin.md).
 - Tesseract OCR: 5.5.3 or newer recommended; note that eight model-file
   deserialization advisories (CVE-2026-88047..-88054, 2026-09-10) still apply to
   5.5.3 with **no fixed release yet** — they trigger only on a malicious

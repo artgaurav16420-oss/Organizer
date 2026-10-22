@@ -103,6 +103,16 @@ NAME_SHORTEN_MAX_PASSES = 200
 PLANNED_COPIES_WARN = 1000
 MAX_PLANNED_COPIES = 10000
 
+# Name-planning walk bound (naming._collect_placements), as a multiple of the
+# copy cap. The walk enumerates every distinct root-to-node path, so a chain of
+# depth d costs d placements where the copy cap counts 1 - placements >= copies.
+# 8 covers a depth-8 tree whose copies sit at the cap, while still stopping a
+# diamond DAG (each level doubles the path count: ~16 levels) long before it can
+# exhaust memory. The review measured 3.1M placements / 805 MB on a 20-level
+# ladder, reached only because incremental/repair plan the whole MERGED tree
+# while the copy cap charges the delta.
+PLAN_PLACEMENT_FACTOR = 8
+
 # ---------------------------------------------------------------------------
 # OCR support for scanned (image-only) PDFs.  All geometry is derived from
 # OCR'd label anchors ("ITEM", "FERMI #", "USED ON", "NAME") relative to the
