@@ -25,3 +25,29 @@ def test_tesseract_floor_in_sync():
     notices_floor = re.search(r"(\d+\.\d+\.\d+)\+ recommended", notices).group(1)
 
     assert script_pin == readme_floor == notices_floor
+
+
+def _pins(name, patterns):
+    """{manifest: version} for `name`; a manifest that omits the pin maps None."""
+    found = {}
+    for manifest, pattern in patterns.items():
+        match = re.search(pattern, _read(manifest), re.M)
+        found[manifest] = match.group(1) if match else None
+    return found
+
+
+def test_dependency_pins_agree_across_manifests():
+    """requirements.txt, pyproject.toml and the lock must pin the same release.
+
+    CI installs only the hashed lock, so a manifest-only bump (dependabot's
+    default) tests the old version and merges drift.
+    """
+    for name in ("pymupdf", "openpyxl"):
+        pins = _pins(name, {
+            "requirements.txt": rf"^{name}==([^\s#]+)",
+            "pyproject.toml": rf'"{name}==([^"]+)"',
+            "requirements.lock": rf"^{name}==([^\s\\]+)",
+        })
+        missing = sorted(f for f, v in pins.items() if v is None)
+        assert not missing, f"{name} is not pinned in {missing}"
+        assert len(set(pins.values())) == 1, f"{name} pins drift: {pins}"

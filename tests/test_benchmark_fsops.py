@@ -1,6 +1,7 @@
 """Benchmark and verification script for scan_output_tree optimization."""
 import time
 from unittest.mock import patch
+
 from fermi_organizer import fsops
 from fermi_organizer.runmodes import _collect_incremental_candidates, run_incremental
 

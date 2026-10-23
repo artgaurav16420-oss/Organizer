@@ -1,19 +1,30 @@
 """End-to-end run_full / run_incremental on generated PDFs (tmp dirs only)."""
 import re
 from collections import Counter
+from pathlib import Path
+from unittest.mock import patch
 
 import pymupdf as fitz
 import pytest
 
-from pathlib import Path
-from unittest.mock import patch
-
 from fermi_organizer import extraction, fsops, runmodes
-from fermi_organizer.runmodes import (run_full, run_incremental, NoPDFsFoundError,
-                                      _ensure_lock, _swap_revision_files, _log_summary,
-                                      _log_unplaced, _titleblock_mismatches)
-from fermi_organizer.fsops import (RunLockedError, LockLostError, release_run_lock,
-                                   abandon_run_lock, acquire_run_lock)
+from fermi_organizer.fsops import (
+    LockLostError,
+    RunLockedError,
+    abandon_run_lock,
+    acquire_run_lock,
+    release_run_lock,
+)
+from fermi_organizer.runmodes import (
+    NoPDFsFoundError,
+    _ensure_lock,
+    _log_summary,
+    _log_unplaced,
+    _swap_revision_files,
+    _titleblock_mismatches,
+    run_full,
+    run_incremental,
+)
 
 
 def test_run_full_hold_lock_spans_caller_post_work(tmp_path, make_pdf):
@@ -2468,6 +2479,7 @@ def test_adopt_one_copy_branch_skipped_past_max_path(tmp_path, make_pdf,
     # The copy branch (nested child) shares the same up-front MAX_PATH guard
     # as the move branch: an over-limit descendant is skipped, never copied.
     import shutil as _shutil
+
     from fermi_organizer import runmodes as _rm
     monkeypatch.setattr(_rm, "MAX_PATH", 100)
     out = tmp_path / "out"

@@ -4,10 +4,11 @@ import itertools
 import multiprocessing
 import os
 import re
-import threading
 import shutil
 import subprocess
 import tempfile
+import threading
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -20,50 +21,95 @@ import pymupdf
 if hasattr(pymupdf, "no_recommend_layout"):
     pymupdf.no_recommend_layout()
 
-from .config import (canonical_stem,
-                     TB_REV_VAL_RE, TB_NUM_VAL_RE, TB_NUM_FULL_RE,
-                     TB_REV_DX_LEFT, TB_REV_DX_RIGHT, TB_REV_DY_BOTTOM,
-                     TB_NUM_DX_LEFT, TB_NUM_DX_RIGHT, TB_NUM_DY_BOTTOM,
-                     TB_OCR_DY_TOP, TB_OCR_DY_BOTTOM,
-                     TB_NUM_LABEL_X_FRAC,
-                     FERMI_RE, FERMI_RE_SEARCH,
-                     FERMI_HEADER_RE, OCR_MIN_CHARS, OCR_MAIN_DPI, OCR_STRIP_DPI,
-                     OCR_VAL_RE, OCR_CORR, ITEM_RE, BAD_DESC_RE, SIZE_RE,
-                     SINGLE_LINE_RE, TOKEN_RE, USED_RE, STOP_RE,
-                     PARTS_HEADER_RE, PARTS_HEADER_COMBO_RE,
-                     TITLE_BLOCK_KEYWORDS, WATERMARK_TEXT_RE, WATERMARK_MAX_PAGES,
-                     WATERMARK_TRANSPARENT_OPACITY, WATERMARK_TRANSPARENT_MIN_SIZE,
-                     WATERMARK_DIAGONAL_MIN_SIZE, WATERMARK_LIGHT_MIN_SIZE,
-                     WATERMARK_LIGHT_MIN_CHANNEL,
-                     OCR_ROW_TOL, OCR_USED_ON_GAP_MAX,
-                     OCR_USED_ON_DX_LEFT, OCR_USED_ON_DY_TOP,
-                     OCR_USED_ON_DX_RIGHT, OCR_USED_ON_DY_BOTTOM,
-                     OCR_NAME_DX_LEFT, OCR_NAME_DY_TOP, OCR_NAME_DX_RIGHT,
-                     OCR_NAME_DY_BOTTOM, OCR_NAME_LINE_TOL,
-                     OCR_PART_NAME_GAP_MAX,
-                     OCR_FERMI_SCAN_DX_LEFT, OCR_FERMI_SCAN_DX_RIGHT,
-                     OCR_HDR_ROW_TOL, OCR_ITEM_FERMI_GAP_MAX, OCR_HDR_ROW_GAP,
-                     OCR_FERMI_COL_DX_LEFT, OCR_FERMI_COL_DX_RIGHT,
-                     OCR_ITEM_COL_DX_LEFT, OCR_ITEM_FERMI_MIN_GAP,
-                     OCR_ITEM_X_FALLBACK, OCR_ROW_STRIP_DY_TOP,
-                     OCR_ROW_STRIP_DY_BOTTOM,
-                     OCR_MAX_RENDER_MP)
+from .config import (
+    BAD_DESC_RE,
+    FERMI_HEADER_RE,
+    FERMI_RE,
+    FERMI_RE_SEARCH,
+    ITEM_RE,
+    MAX_PDF_BYTES,
+    MAX_PDF_PAGES,
+    OCR_CORR,
+    OCR_FERMI_COL_DX_LEFT,
+    OCR_FERMI_COL_DX_RIGHT,
+    OCR_FERMI_SCAN_DX_LEFT,
+    OCR_FERMI_SCAN_DX_RIGHT,
+    OCR_HDR_ROW_GAP,
+    OCR_HDR_ROW_TOL,
+    OCR_ITEM_COL_DX_LEFT,
+    OCR_ITEM_FERMI_GAP_MAX,
+    OCR_ITEM_FERMI_MIN_GAP,
+    OCR_ITEM_X_FALLBACK,
+    OCR_MAIN_DPI,
+    OCR_MAX_RENDER_MP,
+    OCR_MIN_CHARS,
+    OCR_NAME_DX_LEFT,
+    OCR_NAME_DX_RIGHT,
+    OCR_NAME_DY_BOTTOM,
+    OCR_NAME_DY_TOP,
+    OCR_NAME_LINE_TOL,
+    OCR_PART_NAME_GAP_MAX,
+    OCR_ROW_STRIP_DY_BOTTOM,
+    OCR_ROW_STRIP_DY_TOP,
+    OCR_ROW_TOL,
+    OCR_STRIP_DPI,
+    OCR_USED_ON_DX_LEFT,
+    OCR_USED_ON_DX_RIGHT,
+    OCR_USED_ON_DY_BOTTOM,
+    OCR_USED_ON_DY_TOP,
+    OCR_USED_ON_GAP_MAX,
+    OCR_VAL_RE,
+    PARTS_HEADER_COMBO_RE,
+    PARTS_HEADER_RE,
+    SINGLE_LINE_RE,
+    SIZE_RE,
+    STOP_RE,
+    TB_NUM_DX_LEFT,
+    TB_NUM_DX_RIGHT,
+    TB_NUM_DY_BOTTOM,
+    TB_NUM_FULL_RE,
+    TB_NUM_LABEL_X_FRAC,
+    TB_NUM_VAL_RE,
+    TB_OCR_DY_BOTTOM,
+    TB_OCR_DY_TOP,
+    TB_REV_DX_LEFT,
+    TB_REV_DX_RIGHT,
+    TB_REV_DY_BOTTOM,
+    TB_REV_VAL_RE,
+    TITLE_BLOCK_KEYWORDS,
+    TOKEN_RE,
+    USED_RE,
+    WATERMARK_DIAGONAL_MIN_SIZE,
+    WATERMARK_LIGHT_MIN_CHANNEL,
+    WATERMARK_LIGHT_MIN_SIZE,
+    WATERMARK_MAX_PAGES,
+    WATERMARK_TEXT_RE,
+    WATERMARK_TRANSPARENT_MIN_SIZE,
+    WATERMARK_TRANSPARENT_OPACITY,
+    canonical_stem,
+)
 
 # Resource-exhaustion guards + OCR memo bound.
 # OCR_MIN_CHARS itself lives in config.py; these thresholds sit here so
 # extraction.py stays the only touched module. Thresholds are best-judgment
 # values ([uncertain] per fix-plan: 500MB / 200 pages / 512 memo entries).
-MAX_PDF_BYTES = 500 * 1024 * 1024  # skip-with-issue files over ~500MB
-MAX_PDF_PAGES = 200  # skip-with-issue documents beyond 200 pages
+# MAX_PDF_BYTES / MAX_PDF_PAGES now live in config.py (re-exported above).
 _OCR_MEMO_MAX_ENTRIES = 512  # oldest-first cap per memo dict (never events)
 OCR_INPROCESS_TIMEOUT_SEC = 120  # guard against hung in-process Tesseract OCR
 
 
 def _memo_put(memo, key, value):
-    """Store + oldest-first evict so run-scoped OCR memos stay bounded."""
+    """Store + LRU evict so run-scoped OCR memos stay bounded."""
     memo[key] = value
+    try:
+        memo.move_to_end(key)
+    except AttributeError:
+        pass
     while len(memo) > _OCR_MEMO_MAX_ENTRIES:
-        memo.pop(next(iter(memo)))
+        try:
+            memo.popitem(last=False)
+        except (AttributeError, TypeError):
+            memo.pop(next(iter(memo)))
     return value
 
 
@@ -105,9 +151,9 @@ class _OcrContext:
         self._exported_dir = None
         self.version = None
         self.events = {}
-        self.page_memo = {}
-        self.words_memo = {}
-        self.page_scale = {}
+        self.page_memo = OrderedDict()
+        self.words_memo = OrderedDict()
+        self.page_scale = OrderedDict()
         self._doc_seq = 0
 
     def reset(self, enabled=True):
@@ -119,9 +165,9 @@ class _OcrContext:
         self.install_dir = None
         self.version = None
         self.events = {}
-        self.page_memo = {}
-        self.words_memo = {}
-        self.page_scale = {}
+        self.page_memo = OrderedDict()
+        self.words_memo = OrderedDict()
+        self.page_scale = OrderedDict()
         self._doc_seq = 0
 
     def _export_for_pymupdf(self, install_dir):
@@ -234,37 +280,48 @@ class _OcrContext:
         """Page points per ISO A-size point for this document's page."""
         key = self.doc_key(page)
         if key in self.page_scale:
+            self.page_scale.move_to_end(key)
             return self.page_scale[key]
-        return iso_page_scale(page.rect.width, page.rect.height)
+        scale = iso_page_scale(page.rect.width, page.rect.height)
+        _memo_put(self.page_scale, key, scale)
+        return scale
 
     def words_cached(self, page, issues=None, page_label=""):
         key = self.doc_key(page)
         if key in self.words_memo:
+            self.words_memo.move_to_end(key)
             return self.words_memo[key]
         words = []
         try:
             scale = iso_page_scale(page.rect.width, page.rect.height)
             timeout = OCR_INPROCESS_TIMEOUT_SEC
-            result = {}
-            def _worker():
-                try:
-                    result["tp"] = page.get_textpage_ocr(
-                        dpi=_ocr_render_dpi(page), full=True)
-                except Exception as e:  # surfaced as OCR failure below
-                    result["error"] = e
-            worker = threading.Thread(target=_worker, daemon=True, name="ocr-timeout")
-            worker.start()
-            worker.join(timeout)
-            if worker.is_alive():
-                if issues is not None:
-                    issues.append(
-                        f"{page_label}: OCR timed out after {timeout}s "
-                        "(tesseract process may still finish in background)")
-                _memo_put(self.words_memo, key, words)
-                return words
-            if "error" in result:
-                raise RuntimeError(result["error"])
-            tp = result.get("tp")
+            if timeout and timeout > 0:
+                result = {}
+                def _worker():
+                    try:
+                        result["tp"] = page.get_textpage_ocr(
+                            dpi=_ocr_render_dpi(page), full=True)
+                    except Exception as e:  # surfaced as OCR failure below
+                        result["error"] = e
+                worker = threading.Thread(target=_worker, daemon=True,
+                                         name="ocr-timeout")
+                worker.start()
+                worker.join(timeout)
+                if worker.is_alive():
+                    worker.join(2)
+                    if worker.is_alive():
+                        if issues is not None:
+                            issues.append(
+                                f"{page_label}: OCR timed out after {timeout}s "
+                                "(tesseract process may still finish in background)")
+                        _memo_put(self.words_memo, key, words)
+                        return words
+                if "error" in result:
+                    raise RuntimeError(result["error"])
+                tp = result.get("tp")
+            else:
+                # No timeout requested: call directly, no thread wrapper.
+                tp = page.get_textpage_ocr(dpi=_ocr_render_dpi(page), full=True)
             if tp is not None:
                 words = page.get_text("words", textpage=tp)
                 if scale != 1.0:
@@ -291,6 +348,7 @@ class _OcrContext:
         """
         key = self.doc_key(page)
         if key in self.page_memo:
+            self.page_memo.move_to_end(key)
             return self.page_memo[key]
         result = ([], None, [])
         ev = self.events.setdefault(key[0], {"pages": set(), "used_on": None,
@@ -423,6 +481,7 @@ _open_pdf = lambda p: pymupdf.open(_native(p))
 
 
 def normalize(s):
+    """Collapse whitespace and uppercase a string, treating None as empty."""
     return re.sub(r"\s+", "", str(s) if s is not None else "").upper().strip()
 
 
@@ -2038,84 +2097,47 @@ def _doc_pages_issue(doc):
 
 
 def bom_task(pdf_path):
-    before = set(OCR.events)
-    try:
-        issues = []
-        size_msg = _pdf_size_issue(pdf_path)
-        if size_msg is not None:
-            issues.append(size_msg)
-            out = ("ok", [], "skipped", issues, None, None, None, None, False)
-        else:
-            with _open_pdf(pdf_path) as doc:
-                pages_msg = _doc_pages_issue(doc)
-                if pages_msg is not None:
-                    issues.append(pages_msg)
-                    out = ("ok", [], "skipped", issues, None, None, None,
-                           None, False)
-                else:
-                    entries, method = extract_bom_from_doc(doc, issues)
-                    entries = _strip_self_bom(entries, pdf_path)
-                    watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc, issues)
-                    name = extract_drawing_name(doc)
-                    scanned = _doc_is_scanned(doc)
-                    out = ("ok", entries, method, issues, watermark, number,
-                           rev, name, scanned)
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
-        out = ("error", str(e), None, None, None, None, None, None, None)
-    return out + (OCR.event_delta(before),)
+    """Thin adapter over survey_task: BOM slice (no USED ON).
+
+    Preserves the legacy return shape:
+      ("ok", entries, method, issues, watermark, number, rev, name, scanned)
+      or ("error", message, None, ..., None), plus the OCR event delta.
+    """
+    res = survey_task(pdf_path)
+    delta = res[-1]
+    body = res[:-1]
+    if body[0] != "ok":
+        return ("error", body[1], None, None, None, None, None, None,
+                None, delta)
+    _status, entries, method, _used, issues, watermark, number, rev, name, \
+        scanned = body
+    return ("ok", entries, method, issues, watermark, number, rev, name,
+            scanned, delta)
 
 
 def title_task(pdf_path):
-    before = set(OCR.events)
-    try:
-        # No issues slot in this task's return shape; oversized documents
-        # surface as error tuples so the run log still shows them.
-        size_msg = _pdf_size_issue(pdf_path)
-        if size_msg is not None:
-            out = ("error", size_msg, None)
-        else:
-            with _open_pdf(pdf_path) as doc:
-                pages_msg = _doc_pages_issue(doc)
-                if pages_msg is not None:
-                    out = ("error", pages_msg, None)
-                else:
-                    out = ("ok", _strip_self_ref(extract_used_on(doc), pdf_path),
-                           extract_drawing_name(doc))
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
-        out = ("error", str(e), None)
-    return out + (OCR.event_delta(before),)
+    """Thin adapter over survey_task: USED ON + NAME slice.
+
+    Preserves the legacy return shape:
+      ("ok", used, name) or ("error", message, None), plus the OCR event delta.
+    Oversized / page-capped documents surface as error tuples, as before.
+    """
+    res = survey_task(pdf_path)
+    delta = res[-1]
+    body = res[:-1]
+    if body[0] != "ok":
+        return ("error", body[1], None, delta)
+    _status, _entries, method, used, issues, _watermark, _number, _rev, \
+        name, _scanned = body
+    if method == "skipped":
+        msg = issues[0] if issues else "skipped"
+        return ("error", msg, None, delta)
+    return ("ok", used, name, delta)
 
 
 def org_task(pdf_path):
-    before = set(OCR.events)
-    try:
-        issues = []
-        size_msg = _pdf_size_issue(pdf_path)
-        if size_msg is not None:
-            issues.append(size_msg)
-            out = ("ok", [], "skipped", [], issues, None, None, None, None,
-                   False)
-        else:
-            with _open_pdf(pdf_path) as doc:
-                pages_msg = _doc_pages_issue(doc)
-                if pages_msg is not None:
-                    issues.append(pages_msg)
-                    out = ("ok", [], "skipped", [], issues, None, None, None,
-                           None, False)
-                else:
-                    entries, method = extract_bom_from_doc(doc, issues)
-                    entries = _strip_self_bom(entries, pdf_path)
-                    used = _strip_self_ref(extract_used_on(doc), pdf_path)
-                    watermark = detect_watermark(doc, issues)
-                    number, rev = extract_title_block(doc, issues)
-                    name = extract_drawing_name(doc)
-                    scanned = _doc_is_scanned(doc)
-                    out = ("ok", entries, method, used, issues, watermark,
-                           number, rev, name, scanned)
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
-        out = ("error", str(e), None, None, None, None, None, None, None, None)
-    return out + (OCR.event_delta(before),)
+    """Thin adapter over survey_task (identical return shape)."""
+    return survey_task(pdf_path)
 
 
 def dup_meta_task(pdf_path):

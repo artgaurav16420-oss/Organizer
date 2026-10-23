@@ -20,19 +20,9 @@ PRODUCTION_MODULES = sorted(
 ALLOWLIST = {}
 
 # NODOC gate: public top-level functions without docstrings in
-# fermi_organizer/*.py. Production code is frozen, so the 9 currently
-# undocumented helpers stay allowlisted; the gate fails on any NEW one.
-NODOC_ALLOWLIST = {
-    "cli.py:build_parser",
-    "cli.py:run_mode_label",
-    "config.py:is_fermi_value",
-    "extraction.py:bom_task",
-    "extraction.py:org_task",
-    "extraction.py:title_task",
-    "extraction.py:normalize",
-    "fsops.py:find_latest_report",
-    "fsops.py:pick_shallowest",
-}
+# fermi_organizer/*.py. All previously allowlisted helpers now documented;
+# the gate fails on any NEW undocumented public function.
+NODOC_ALLOWLIST = set()
 
 
 def _imported_bindings(tree):

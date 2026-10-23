@@ -4,7 +4,12 @@ import os
 import re
 from collections import Counter
 
-from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES, TREE_MAX_DEPTH
+from .config import (
+    MAX_PATH,
+    NAME_SHORTEN_MAX_PASSES,
+    TREE_MAX_DEPTH,
+    PlacementPlanTooLarge,
+)
 
 
 def sanitize_folder_name(name):
@@ -79,15 +84,6 @@ def prefer_bom_names(names_of, ocr_named_stems, bom_names, stems=()):
     return names
 
 
-class PlacementPlanTooLarge(RuntimeError):
-    """The name plan would enumerate more root-to-leaf paths than allowed.
-
-    Raised from the placement walk as soon as the limit is passed, so a diamond
-    DAG in the tree cannot exhaust time and memory before the caller's fan-out
-    cap is consulted (measured: 3.1M placements / 805 MB on a 41-node ladder).
-    """
-
-
 def _collect_placements(children, roots, limit=None):
     """Root-to-leaf component tuples, pre-order; roots and children sorted.
 
@@ -101,23 +97,40 @@ def _collect_placements(children, roots, limit=None):
     placements = []
     seen = set()
 
-    # Iterative pre-order walk (explicit stack, children pushed in reverse so
-    # they pop in sorted order): placements must keep the exact recursion
-    # order (_shorten_names shortens in that order), and depth up to
-    # TREE_MAX_DEPTH must not depend on the recursion limit.
+    # Iterative pre-order walk with a single mutable path list (F-PERF-07):
+    # avoid O(depth) tuple concat on every child edge; convert to a tuple only
+    # when recording a placement or testing membership. Children are consumed
+    # through a per-frame iterator in sorted order.
     for root in sorted(roots):
-        stack = [(root, (root,), 0)]
+        root_key = (root,)
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        placements.append(root_key)
+        if limit is not None and len(placements) > limit:
+            raise PlacementPlanTooLarge(len(placements))
+        path = [root]
+        stack = [(root, iter(sorted(children.get(root, ()))), 0)]
         while stack:
-            stem, comps, depth = stack.pop()
-            key = tuple(comps)
-            if key in seen or depth > TREE_MAX_DEPTH:
+            stem, it, depth = stack[-1]
+            child = next(it, None)
+            if child is None:
+                stack.pop()
+                path.pop()
+                continue
+            child_depth = depth + 1
+            if child_depth > TREE_MAX_DEPTH:
+                continue
+            path.append(child)
+            key = tuple(path)
+            if key in seen:
+                path.pop()
                 continue
             seen.add(key)
             placements.append(key)
             if limit is not None and len(placements) > limit:
                 raise PlacementPlanTooLarge(len(placements))
-            for child in reversed(sorted(children.get(stem, ()))):
-                stack.append((child, comps + (child,), depth + 1))
+            stack.append((child, iter(sorted(children.get(child, ()))), child_depth))
     return placements
 
 

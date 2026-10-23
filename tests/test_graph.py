@@ -2,15 +2,28 @@
 from collections import defaultdict
 from pathlib import Path
 
-from fermi_organizer.config import MAX_PATH
-from fermi_organizer.graph import (_edit1, is_chk_stem, revision_letter_rank,
-                                   revision_rank, split_superseded,
-                                   match_pdfs, StemIndex, used_on_bases,
-                                   find_used_on_mismatches, find_used_on_bugs,
-                                   collect_reachable, break_cycles,
-                                   snap_ref, planned_paths)
-from fermi_organizer.naming import (sanitize_folder_name,
-                                    folder_name_for, build_folder_names)
+from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
+from fermi_organizer.graph import (
+    StemIndex,
+    _edit1,
+    break_cycles,
+    collect_reachable,
+    find_used_on_bugs,
+    find_used_on_mismatches,
+    is_chk_stem,
+    match_pdfs,
+    planned_paths,
+    revision_letter_rank,
+    revision_rank,
+    snap_ref,
+    split_superseded,
+    used_on_bases,
+)
+from fermi_organizer.naming import (
+    build_folder_names,
+    folder_name_for,
+    sanitize_folder_name,
+)
 
 
 def test_edit1():
@@ -523,6 +536,19 @@ def test_planned_paths_lists_every_claimant():
     # it under each claimant, so repair must not collapse the pair.
     planned = planned_paths({"F1": {"F3"}, "F2": {"F3"}}, ["F1", "F2"], {})
     assert planned["F3"] == [("F1", "F3"), ("F2", "F3")]
+
+
+def test_planned_paths_reaches_the_placement_depth_cap():
+    # place_files places depth 0..TREE_MAX_DEPTH (TREE_MAX_DEPTH + 1 copies);
+    # planned_paths stopped one level earlier, so repair never reconciled the
+    # deepest folder placement had created.
+    stems = [f"F{10126000 + i}" for i in range(TREE_MAX_DEPTH + 2)]
+    children = {stem: [nxt] for stem, nxt in zip(stems, stems[1:], strict=False)}
+    planned = planned_paths(children, [stems[0]], {})
+
+    deepest = stems[TREE_MAX_DEPTH]                        # depth == the cap
+    assert planned[deepest] == [tuple(stems[:TREE_MAX_DEPTH + 1])]
+    assert stems[TREE_MAX_DEPTH + 1] not in planned        # one past the cap
 
 
 def test_collect_reachable_bfs_cycles_and_self():

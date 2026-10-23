@@ -6,11 +6,16 @@ from pathlib import Path
 import pytest
 
 from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
-from fermi_organizer.naming import (_collect_placements, _placement_len,
-                                    add_bom_name, bom_name_winners,
-                                    prefer_bom_names,
-                                    build_folder_names, sanitize_folder_name,
-                                    PlacementPlanTooLarge)
+from fermi_organizer.naming import (
+    PlacementPlanTooLarge,
+    _collect_placements,
+    _placement_len,
+    add_bom_name,
+    bom_name_winners,
+    build_folder_names,
+    prefer_bom_names,
+    sanitize_folder_name,
+)
 
 
 def test_sanitize_folder_name_drops_control_and_bidi_chars():

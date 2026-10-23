@@ -131,6 +131,7 @@ def _hdr(ws, headers, widths, tab=None, aligns=None):
         ws.sheet_properties.tabColor = PAL[tab]["accent"] if tab in PAL else tab
     for i, (h, w) in enumerate(zip(headers, widths, strict=False), start=1):
         c = ws.cell(row=1, column=i, value=h)
+        _inert_text(c)
         c.font = _font(10, True, WHITE)
         c.fill = _solid(DARK)
         horiz = (aligns[i - 1] if aligns else "left")
@@ -225,15 +226,18 @@ def _side_note(ws, ncols, title, text, palette="blue"):
     ws.column_dimensions[L].width = 46
     p = PAL[palette]
     h = ws.cell(row=1, column=col, value=title)
+    _inert_text(h)
     h.font = _font(10, True, p["text"])
     h.fill = _solid(p["fill"])
     h.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws.merge_cells(start_row=2, start_column=col, end_row=7, end_column=col)
     body = ws.cell(row=2, column=col, value=text)
+    _inert_text(body)
     body.font = _font(9, False, INK)
     body.fill = _solid(PANEL)
     body.alignment = Alignment(wrap_text=True, vertical="top", indent=1)
     back = ws.cell(row=8, column=col, value="\u2190 Back to Dashboard")
+    _inert_text(back)
     _link(back, "#'Dashboard'!A1", bold=True)
     back.alignment = Alignment(vertical="center", indent=1)
 
@@ -241,6 +245,7 @@ def _side_note(ws, ncols, title, text, palette="blue"):
 def _empty_state(ws, ncols, message):
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
     c = ws.cell(row=2, column=1, value=message)
+    _inert_text(c)
     c.font = _font(10, True, PAL["green"]["text"])
     for ci in range(1, ncols + 1):
         ws.cell(row=2, column=ci).fill = _solid(PAL["green"]["fill"])
@@ -372,7 +377,7 @@ def _rev_of(stem):
     return ""
 
 
-def _fallback_name(resolved, stem):
+def _fallback_name(resolved, stem, index=None):
     """Same-drawing NAME for a stem with no extracted entry.
 
     Same base (and revision, when present) means the same part, so a
@@ -390,11 +395,14 @@ def _fallback_name(resolved, stem):
     rev = _rev_of(stem)
     want_sheet = _sheet_of(stem)
     is_chk = "CHK" in parts[1:]
+    if index is None:
+        index = {}
+        for cand in resolved:
+            b = cand.split("_")[0]
+            index.setdefault(b, []).append(cand)
     cands = []
-    for cand in sorted(resolved):
-        if cand == stem or not resolved[cand]:
-            continue
-        if cand.split("_")[0] != base:
+    for cand in index.get(base, []):
+        if cand == stem or not resolved.get(cand):
             continue
         crev = _rev_of(cand)
         if rev != crev and not is_chk:
@@ -476,9 +484,12 @@ def _resolve_names(names_raw, live, extra=()):
         if v:
             resolved[stem] = v
     donors = dict(resolved)
+    donor_index = {}
+    for cand in donors:
+        donor_index.setdefault(cand.split("_")[0], []).append(cand)
     for stem in sorted(stems):
         if stem not in resolved:
-            v = _fallback_name(donors, stem)
+            v = _fallback_name(donors, stem, index=donor_index)
             if v:
                 resolved[stem] = v
     return resolved
@@ -881,15 +892,19 @@ def _mismatch_sheet(mism_ws, ctx, names):
     table1_rows = len(mism_data) if mism_data else 1
     base = table1_rows + 4
     sec = mism_ws.cell(row=base, column=1, value=f"USED ON BUGS ({len(bug_data)})")
+    _inert_text(sec)
     sec.font = _font(12, True, DARK)
     mism_ws.row_dimensions[base].height = 26
-    mism_ws.cell(row=base + 1, column=1,
-                 value="Child USED ON lists a parent that the parent's BOM does not list "
-                       "- fix the USED ON number.").font = _font(9, False, MUTED, italic=True)
+    _cell = mism_ws.cell(row=base + 1, column=1,
+                         value="Child USED ON lists a parent that the parent's BOM does not list "
+                               "- fix the USED ON number.")
+    _inert_text(_cell)
+    _cell.font = _font(9, False, MUTED, italic=True)
     sub = base + 2
     for ci, text in enumerate(("Parent drawing", "Parent name", "Child part", "Child name"),
                               start=1):
         c = mism_ws.cell(row=sub, column=ci, value=text)
+        _inert_text(c)
         c.font = _font(10, True, WHITE)
         c.fill = _solid(NAVY)
         c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
@@ -897,6 +912,7 @@ def _mismatch_sheet(mism_ws, ctx, names):
     if not bug_data:
         mism_ws.merge_cells(start_row=sub + 1, start_column=1, end_row=sub + 1, end_column=4)
         c = mism_ws.cell(row=sub + 1, column=1, value="\u2713  No USED ON bugs")
+        _inert_text(c)
         c.font = _font(10, True, PAL["green"]["text"])
         c.fill = _solid(PAL["green"]["fill"])
         c.alignment = Alignment(horizontal="center", vertical="center")

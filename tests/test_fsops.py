@@ -1,20 +1,31 @@
 """Unit tests: system-dir convention, output tree scan, superseded copies."""
 import os
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from fermi_organizer import fsops
 from fermi_organizer.config import canonical_stem
-from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_superseded,
-                                   copy_watermarked_duplicates,
-                                   find_organized_pdfs, is_system_dir,
-                                   place_files, retire_adopted_orphans,
-                                   scan_output_tree, sweep_supersede_staging,
-                                   sweep_stale_claims,
-                                   acquire_run_lock, release_run_lock,
-                                   abandon_run_lock, run_lock_lost,
-                                   RunLockedError, LockLostError, RUN_LOCK_NAME)
+from fermi_organizer.fsops import (
+    RUN_LOCK_NAME,
+    LockLostError,
+    RunLockedError,
+    abandon_run_lock,
+    acquire_run_lock,
+    build_pdf_index,
+    copy_orphans,
+    copy_superseded,
+    copy_watermarked_duplicates,
+    find_organized_pdfs,
+    is_system_dir,
+    place_files,
+    release_run_lock,
+    retire_adopted_orphans,
+    run_lock_lost,
+    scan_output_tree,
+    sweep_stale_claims,
+    sweep_supersede_staging,
+)
 
 
 def test_run_lock_acquire_and_release(tmp_path):
@@ -161,6 +172,92 @@ def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
         index, _dupes = build_pdf_index(inp, logged.append)
         assert set(index) == {"F10126999"}
         assert "Skipped 1 linked folder(s)" in "\n".join(logged)
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_folder_removable_refuses_a_junction_in_the_subtree(tmp_path):
+    # The twin check must not see files through a junction: they are not copies
+    # the plan put in the tree, and rmtree would act on the link.
+    import subprocess
+
+    root = tmp_path / "out"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126106.pdf").write_bytes(b"same")
+    dup = root / "OLD"
+    dup.mkdir()
+    (dup / "F10126106.pdf").write_bytes(b"same")
+    planned = {"F10126106": [("NEW",)]}
+    (root / "NEW").mkdir()
+    (root / "NEW" / "F10126106.pdf").write_bytes(b"same")
+
+    link = dup / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        ok, reason = fsops._folder_removable(dup, planned, root)
+        assert ok is False
+        assert "junction" in reason
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="chmod hides a directory only on POSIX")
+def test_move_folder_refuses_an_unreadable_subtree(tmp_path):
+    # os.walk skips a level it cannot list; the guard must refuse instead, or a
+    # link hidden there (and the subtree itself) would move unseen.
+    out = tmp_path / "out"
+    folder = out / "F10126106 PARENT PART"
+    hidden = folder / "unreadable"
+    hidden.mkdir(parents=True)
+    (hidden / "F10126107.pdf").write_bytes(b"child")
+    hidden.chmod(0o000)
+    try:
+        logged = []
+        moved = {}
+        target = out / "F10126106 RENAMED PART"
+        assert fsops._move_folder("F10126106", folder, target, out, False,
+                                  logged.append, moved, {}, None) is False
+        assert "cannot list the whole subtree" in "\n".join(logged)
+        assert folder.is_dir() and not target.exists()
+    finally:
+        hidden.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_move_folder_refuses_a_junction_inside_the_subtree(tmp_path):
+    # The guard must refuse before the move, and must not descend through the
+    # junction to notice it (rglob would; the walk is prune-first).
+    import subprocess
+
+    out = tmp_path / "out"
+    folder = out / "F10126106 PARENT PART"
+    (folder / "nested").mkdir(parents=True)
+    (folder / "nested" / "F10126107.pdf").write_bytes(b"child")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126108.pdf").write_bytes(b"foreign")
+
+    link = folder / "nested" / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        logged = []
+        moved = {}
+        target = out / "F10126106 RENAMED PART"
+        assert fsops._move_folder("F10126106", folder, target, out, False,
+                                  logged.append, moved, {}, None) is False
+        assert folder.is_dir()
+        assert not target.exists()
+        assert "symlink/junction" in "\n".join(logged)
+        assert moved == {}
     finally:
         os.rmdir(link)
 
@@ -1359,13 +1456,15 @@ def test_retire_adopted_orphans_identical_live_copy_retires(tmp_path):
 
 def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
     # Only the exact `<name>.pdf.supersede_tmp.<pid>` shape is swept; anything
-    # else that happens to contain the marker is not ours to delete.
+    # else that happens to contain the marker is not ours to delete. `\d` would
+    # match Unicode digits (a user file named with them) - the pid is ASCII.
     folder = tmp_path / "F10126106 Assembly"
     folder.mkdir()
     not_pdf = folder / "notes.supersede_tmp.123"
     bad_pid = folder / "F10126107.pdf.supersede_tmp.abc"
     upper = folder / "F10126107.PDF.supersede_tmp.7"
-    for p in (not_pdf, bad_pid, upper):
+    unicode_pid = folder / "F10126108.pdf.supersede_tmp.\u0663"
+    for p in (not_pdf, bad_pid, upper, unicode_pid):
         p.write_bytes(b"partial")
     logged = []
 
@@ -1373,6 +1472,7 @@ def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
 
     assert not_pdf.is_file()
     assert bad_pid.is_file()
+    assert unicode_pid.is_file()
     assert not upper.exists()
     assert sum("removed leftover supersede staging" in m for m in logged) == 1
 

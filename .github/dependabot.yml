@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # No "pip" ecosystem: CI installs the hashed lock only
+  # (`pip install --require-hashes -r requirements.lock`), so a manifest-only
+  # bump would go green against the old pin and leave requirements.txt,
+  # pyproject.toml and requirements.lock out of sync. Dependabot cannot
+  # regenerate a uv-compiled lock; PyPI releases are tracked by
+  # .github/scripts/cve_watch.py (pymupdf + openpyxl) instead, and
+  # tests/test_cve_watch.py gates the three manifests against drift.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

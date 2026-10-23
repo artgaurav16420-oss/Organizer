@@ -11,10 +11,16 @@ from collections import defaultdict
 from fnmatch import fnmatch
 from pathlib import Path
 
-from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH,
-                     PLANNED_COPIES_WARN, MAX_PLANNED_COPIES)
-from .graph import is_chk_stem
+from .config import (
+    MAX_DIR,
+    MAX_PATH,
+    MAX_PLANNED_COPIES,
+    PLANNED_COPIES_WARN,
+    TREE_MAX_DEPTH,
+    canonical_stem,
+)
 from .extraction import detect_watermark
+from .graph import is_chk_stem
 from .naming import folder_name_for
 
 try:
@@ -52,6 +58,21 @@ def _exists(path):
 def _islink(path):
     """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
     return os.path.islink(_native(path))
+
+
+def _has_linked_ancestor(path, stop):
+    """True if any component between (exclusive) stop and path is a link.
+
+    Guards against a planned target that traverses a symlinked/junction
+    directory, which would point outside the tree.
+    """
+    cur = Path(path)
+    stop = Path(stop)
+    while cur != stop and cur != cur.parent:
+        if _islink(cur) or _is_dir_link(cur):
+            return True
+        cur = cur.parent
+    return False
 
 
 def _strip_ext_prefix(path):
@@ -567,6 +588,11 @@ def is_system_dir(name):
 
 
 RUN_LOCK_NAME = ".fermi_organizer.lock"
+
+# Precompiled sweep regexes (F-PERF-11): avoid recompiling per call.
+_STAGING_RE = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.[0-9]+$", re.IGNORECASE)
+_COPY_RE = re.compile(r"\.pdf\.copy_tmp\.[0-9]+$", re.IGNORECASE)
+_CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.[0-9]+$")
 # A lock older than this is presumed left by a crashed run and stolen with a
 # warning. 2 h is far beyond any healthy run (thousands of PDFs take
 # minutes), so a crashed run blocks the next one only briefly; the check is
@@ -927,19 +953,17 @@ def sweep_supersede_staging(output, dry_run, log):
     output = Path(output)
     if not output.is_dir():
         return
-    staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
-    copy_re = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
     for dirpath, dirnames, filenames in os.walk(output):
         # Never descend through a junction/symlinked folder: this sweep
         # deletes files, and a link inside the tree would take it outside.
         dirnames[:] = [d for d in dirnames
                        if not _is_dir_link(Path(dirpath) / d)]
         for name in sorted(filenames):
-            if not staging_re.search(name):
+            if not _STAGING_RE.search(name):
                 continue
             p = Path(dirpath) / name
             rel = p.relative_to(output)
-            if is_system_dir(rel.parts[0]) and not copy_re.search(name):
+            if is_system_dir(rel.parts[0]) and not _COPY_RE.search(name):
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
@@ -965,10 +989,9 @@ def sweep_stale_claims(output, dry_run, log):
     output = Path(output)
     if not output.is_dir():
         return
-    claim_re = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.\d+$")
     now = time.time()
     for p in sorted(output.glob(RUN_LOCK_NAME + ".claim.*")):
-        if not claim_re.fullmatch(p.name):
+        if not _CLAIM_RE.fullmatch(p.name):
             continue
         try:
             age = now - os.path.getmtime(_native(p))
@@ -1009,10 +1032,12 @@ def find_organized_pdfs(folder, scan_res=None):
 
 
 def pick_shallowest(paths):
+    """Return the shallowest path (fewest parts), tie-broken lexicographically."""
     return sorted(paths, key=lambda p: (len(p.parts), str(p)))[0]
 
 
 def find_latest_report(folder):
+    """Return the newest organize_fermi_pdfs_report_*.txt in folder, or None."""
     reports = sorted(folder.glob("organize_fermi_pdfs_report_*.txt"))
     return reports[-1] if reports else None
 
@@ -1365,6 +1390,11 @@ def _folder_removable(folder, planned_by_stem, output):
     PDF in its subtree is byte-identical to the copy the plan gives that stem,
     and it holds no non-PDF file. Returns (ok, reason) for the review line.
     """
+    reason = _subtree_link_or_unlistable(folder, any_link=False)
+    if reason is not None and folder.is_dir():
+        # Not on disk yet (dry-run reads post-rename names): the rmtree below
+        # fails harmlessly, so keep the pre-existing behaviour there.
+        return False, reason
     try:
         entries = list(folder.rglob("*"))
     except OSError as e:
@@ -1385,9 +1415,21 @@ def _folder_removable(folder, planned_by_stem, output):
         # The twin must be a different, regular file: a drawing already at its
         # own planned path would otherwise vouch for the folder it lives in,
         # and a symlinked "twin" points outside the tree, so neither is an
-        # independent planned copy.
-        if not any(not _islink(t) and t != path and t.exists()
-                   and _same_bytes(path, t) for t in targets):
+        # independent planned copy. One explicit pass per target (instead of
+        # any()) keeps the link and byte checks in one place; the compare itself
+        # is _same_bytes, which never consults filecmp's metadata cache, so a
+        # changed file with unchanged size/mtime cannot masquerade as a match -
+        # correctness over performance on this destructive path.
+        ok = False
+        for t in targets:
+            if _islink(t) or t == path or not t.exists():
+                continue
+            if _has_linked_ancestor(t, output):
+                continue
+            if _same_bytes(path, t):
+                ok = True
+                break
+        if not ok:
             return False, f"{path.name} has no identical copy at its planned path"
     return True, ""
 
@@ -1415,6 +1457,32 @@ def _remap_organized_under(organized, old, new):
                            if p.is_relative_to(old) else p for p in paths]
 
 
+def _subtree_link_or_unlistable(folder, any_link=True):
+    """Why `folder`'s subtree cannot be trusted, or None when it is clean.
+
+    rglob descends through NTFS junctions (followlinks only covers symlinks) and
+    os.walk silently skips a level it cannot list, so either walk can miss a
+    linked subtree: a move would carry the link along, and a delete would follow
+    it. Callers walk prune-first and refuse on the first hit. With any_link
+    False only directory links are refused here; a caller that inspects plain
+    symlink entries itself keeps its own, more specific, reason.
+    """
+    walk_errors = []
+    if _is_dir_link(folder):
+        return "is a symlink/junction"
+    for dirpath, dirnames, filenames in os.walk(folder,
+                                                onerror=walk_errors.append):
+        for name in sorted(dirnames) + sorted(filenames):
+            entry = Path(dirpath) / name
+            if entry.is_dir() and _is_dir_link(entry):
+                return f"contains a symlink/junction: {entry.name}"
+            if any_link and _islink(entry):
+                return f"contains a symlink/junction: {entry.name}"
+    if walk_errors:
+        return f"cannot list the whole subtree ({walk_errors[0]})"
+    return None
+
+
 def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
                  organized, lock):
     """Move a folder (with its subtree) to `target`; False when refused.
@@ -1424,6 +1492,17 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
     drawing is not refused: repair moves whole subtrees on purpose, and any
     child that belongs elsewhere is reconciled by its own pass afterwards.
     """
+    if _is_dir_link(folder):
+        log(f"  WARNING: {stem}: source is a symlink/junction, refusing move "
+            f"(manual review): {folder}")
+        return False
+    reason = _subtree_link_or_unlistable(folder)
+    if reason is not None and folder.is_dir():
+        # An absent root is not a refusal: dry-run reads the post-rename path,
+        # and the checks below decide what to do with a folder not yet on disk.
+        log(f"  WARNING: {stem}: source {reason}, refusing move "
+            f"(manual review): {folder}")
+        return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")

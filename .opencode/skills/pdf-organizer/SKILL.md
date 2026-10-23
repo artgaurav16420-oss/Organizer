@@ -85,7 +85,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | Code | Meaning | Action |
 |---|---|---|
 | `0` | Normal completion. Missing BOM references, unapproved CHK files and orphans are reported but still exit 0. | Summarize the run and the two report files. |
-| `1` | Startup failure. Input is missing or not a directory, no PDFs found, output folder cannot be created, or another run holds the lock (`ERROR: could not acquire run lock ...`). No report or workbook is written. | Fix the path or permissions, or wait for the other run to finish. Do not retry blindly. |
+| `1` | Startup failure OR an unexpected crash (which can happen after copies were written). Startup: input missing/not a directory, no PDFs, output folder uncreatable, or another run holds the lock (`ERROR: could not acquire run lock ...`). No report/workbook for startup failures; a crash may leave partial writes. | Fix the path or permissions, or wait for the other run to finish. Do not retry blindly. |
 | `2` | Argument error (argparse usage message), or the run lock was lost mid-run (`ERROR: ...`). Report and workbook are not written for a lost lock. | Argument error: fix the flags. Lost lock: check no other process touched the output, then re-run. |
 | `2` | Placement refused: planned fan-out exceeds 10,000 copies. The report and workbook are written. | Do not retry. Inspect the BOM graph and ask the user first. See the refusal section below. |
 | `2` | Repair left folders needing manual review (`Needs manual review: N` in the Repair block). The report and workbook are written. | Read the review lines in the report; do not retry. The tree is otherwise reconciled. |

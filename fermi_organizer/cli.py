@@ -7,15 +7,26 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from .extraction import (OCR, resolve_jobs)
-from .runmodes import (run_full, run_incremental, run_repair, NoPDFsFoundError,
-                       RunContext)
-from .fsops import (RunLockedError, LockLostError, release_run_lock,
-                    abandon_run_lock, run_lock_lost)
+from .extraction import OCR, resolve_jobs
+from .fsops import (
+    LockLostError,
+    RunLockedError,
+    abandon_run_lock,
+    release_run_lock,
+    run_lock_lost,
+)
 from .report_glue import names_from_tree
+from .runmodes import (
+    NoPDFsFoundError,
+    RunContext,
+    run_full,
+    run_incremental,
+    run_repair,
+)
 
 
 def build_parser():
+    """Build and return the argparse parser for the Fermi PDF organizer CLI."""
     parser = argparse.ArgumentParser(
         description="Organize Fermi lab PDF drawings into nested folders based on BOM tables."
     )
@@ -58,6 +69,7 @@ def _log_ocr_startup(log):
 
 
 def run_mode_label(dry_run, incremental=False, repair=False):
+    """Return the short mode label for logging/workbook based on run flags."""
     if repair:
         return "REPAIR (DRY-RUN)" if dry_run else "REPAIR"
     if incremental:

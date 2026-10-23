@@ -265,7 +265,7 @@ contributors and coding agents need.
 ## Tests
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest -q
 ```
 
