@@ -1087,6 +1087,18 @@ def _fermi_line_is_title_block(lines, i):
 
 
 def _fermi_line_has_context(lines, i):
+    # A bare F-number immediately after prose is the continuation of a wrapped
+    # note/cross-reference, not a parts-list row. Walk over any preceding
+    # F-number run to the line that introduced it; a qty, a header or a blank
+    # line is BOM context, ordinary prose is not.
+    j = i - 1
+    while j >= 0 and FERMI_RE.match(lines[j].strip()):
+        j -= 1
+    prev = lines[j].strip() if j >= 0 else ""
+    if prev and not (ITEM_RE.match(prev)
+                     or PARTS_HEADER_RE.match(prev)
+                     or FERMI_HEADER_RE.match(prev)):
+        return False
     # A lone FERMI# line only counts as BOM when other BOM content is nearby.
     for dy in range(-3, 4):
         if dy == 0:

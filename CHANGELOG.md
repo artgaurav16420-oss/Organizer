@@ -22,6 +22,8 @@ All notable changes to the Fermi PDF organizer are recorded here.
   numeric suffix.
 - Removed a dead `ITEM_RE` branch in `_line_bom_entries` and a redundant
   `is_dir()` check in `report_glue.names_from_tree`.
+- **Format 3 no longer accepts a bare FERMI line that continues a prose note**:
+  a wrapped cross-reference after a genuine row is not a BOM child.
 
 ### Fix: codebase-review follow-ups (repair links, CI gates, manifest drift)
 - **Repair refuses to move a folder that is, or contains, a symlink or

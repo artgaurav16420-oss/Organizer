@@ -119,6 +119,15 @@ def test_split_line_column_headers_enable_fallback(tmp_path, make_pdf):
     assert "F10126108" not in values
 
 
+def test_bare_fermi_note_after_row_is_not_a_bom_child():
+    # A wrapped note can put a bare F-number on its own line after a genuine
+    # row. Format 3's proximity check must not turn that note into a child.
+    lines = ["FERMI PART LIST", "1", "F10126107", "CHILD PART A",
+             "MAINTAINED PER DRAWING", "F10126108", "2"]
+    entries = extraction._line_bom_entries(lines, 1)
+    assert [v for v, *_rest in entries] == ["F10126107"]
+
+
 def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, monkeypatch):
     # Tesseract parses options before the config file: with 'tsv' first, every
     # --psm was silently dropped and the pass ran at the default psm 3
