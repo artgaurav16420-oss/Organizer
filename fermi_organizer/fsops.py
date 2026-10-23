@@ -590,8 +590,8 @@ def is_system_dir(name):
 RUN_LOCK_NAME = ".fermi_organizer.lock"
 
 # Precompiled sweep regexes (F-PERF-11): avoid recompiling per call.
-_STAGING_RE = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
-_COPY_RE = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
+_STAGING_RE = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.[0-9]+$", re.IGNORECASE)
+_COPY_RE = re.compile(r"\.pdf\.copy_tmp\.[0-9]+$", re.IGNORECASE)
 _CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.[0-9]+$")
 # A lock older than this is presumed left by a crashed run and stolen with a
 # warning. 2 h is far beyond any healthy run (thousands of PDFs take

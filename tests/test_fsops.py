@@ -1403,13 +1403,15 @@ def test_retire_adopted_orphans_identical_live_copy_retires(tmp_path):
 
 def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
     # Only the exact `<name>.pdf.supersede_tmp.<pid>` shape is swept; anything
-    # else that happens to contain the marker is not ours to delete.
+    # else that happens to contain the marker is not ours to delete. `\d` would
+    # match Unicode digits (a user file named with them) - the pid is ASCII.
     folder = tmp_path / "F10126106 Assembly"
     folder.mkdir()
     not_pdf = folder / "notes.supersede_tmp.123"
     bad_pid = folder / "F10126107.pdf.supersede_tmp.abc"
     upper = folder / "F10126107.PDF.supersede_tmp.7"
-    for p in (not_pdf, bad_pid, upper):
+    unicode_pid = folder / "F10126108.pdf.supersede_tmp.\u0663"
+    for p in (not_pdf, bad_pid, upper, unicode_pid):
         p.write_bytes(b"partial")
     logged = []
 
@@ -1417,6 +1419,7 @@ def test_sweep_supersede_staging_ignores_lookalikes(tmp_path):
 
     assert not_pdf.is_file()
     assert bad_pid.is_file()
+    assert unicode_pid.is_file()
     assert not upper.exists()
     assert sum("removed leftover supersede staging" in m for m in logged) == 1
 

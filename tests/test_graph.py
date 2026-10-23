@@ -2,7 +2,7 @@
 from collections import defaultdict
 from pathlib import Path
 
-from fermi_organizer.config import MAX_PATH
+from fermi_organizer.config import MAX_PATH, TREE_MAX_DEPTH
 from fermi_organizer.graph import (
     StemIndex,
     _edit1,
@@ -536,6 +536,19 @@ def test_planned_paths_lists_every_claimant():
     # it under each claimant, so repair must not collapse the pair.
     planned = planned_paths({"F1": {"F3"}, "F2": {"F3"}}, ["F1", "F2"], {})
     assert planned["F3"] == [("F1", "F3"), ("F2", "F3")]
+
+
+def test_planned_paths_reaches_the_placement_depth_cap():
+    # place_files places depth 0..TREE_MAX_DEPTH (TREE_MAX_DEPTH + 1 copies);
+    # planned_paths stopped one level earlier, so repair never reconciled the
+    # deepest folder placement had created.
+    stems = [f"F{10126000 + i}" for i in range(TREE_MAX_DEPTH + 2)]
+    children = {stem: [nxt] for stem, nxt in zip(stems, stems[1:], strict=False)}
+    planned = planned_paths(children, [stems[0]], {})
+
+    deepest = stems[TREE_MAX_DEPTH]                        # depth == the cap
+    assert planned[deepest] == [tuple(stems[:TREE_MAX_DEPTH + 1])]
+    assert stems[TREE_MAX_DEPTH + 1] not in planned        # one past the cap
 
 
 def test_collect_reachable_bfs_cycles_and_self():

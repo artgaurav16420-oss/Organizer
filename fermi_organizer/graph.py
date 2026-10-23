@@ -342,7 +342,7 @@ def planned_paths(children, roots, folder_names):
         total_paths += 1
         if total_paths > limit:
             raise PlacementPlanTooLarge(total_paths)
-        if len(here) >= TREE_MAX_DEPTH:
+        if len(here) > TREE_MAX_DEPTH:
             continue
         stack.extend((c, here) for c in children.get(stem, ()))
     for paths in planned.values():
