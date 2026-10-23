@@ -6,6 +6,7 @@ FERMI_VAL_RE = re.compile(r"^F(?!C)[0-9][0-9A-Za-z]*$")
 
 
 def is_fermi_value(val):
+    """True if val matches the F-number reference pattern (FERMI_VAL_RE)."""
     return bool(val) and bool(FERMI_VAL_RE.match(val))
 
 
@@ -112,6 +113,11 @@ MAX_PLANNED_COPIES = 10000
 # ladder, reached only because incremental/repair plan the whole MERGED tree
 # while the copy cap charges the delta.
 PLAN_PLACEMENT_FACTOR = 8
+
+# PDF resource-exhaustion guards (extraction): skip-with-issue files over these
+# bounds so a huge/scanned document cannot exhaust memory or time.
+MAX_PDF_BYTES = 500 * 1024 * 1024  # ~500 MB
+MAX_PDF_PAGES = 200
 
 # ---------------------------------------------------------------------------
 # OCR support for scanned (image-only) PDFs.  All geometry is derived from

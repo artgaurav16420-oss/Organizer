@@ -5,32 +5,84 @@ import re
 import shutil
 import tempfile
 import time
-from collections import defaultdict, Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TypedDict
 
-from .config import (canonical_stem, filename_title, TB_NUM_VAL_RE,
-                     is_processable_ref, MAX_DIR, MAX_PATH, MAX_PLANNED_COPIES,
-                     PLAN_PLACEMENT_FACTOR, TREE_MAX_DEPTH)
-from .extraction import (resolve_jobs, title_task, org_task, survey_task,
-                         dup_meta_task, run_parallel, OCR)
-from .graph import (is_chk_stem, revision_rank, split_superseded, match_pdfs,
-                    StemIndex, break_cycles, find_used_on_mismatches,
-                    find_used_on_bugs, collect_reachable, snap_ref, _edit1,
-                    planned_paths)
-from .naming import (build_folder_names, folder_name_for, add_bom_name,
-                     bom_name_winners, prefer_bom_names, PlacementPlanTooLarge)
-from .fsops import (place_files, build_pdf_index, pick_shallowest,
-                    scan_output_tree, find_organized_pdfs, find_latest_report,
-                    copy_superseded, copy_watermarked_duplicates, copy_orphans,
-                    retire_adopted_orphans, sweep_supersede_staging,
-                    sweep_stale_claims, resolve_archive_target, folder_foreign_pdfs,
-                     fit_roots_within_cap, reconcile_tree, remove_empty_dirs,
-                     longest_dest_path,
-                     acquire_run_lock, release_run_lock, abandon_run_lock,
-                    LockLostError, _ensure_lock, _same_bytes,
-                    _native, _exists, _islink, _staged_copy, _copy_atomic,
-                    planned_copy_count)
+from .config import (
+    MAX_DIR,
+    MAX_PATH,
+    MAX_PLANNED_COPIES,
+    PLAN_PLACEMENT_FACTOR,
+    TB_NUM_VAL_RE,
+    TREE_MAX_DEPTH,
+    canonical_stem,
+    filename_title,
+    is_processable_ref,
+)
+from .extraction import (
+    OCR,
+    dup_meta_task,
+    org_task,
+    resolve_jobs,
+    run_parallel,
+    survey_task,
+    title_task,
+)
+from .fsops import (
+    LockLostError,
+    _copy_atomic,
+    _ensure_lock,
+    _exists,
+    _islink,
+    _native,
+    _same_bytes,
+    _staged_copy,
+    abandon_run_lock,
+    acquire_run_lock,
+    build_pdf_index,
+    copy_orphans,
+    copy_superseded,
+    copy_watermarked_duplicates,
+    find_latest_report,
+    find_organized_pdfs,
+    fit_roots_within_cap,
+    folder_foreign_pdfs,
+    longest_dest_path,
+    pick_shallowest,
+    place_files,
+    planned_copy_count,
+    reconcile_tree,
+    release_run_lock,
+    remove_empty_dirs,
+    resolve_archive_target,
+    retire_adopted_orphans,
+    scan_output_tree,
+    sweep_stale_claims,
+    sweep_supersede_staging,
+)
+from .graph import (
+    StemIndex,
+    _edit1,
+    break_cycles,
+    collect_reachable,
+    find_used_on_bugs,
+    find_used_on_mismatches,
+    is_chk_stem,
+    match_pdfs,
+    planned_paths,
+    revision_rank,
+    snap_ref,
+    split_superseded,
+)
+from .naming import (
+    PlacementPlanTooLarge,
+    add_bom_name,
+    bom_name_winners,
+    build_folder_names,
+    folder_name_for,
+    prefer_bom_names,
+)
 
 
 class RunCounters(TypedDict):
@@ -1991,7 +2043,18 @@ def _repair_reconcile(output, children, roots, folder_names, dry_run, log,
     """
     scan_res = scan_output_tree(output)
     organized = find_organized_pdfs(output, scan_res=scan_res)
-    planned = planned_paths(children, roots, folder_names)
+    try:
+        planned = planned_paths(children, roots, folder_names)
+    except PlacementPlanTooLarge:
+        log(f"  WARNING: the tree's root-to-leaf paths exceed the "
+            f"{MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR}-path planning bound "
+            f"(copy cap {MAX_PLANNED_COPIES}) - reconcile skipped "
+            "(check the BOM graph)")
+        review = ["planning bound: the tree's root-to-leaf paths exceed "
+                  f"{MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR} - reconcile skipped"]
+        counts = {"moved": 0, "copied": 0, "removed": 0, "review": len(review),
+                  "emptied": 0}
+        return counts, review, organized
     counts, review = reconcile_tree(organized, planned, output, dry_run, log,
                                     moved_dirs, lock=lock)
     counts["emptied"] = remove_empty_dirs(output, dry_run, log, lock=lock)

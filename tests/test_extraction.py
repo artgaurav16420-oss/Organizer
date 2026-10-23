@@ -3,8 +3,8 @@ import os
 import types
 from pathlib import Path
 
-import pytest
 import pymupdf as fitz
+import pytest
 
 from fermi_organizer import extraction
 from fermi_organizer.config import is_fermi_value
@@ -440,7 +440,8 @@ def test_ocr_partslist_below_header_row_needs_its_item_number(monkeypatch):
 
 def test_iso_page_scale_and_ocr_render_dpi():
     import types
-    from fermi_organizer.extraction import iso_page_scale, _ocr_render_dpi
+
+    from fermi_organizer.extraction import _ocr_render_dpi, iso_page_scale
 
     # Sheets are A0-A4, stored either at ISO size (72 dpi page) or at the
     # scanner's dpi (1 px = 1 pt), e.g. an A0 scan at 153 dpi.

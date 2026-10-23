@@ -20,23 +20,23 @@ def names_from_tree(output):
     o = Path(output)
     if not o.is_dir():
         return names
-    # root folders first (most authoritative), then nested folders
-    dirs = []
+    # Walk top-down so root folders (most authoritative) are seen first;
+    # sort each level for deterministic conflict resolution.
     if o.is_dir():
         for dp, dn, _ in os.walk(o):
+            dn.sort()
             for name in dn:
-                dirs.append(Path(dp) / name)
-    for d in sorted(dirs):
-        if is_system_dir(d.name) or " " not in d.name:
-            continue
-        rel = d.relative_to(o)
-        if is_system_dir(rel.parts[0]):
-            continue
-        base, _, name = d.name.partition(" ")
-        if not re.match(r"^F(?:C)?\d+$", base):
-            continue
-        if name:
-            conflicts[base].add(name)
+                d = Path(dp) / name
+                if is_system_dir(d.name) or " " not in d.name:
+                    continue
+                rel = d.relative_to(o)
+                if is_system_dir(rel.parts[0]):
+                    continue
+                base, _, name_part = d.name.partition(" ")
+                if not re.match(r"^F(?:C)?\d+$", base):
+                    continue
+                if name_part:
+                    conflicts[base].add(name_part)
     for base, cands in conflicts.items():
         if len(cands) == 1:
             names[base] = next(iter(cands))

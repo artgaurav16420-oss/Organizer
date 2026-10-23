@@ -538,6 +538,7 @@ def test_prior_names_malformed_workbook_xml_yields_empty(tmp_path):
     # best-effort lookup yields {} instead of aborting the rebuild.
     import warnings
     import zipfile
+
     from openpyxl import Workbook
     out = tmp_path / "malformed-xml.xlsx"
     wb = Workbook()

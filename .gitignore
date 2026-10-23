@@ -30,3 +30,8 @@ graphify-out/
 uv.lock
 *.corrupt
 *.history.json.tmp
+
+# OpenCode tooling
+.opencode/node_modules/
+ruffI.txt
+ndi.txt

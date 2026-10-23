@@ -1,18 +1,19 @@
 """Characterization suite: cycle e2e, workbook, supersede/move helpers, orphan flow."""
+import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 import fermi_report_xlsx as fx
 from fermi_organizer import fsops
-import shutil
-from unittest.mock import patch
-
-from fermi_organizer.runmodes import (_detect_supersede_pairs,
-                                      _move_children_under_superseding,
-                                      _place_above_organized_children,
-                                      _copy_org_child_tree,
-                                      run_full)
+from fermi_organizer.runmodes import (
+    _copy_org_child_tree,
+    _detect_supersede_pairs,
+    _move_children_under_superseding,
+    _place_above_organized_children,
+    run_full,
+)
 
 pytestmark = pytest.mark.skipif(not fx._OPENPYXL_OK,
                                 reason="openpyxl not installed")

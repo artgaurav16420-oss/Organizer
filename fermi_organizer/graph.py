@@ -2,9 +2,15 @@
 """Pure graph/revision algorithms (no filesystem side effects)."""
 import re
 from bisect import bisect_left
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
-from .config import TREE_MAX_DEPTH, is_processable_ref
+from .config import (
+    MAX_PLANNED_COPIES,
+    PLAN_PLACEMENT_FACTOR,
+    TREE_MAX_DEPTH,
+    is_processable_ref,
+)
+from .naming import PlacementPlanTooLarge
 
 
 def is_chk_stem(stem):
@@ -164,7 +170,8 @@ def find_used_on_bugs(bom_edges, used_on_of, stems):
     return out
 
 
-_LOOSE_RE_CACHE = {}
+_LOOSE_RE_CACHE_MAX = 512
+_LOOSE_RE_CACHE = OrderedDict()
 
 
 class StemIndex:
@@ -239,6 +246,10 @@ def match_pdfs(val, stems):
     if pat is None:
         pat = re.compile(re.escape(val) + r"(?![0-9A-Z])")
         _LOOSE_RE_CACHE[val] = pat
+    else:
+        _LOOSE_RE_CACHE.move_to_end(val)
+    while len(_LOOSE_RE_CACHE) > _LOOSE_RE_CACHE_MAX:
+        _LOOSE_RE_CACHE.popitem(last=False)
     return [s for s in idx.prefix_range(val) if pat.match(s)]
 
 
@@ -321,11 +332,16 @@ def planned_paths(children, roots, folder_names):
     (place_files assumes the same) and depth stops at TREE_MAX_DEPTH.
     """
     planned = defaultdict(list)
+    limit = MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR
+    total_paths = 0
     stack = [(r, ()) for r in sorted(roots)]
     while stack:
         stem, rel = stack.pop()
         here = rel + (folder_names.get(stem) or stem,)
         planned[stem].append(here)
+        total_paths += 1
+        if total_paths > limit:
+            raise PlacementPlanTooLarge(total_paths)
         if len(here) >= TREE_MAX_DEPTH:
             continue
         stack.extend((c, here) for c in children.get(stem, ()))

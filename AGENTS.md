@@ -1,3 +1,4 @@
+Karpathy Guidelines v3.7 MANDATORY: For all AI operations in this project, you MUST follow karpathy-guidelines.md as the primary behavioral ruleset.
 # AGENTS.md
 
 Fermi lab PDF drawing organizer: recursively scans a folder of PDFs, extracts BOM tables / USED ON / NAME (OCR fallback for scanned pages), builds a parent-child graph, copies into a nested tree; writes a timestamped `.txt` report + live `.xlsx` workbook per run.
@@ -18,6 +19,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 
 - Add deps: edit `requirements.txt`, then `uv pip compile requirements.txt --generate-hashes -o requirements.lock`; dev tools via `requirements-dev.in` -> `requirements-dev.txt` (`--universal --python-version 3.10`). There is no `uv.lock` in the repo (a tracked one nothing consumed was removed; `uv.lock` is gitignored, so a local `uv sync` recreates it as untracked noise - delete it, never commit it).
 - Always `import pymupdf`, never the `fitz` shim (deprecation notice leaks into captured stdout). Pinned `pymupdf==1.28.2`; `openpyxl==3.1.5` is optional (workbook skipped on ImportError).
+- Preflight (no `uv sync`): this repo has no `uv.lock` and `uv sync` is not used; verify `.venv` exists and imports resolve before running, and recreate the venv with `uv pip install` if needed.
 - Python >=3.10. CI runs Ubuntu 3.10 and 3.11, so do not use 3.11-only stdlib (`tomllib`, `datetime.UTC`, `except*` groups). Setuptools floor is >=80 because older releases reject the SPDX `license` string.
 - Tesseract only for scanned PDFs: resolution order `TESSERACT_EXE` -> PATH -> common Windows dirs.
 - One run per output folder is enforced by `<output>/.fermi_organizer.lock`: exit 1 if held (stale >2h is stolen with a warning), exit 2 if stolen mid-run. Network shares (SMB/NFS/mapped drives) are not lock-safe; coordinate manually.
@@ -27,7 +29,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 `organize_fermi_pdfs.py` (launcher) -> `fermi_organizer/cli.py` (argparse, orchestration, Excel glue)
 
 - `config.py`: regexes, constants, limits (`MAX_PATH=250`, `TREE_MAX_DEPTH=500`, `MAX_PLANNED_COPIES=10000`)
-- `extraction.py`: BOM / USED ON / NAME / title block / watermark + OCR; `survey_task` opens each PDF once and returns all of them, with the older `bom_task` / `title_task` / `org_task` wrappers slicing its result
+- `extraction.py`: BOM / USED ON / NAME / title block / watermark + OCR; `survey_task` opens each PDF once and returns all of them; the older `bom_task` / `title_task` / `org_task` are thin adapters over `survey_task` (preserving their legacy return shapes)
 - `graph.py`: pure algorithms (revision ranking, matching, cycles, `planned_paths` = a graph's planned folder paths)
 - `naming.py`: folder naming + path shortening
 - `fsops.py`: indexing, placement, tree scans, supersede/orphan copies, run lock, `reconcile_tree` (repair's move/prune pass)

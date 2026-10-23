@@ -11,10 +11,16 @@ from collections import defaultdict
 from fnmatch import fnmatch
 from pathlib import Path
 
-from .config import (canonical_stem, MAX_PATH, MAX_DIR, TREE_MAX_DEPTH,
-                     PLANNED_COPIES_WARN, MAX_PLANNED_COPIES)
-from .graph import is_chk_stem
+from .config import (
+    MAX_DIR,
+    MAX_PATH,
+    MAX_PLANNED_COPIES,
+    PLANNED_COPIES_WARN,
+    TREE_MAX_DEPTH,
+    canonical_stem,
+)
 from .extraction import detect_watermark
+from .graph import is_chk_stem
 from .naming import folder_name_for
 
 try:
@@ -567,6 +573,11 @@ def is_system_dir(name):
 
 
 RUN_LOCK_NAME = ".fermi_organizer.lock"
+
+# Precompiled sweep regexes (F-PERF-11): avoid recompiling per call.
+_STAGING_RE = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
+_COPY_RE = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
+_CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.\d+$")
 # A lock older than this is presumed left by a crashed run and stolen with a
 # warning. 2 h is far beyond any healthy run (thousands of PDFs take
 # minutes), so a crashed run blocks the next one only briefly; the check is
@@ -927,19 +938,17 @@ def sweep_supersede_staging(output, dry_run, log):
     output = Path(output)
     if not output.is_dir():
         return
-    staging_re = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
-    copy_re = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
     for dirpath, dirnames, filenames in os.walk(output):
         # Never descend through a junction/symlinked folder: this sweep
         # deletes files, and a link inside the tree would take it outside.
         dirnames[:] = [d for d in dirnames
                        if not _is_dir_link(Path(dirpath) / d)]
         for name in sorted(filenames):
-            if not staging_re.search(name):
+            if not _STAGING_RE.search(name):
                 continue
             p = Path(dirpath) / name
             rel = p.relative_to(output)
-            if is_system_dir(rel.parts[0]) and not copy_re.search(name):
+            if is_system_dir(rel.parts[0]) and not _COPY_RE.search(name):
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] remove leftover supersede staging: {rel}")
@@ -965,10 +974,9 @@ def sweep_stale_claims(output, dry_run, log):
     output = Path(output)
     if not output.is_dir():
         return
-    claim_re = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.\d+$")
     now = time.time()
     for p in sorted(output.glob(RUN_LOCK_NAME + ".claim.*")):
-        if not claim_re.fullmatch(p.name):
+        if not _CLAIM_RE.fullmatch(p.name):
             continue
         try:
             age = now - os.path.getmtime(_native(p))
@@ -1009,10 +1017,12 @@ def find_organized_pdfs(folder, scan_res=None):
 
 
 def pick_shallowest(paths):
+    """Return the shallowest path (fewest parts), tie-broken lexicographically."""
     return sorted(paths, key=lambda p: (len(p.parts), str(p)))[0]
 
 
 def find_latest_report(folder):
+    """Return the newest organize_fermi_pdfs_report_*.txt in folder, or None."""
     reports = sorted(folder.glob("organize_fermi_pdfs_report_*.txt"))
     return reports[-1] if reports else None
 
@@ -1385,9 +1395,17 @@ def _folder_removable(folder, planned_by_stem, output):
         # The twin must be a different, regular file: a drawing already at its
         # own planned path would otherwise vouch for the folder it lives in,
         # and a symlinked "twin" points outside the tree, so neither is an
-        # independent planned copy.
-        if not any(not _islink(t) and t != path and t.exists()
-                   and _same_bytes(path, t) for t in targets):
+        # independent planned copy. Compare bytes directly (no metadata cache)
+        # so a changed file with unchanged size/mtime cannot masquerade as a
+        # match - correctness over performance on this destructive path.
+        ok = False
+        for t in targets:
+            if _islink(t) or t == path or not t.exists():
+                continue
+            if _same_bytes(path, t):
+                ok = True
+                break
+        if not ok:
             return False, f"{path.name} has no identical copy at its planned path"
     return True, ""
 
@@ -1424,6 +1442,10 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
     drawing is not refused: repair moves whole subtrees on purpose, and any
     child that belongs elsewhere is reconciled by its own pass afterwards.
     """
+    if _is_dir_link(folder):
+        log(f"  WARNING: {stem}: source is a symlink/junction, refusing move "
+            f"(manual review): {folder}")
+        return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")

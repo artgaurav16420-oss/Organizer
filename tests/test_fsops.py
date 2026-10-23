@@ -1,20 +1,31 @@
 """Unit tests: system-dir convention, output tree scan, superseded copies."""
 import os
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from fermi_organizer import fsops
 from fermi_organizer.config import canonical_stem
-from fermi_organizer.fsops import (build_pdf_index, copy_orphans, copy_superseded,
-                                   copy_watermarked_duplicates,
-                                   find_organized_pdfs, is_system_dir,
-                                   place_files, retire_adopted_orphans,
-                                   scan_output_tree, sweep_supersede_staging,
-                                   sweep_stale_claims,
-                                   acquire_run_lock, release_run_lock,
-                                   abandon_run_lock, run_lock_lost,
-                                   RunLockedError, LockLostError, RUN_LOCK_NAME)
+from fermi_organizer.fsops import (
+    RUN_LOCK_NAME,
+    LockLostError,
+    RunLockedError,
+    abandon_run_lock,
+    acquire_run_lock,
+    build_pdf_index,
+    copy_orphans,
+    copy_superseded,
+    copy_watermarked_duplicates,
+    find_organized_pdfs,
+    is_system_dir,
+    place_files,
+    release_run_lock,
+    retire_adopted_orphans,
+    run_lock_lost,
+    scan_output_tree,
+    sweep_stale_claims,
+    sweep_supersede_staging,
+)
 
 
 def test_run_lock_acquire_and_release(tmp_path):

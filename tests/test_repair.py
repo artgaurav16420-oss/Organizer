@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from fermi_organizer.fsops import (_folder_removable, reconcile_tree,
-                                   remove_empty_dirs)
+from fermi_organizer.fsops import _folder_removable, reconcile_tree, remove_empty_dirs
 from fermi_organizer.runmodes import run_full, run_incremental, run_repair
 from tests.test_mode_parity import _live_paths
 

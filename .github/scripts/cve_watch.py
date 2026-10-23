@@ -17,6 +17,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 PIN_RE = re.compile(r"^pymupdf==([^\s#]+)", re.M)
+PYPROJECT_PIN_RE = re.compile(r'"pymupdf==([^"]+)"', re.M)
+LOCK_PIN_RE = re.compile(r"^pymupdf==([^\s\\]+)", re.M)
+OPENPYXL_PIN_RE = re.compile(r"^openpyxl==([^\s#]+)", re.M)
+OPENPYXL_PYPROJECT_PIN_RE = re.compile(r'"openpyxl==([^"]+)"', re.M)
+OPENPYXL_LOCK_PIN_RE = re.compile(r"^openpyxl==([^\s\\]+)", re.M)
+OPENPYXL_PIN = "3.1.5"
 TESS_PIN = "5.5.3"
 TESS_API = "https://api.github.com/repos/tesseract-ocr/tesseract/releases/latest"
 LABEL = "cve-watch"
@@ -61,9 +67,18 @@ def _track(title, body):
 
 
 def check_pymupdf(open_titles):
-    pin = PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
+    req_pin = PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
+    proj_pin = PYPROJECT_PIN_RE.search((ROOT / "pyproject.toml").read_text()).group(1)
+    lock_pin = LOCK_PIN_RE.search((ROOT / "requirements.lock").read_text()).group(1)
+    pins = {"requirements.txt": req_pin, "pyproject.toml": proj_pin,
+            "requirements.lock": lock_pin}
+    if len(set(pins.values())) != 1:
+        print("WARNING: pymupdf pins drift between files: " + repr(pins))
+    pin = req_pin
     latest = _get_json("https://pypi.org/pypi/pymupdf/json")["info"]["version"]
-    print(f"pymupdf pinned={pin} latest={latest}")
+    print(f"pymupdf pinned=requirements.txt:{req_pin} "
+          f"pyproject.toml:{proj_pin} requirements.lock:{lock_pin} "
+          f"latest={latest}")
     if latest == pin:
         print("pymupdf pin is current; nothing to do")
         return
@@ -105,9 +120,40 @@ def check_tesseract(open_titles):
          "if so, raise the floor in README and THIRD_PARTY_NOTICES.md."))
 
 
+def check_openpyxl(open_titles):
+    req_pin = OPENPYXL_PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
+    proj_match = OPENPYXL_PYPROJECT_PIN_RE.search((ROOT / "pyproject.toml").read_text())
+    proj_pin = proj_match.group(1) if proj_match else req_pin
+    lock_pin = OPENPYXL_LOCK_PIN_RE.search((ROOT / "requirements.lock").read_text()).group(1)
+    pins = {"requirements.txt": req_pin, "pyproject.toml": proj_pin,
+            "requirements.lock": lock_pin}
+    if len(set(pins.values())) != 1:
+        print("WARNING: openpyxl pins drift between files: " + repr(pins))
+    pin = req_pin
+    latest = _get_json("https://pypi.org/pypi/openpyxl/json")["info"]["version"]
+    print(f"openpyxl pinned=requirements.txt:{req_pin} "
+          f"pyproject.toml:{proj_pin} requirements.lock:{lock_pin} "
+          f"latest={latest}")
+    if latest == pin:
+        print("openpyxl pin is current; nothing to do")
+        return
+    needle = f"openpyxl {latest} released"
+    if any(needle in t for t in open_titles):
+        print("openpyxl tracking issue already open; nothing to do")
+        return
+    _track(
+        f"openpyxl {latest} released - re-check (pin is {pin})",
+        ("A newer openpyxl release exists on PyPI.\n\n"
+         f"- Pinned: `{pin}` (`requirements.txt`)\n"
+         f"- Latest: `{latest}`\n\n"
+         "Standing action: verify compatibility with the workbook builder "
+         "(`fermi_report_xlsx.py`) and bump pins together if safe."))
+
+
 def main():
     open_titles = _open_watch_titles()
     check_pymupdf(open_titles)
+    check_openpyxl(open_titles)
     check_tesseract(open_titles)
 
 

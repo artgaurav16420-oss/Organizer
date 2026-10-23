@@ -1,10 +1,32 @@
 name: pytest
-on: [push, pull_request]
+on:
+  push:
+    paths:
+      - "**.py"
+      - "requirements*.txt"
+      - "requirements*.lock"
+      - "pyproject.toml"
+      - "setup.cfg"
+      - "setup.py"
+      - ".github/workflows/pytest.yml"
+  pull_request:
+    paths:
+      - "**.py"
+      - "requirements*.txt"
+      - "requirements*.lock"
+      - "pyproject.toml"
+      - "setup.cfg"
+      - "setup.py"
+      - ".github/workflows/pytest.yml"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.10", "3.11"]
@@ -15,6 +37,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install --require-hashes -r requirements-dev.txt
       # Coverage ratchet: 83 is the measured baseline floor (actual ~84%);
@@ -25,6 +51,7 @@ jobs:
     # No coverage ratchet here by design: the ratchet is enforced once, on the
     # ubuntu job (same suite, plus the symlink tests that only run on Linux).
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -32,6 +59,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install --require-hashes -r requirements-dev.txt
       - run: python -m pytest -q
@@ -40,6 +71,7 @@ jobs:
     # script + top-level workbook module import from outside the repo root
     # (tests run through the conftest sys.path shim and never exercise this).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -47,10 +79,15 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install --require-hashes -r requirements-dev.txt
-      # no-isolation: the build backend (setuptools) comes from the hashed
-      # dev lock instead of an unpinned PyPI fetch inside an ephemeral venv.
+      # clean build tree first: --no-isolation reuses a stale build/lib and can
+      # ship deleted/ghost modules in the wheel.
+      - run: rm -rf build dist
       - run: python -m build --wheel --no-isolation
       # Resolve the wheel's own Requires-Dist in a clean venv: installing with
       # --no-deps on top of the hashed lock proves nothing, so deleting pymupdf
@@ -58,15 +95,21 @@ jobs:
       - name: Install the wheel in a clean venv
         run: |
           python -m venv "$RUNNER_TEMP/wheelenv"
-          "$RUNNER_TEMP/wheelenv/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/wheelenv/bin/pip" install dist/*.whl
       - name: Smoke the installed wheel from a foreign cwd
         working-directory: ${{ runner.temp }}
         run: |
           "$RUNNER_TEMP/wheelenv/bin/fermi-organize" --help > /dev/null
           "$RUNNER_TEMP/wheelenv/bin/python" -c "import fermi_report_xlsx"
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: fermi-organizer-wheel
+          path: dist/*.whl
+          if-no-files-found: error
   ruff:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -74,5 +117,9 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
       - run: pip install --require-hashes -r requirements-dev.txt
       - run: ruff check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py
