@@ -577,7 +577,7 @@ RUN_LOCK_NAME = ".fermi_organizer.lock"
 # Precompiled sweep regexes (F-PERF-11): avoid recompiling per call.
 _STAGING_RE = re.compile(r"\.pdf\.(?:supersede|copy)_tmp\.\d+$", re.IGNORECASE)
 _COPY_RE = re.compile(r"\.pdf\.copy_tmp\.\d+$", re.IGNORECASE)
-_CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.\d+$")
+_CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.[0-9]+$")
 # A lock older than this is presumed left by a crashed run and stolen with a
 # warning. 2 h is far beyond any healthy run (thousands of PDFs take
 # minutes), so a crashed run blocks the next one only briefly; the check is
@@ -1446,6 +1446,11 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: source is a symlink/junction, refusing move "
             f"(manual review): {folder}")
         return False
+    for _child in folder.rglob("*"):
+        if _is_dir_link(_child) or _islink(_child):
+            log(f"  WARNING: {stem}: source contains a symlink/junction, "
+                f"refusing move (manual review): {_child}")
+            return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")
