@@ -282,7 +282,9 @@ class _OcrContext:
         if key in self.page_scale:
             self.page_scale.move_to_end(key)
             return self.page_scale[key]
-        return iso_page_scale(page.rect.width, page.rect.height)
+        scale = iso_page_scale(page.rect.width, page.rect.height)
+        _memo_put(self.page_scale, key, scale)
+        return scale
 
     def words_cached(self, page, issues=None, page_label=""):
         key = self.doc_key(page)
