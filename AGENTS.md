@@ -1,4 +1,3 @@
-Karpathy Guidelines v3.7 MANDATORY: For all AI operations in this project, you MUST follow karpathy-guidelines.md as the primary behavioral ruleset.
 # AGENTS.md
 
 Fermi lab PDF drawing organizer: recursively scans a folder of PDFs, extracts BOM tables / USED ON / NAME (OCR fallback for scanned pages), builds a parent-child graph, copies into a nested tree; writes a timestamped `.txt` report + live `.xlsx` workbook per run.
