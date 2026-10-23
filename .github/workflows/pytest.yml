@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - "**.py"
+      - "**.md"
       - "requirements*.txt"
       - "requirements*.lock"
       - "pyproject.toml"
@@ -10,16 +11,12 @@ on:
       - "setup.py"
       - ".github/workflows/pytest.yml"
       - ".github/workflows/release.yml"
+  # No `paths` filter here on purpose: these jobs are required status checks on
+  # main, and a filtered-out PR leaves them "Expected" forever, so a docs-only
+  # change could never merge. Markdown is in the push list because
+  # tests/test_cve_watch.py pins the Tesseract floor stated in README.md and
+  # THIRD_PARTY_NOTICES.md.
   pull_request:
-    paths:
-      - "**.py"
-      - "requirements*.txt"
-      - "requirements*.lock"
-      - "pyproject.toml"
-      - "setup.cfg"
-      - "setup.py"
-      - ".github/workflows/pytest.yml"
-      - ".github/workflows/release.yml"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

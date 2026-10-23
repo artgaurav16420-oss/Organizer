@@ -60,7 +60,6 @@ def _islink(path):
     return os.path.islink(_native(path))
 
 
-
 def _has_linked_ancestor(path, stop):
     """True if any component between (exclusive) stop and path is a link.
 
@@ -1411,9 +1410,11 @@ def _folder_removable(folder, planned_by_stem, output):
         # The twin must be a different, regular file: a drawing already at its
         # own planned path would otherwise vouch for the folder it lives in,
         # and a symlinked "twin" points outside the tree, so neither is an
-        # independent planned copy. Compare bytes directly (no metadata cache)
-        # so a changed file with unchanged size/mtime cannot masquerade as a
-        # match - correctness over performance on this destructive path.
+        # independent planned copy. One explicit pass per target (instead of
+        # any()) keeps the link and byte checks in one place; the compare itself
+        # is _same_bytes, which never consults filecmp's metadata cache, so a
+        # changed file with unchanged size/mtime cannot masquerade as a match -
+        # correctness over performance on this destructive path.
         ok = False
         for t in targets:
             if _islink(t) or t == path or not t.exists():
@@ -1464,11 +1465,16 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: source is a symlink/junction, refusing move "
             f"(manual review): {folder}")
         return False
-    for _child in folder.rglob("*"):
-        if _is_dir_link(_child) or _islink(_child):
-            log(f"  WARNING: {stem}: source contains a symlink/junction, "
-                f"refusing move (manual review): {_child}")
-            return False
+    # Prune-first walk: rglob descends through junctions, so it would traverse
+    # the very link this guard refuses before the check ever ran. Test each
+    # level's entries as they are listed, top-down.
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for name in sorted(dirnames) + sorted(filenames):
+            entry = Path(dirpath) / name
+            if _is_dir_link(entry) or _islink(entry):
+                log(f"  WARNING: {stem}: source contains a symlink/junction, "
+                    f"refusing move (manual review): {entry}")
+                return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")

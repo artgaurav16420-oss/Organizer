@@ -1,4 +1,5 @@
 """In-process cli.main tests: exit codes + dry-run artifacts."""
+import os
 import sys
 from pathlib import Path
 
@@ -325,8 +326,6 @@ def test_run_mode_label_incremental_branch():
 
 
 def test_refresh_workbook_import_error(tmp_path):
-    import sys
-
     sys.modules["fermi_report_xlsx"] = None
     try:
         logged = []
@@ -352,7 +351,8 @@ def test_cli_main_output_mkdir_oserror(monkeypatch, tmp_path):
     assert exc.value.code == 1
 
 
-def test_cli_main_incremental_output_exists_warning(monkeypatch, tmp_path):
+def test_cli_main_incremental_output_exists_warning(monkeypatch, tmp_path,
+                                                    capsys):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     (in_dir / "Output").mkdir()
@@ -364,9 +364,13 @@ def test_cli_main_incremental_output_exists_warning(monkeypatch, tmp_path):
                         ["organize_fermi_pdfs.py", str(in_dir),
                          "--incremental", "--no-ocr"])
     assert cli_module.main() is None
+    out = capsys.readouterr().out
+    assert f"WARNING: {in_dir / 'Output'} exists" in out
+    assert "--output" in out
 
 
-def test_cli_main_unc_path_warning(monkeypatch, tmp_path):
+@pytest.mark.skipif(os.name != "nt", reason="UNC guard is Windows-only")
+def test_cli_main_unc_path_warning(monkeypatch, tmp_path, capsys):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     ctx = _minimal_ctx()
@@ -377,6 +381,7 @@ def test_cli_main_unc_path_warning(monkeypatch, tmp_path):
                         ["organize_fermi_pdfs.py", str(in_dir),
                          "--output", "\\\\server\\share", "--dry-run", "--no-ocr"])
     assert cli_module.main() is None
+    assert "WARNING: output is on a network share (UNC path)" in capsys.readouterr().out
 
 
 def test_cli_main_lock_lost_error(monkeypatch, tmp_path):
@@ -410,7 +415,7 @@ def test_cli_main_run_lock_lost(monkeypatch, tmp_path):
     assert exc.value.code == 2
 
 
-def test_cli_main_ocr_events_reported(monkeypatch, tmp_path):
+def test_cli_main_ocr_events_reported(monkeypatch, tmp_path, capsys):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -427,9 +432,12 @@ def test_cli_main_ocr_events_reported(monkeypatch, tmp_path):
                         ["organize_fermi_pdfs.py", str(in_dir),
                          "--output", str(out), "--no-ocr"])
     assert cli_module.main() is None
+    out_text = capsys.readouterr().out
+    assert "--- OCR (scanned pages) ---" in out_text
+    assert "line1" in out_text
 
 
-def test_cli_main_report_write_oserror(monkeypatch, tmp_path):
+def test_cli_main_report_write_oserror(monkeypatch, tmp_path, capsys):
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     out = tmp_path / "out"
@@ -451,13 +459,15 @@ def test_cli_main_report_write_oserror(monkeypatch, tmp_path):
                         ["organize_fermi_pdfs.py", str(in_dir),
                          "--output", str(out), "--no-ocr"])
     assert cli_module.main() is None
+    out_text = capsys.readouterr().out
+    assert "WARNING: report not saved" in out_text
 
 
 def test_cli_main_guard(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "nope")])
-    src = Path("fermi_organizer/cli.py").read_text(encoding="utf-8")
+    src_path = Path(cli_module.__file__)
     ns = dict(cli_module.__dict__)
     ns["__name__"] = "__main__"
     ns["__package__"] = "fermi_organizer"
     with pytest.raises(SystemExit):
-        exec(compile(src, "fermi_organizer/cli.py", "exec"), ns)
+        exec(compile(src_path.read_text(encoding="utf-8"), str(src_path), "exec"), ns)

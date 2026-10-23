@@ -176,6 +176,39 @@ def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
         os.rmdir(link)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_move_folder_refuses_a_junction_inside_the_subtree(tmp_path):
+    # The guard must refuse before the move, and must not descend through the
+    # junction to notice it (rglob would; the walk is prune-first).
+    import subprocess
+
+    out = tmp_path / "out"
+    folder = out / "F10126106 PARENT PART"
+    (folder / "nested").mkdir(parents=True)
+    (folder / "nested" / "F10126107.pdf").write_bytes(b"child")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126108.pdf").write_bytes(b"foreign")
+
+    link = folder / "nested" / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        logged = []
+        moved = {}
+        target = out / "F10126106 RENAMED PART"
+        assert fsops._move_folder("F10126106", folder, target, out, False,
+                                  logged.append, moved, {}, None) is False
+        assert folder.is_dir()
+        assert not target.exists()
+        assert "symlink/junction" in "\n".join(logged)
+        assert moved == {}
+    finally:
+        os.rmdir(link)
+
+
 def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
     # Review finding: a failed lock write must not leak the O_EXCL-created
     # file (no lock path exists to clean it up) and refuse later runs.

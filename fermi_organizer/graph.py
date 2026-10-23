@@ -8,9 +8,9 @@ from .config import (
     MAX_PLANNED_COPIES,
     PLAN_PLACEMENT_FACTOR,
     TREE_MAX_DEPTH,
+    PlacementPlanTooLarge,
     is_processable_ref,
 )
-from .naming import PlacementPlanTooLarge
 
 
 def is_chk_stem(stem):

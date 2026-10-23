@@ -4,6 +4,30 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: codebase-review follow-ups (repair links, CI gates, manifest drift)
+- **Repair refuses to move a folder that is, or contains, a symlink or
+  junction**, and a planned target reached through a linked folder no longer
+  vouches for a removable duplicate (`fsops._has_linked_ancestor`). The guard
+  walks prune-first on purpose: `rglob` descends through junctions, so the check
+  would have traversed the link it exists to refuse.
+- **Workbook headers, side notes, empty states and section labels are forced to
+  text** (`_inert_text`) like the row cells already were, so a PDF-derived
+  string starting with `=` cannot be written as a formula.
+- **`report_glue.names_from_tree` treats a top-level folder name as
+  authoritative** and no longer loses it to a stale nested copy of the same base
+  stem.
+- **CI:** `pytest.yml` no longer path-filters `pull_request` (a docs-only PR
+  left every required check "Expected" forever); the push filter covers markdown
+  so the Tesseract-floor gate runs on the files it pins. Dependabot is limited
+  to GitHub Actions - a pip bump cannot regenerate the hashed lock, so it would
+  go green against the old pin. `tests/test_cve_watch.py` gates
+  `requirements.txt` / `pyproject.toml` / `requirements.lock` against drift, and
+  `cve_watch.py` tracks openpyxl and warns instead of crashing on a missing pin.
+- `bom_task` / `title_task` / `org_task` are thin adapters over `survey_task`
+  (one open per PDF, legacy return shapes kept); `MAX_PDF_BYTES` /
+  `MAX_PDF_PAGES` moved to `config.py`; the OCR page memos are LRU-bounded at
+  512 entries and `page_scale` is capped for the first time.
+
 ### Performance: reference matching is indexed, and the name plan is bounded
 - `graph.match_pdfs` rescanned the whole stem set on every reference, so a
   run's matching was Θ(refs × stems) — measured at 42% of a 1,000-drawing

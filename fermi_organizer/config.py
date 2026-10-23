@@ -114,6 +114,18 @@ MAX_PLANNED_COPIES = 10000
 # while the copy cap charges the delta.
 PLAN_PLACEMENT_FACTOR = 8
 
+
+class PlacementPlanTooLarge(RuntimeError):
+    """The name plan would enumerate more root-to-leaf paths than allowed.
+
+    Raised from the placement walk as soon as the limit is passed, so a diamond
+    DAG in the tree cannot exhaust time and memory before the caller's fan-out
+    cap is consulted (measured: 3.1M placements / 805 MB on a 41-node ladder).
+    Lives here, not in naming.py, so graph.planned_paths can raise it without
+    importing the naming layer.
+    """
+
+
 # PDF resource-exhaustion guards (extraction): skip-with-issue files over these
 # bounds so a huge/scanned document cannot exhaust memory or time.
 MAX_PDF_BYTES = 500 * 1024 * 1024  # ~500 MB

@@ -22,7 +22,6 @@ LOCK_PIN_RE = re.compile(r"^pymupdf==([^\s\\]+)", re.M)
 OPENPYXL_PIN_RE = re.compile(r"^openpyxl==([^\s#]+)", re.M)
 OPENPYXL_PYPROJECT_PIN_RE = re.compile(r'"openpyxl==([^"]+)"', re.M)
 OPENPYXL_LOCK_PIN_RE = re.compile(r"^openpyxl==([^\s\\]+)", re.M)
-OPENPYXL_PIN = "3.1.5"
 TESS_PIN = "5.5.3"
 TESS_API = "https://api.github.com/repos/tesseract-ocr/tesseract/releases/latest"
 LABEL = "cve-watch"
@@ -66,18 +65,27 @@ def _track(title, body):
     print(f"tracking issue created: {title}")
 
 
+def _pin(pattern, manifest):
+    """Version `pattern` captures in `manifest`, or None when it has no pin."""
+    match = pattern.search((ROOT / manifest).read_text())
+    return match.group(1) if match else None
+
+
 def check_pymupdf(open_titles):
-    req_pin = PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
-    proj_pin = PYPROJECT_PIN_RE.search((ROOT / "pyproject.toml").read_text()).group(1)
-    lock_pin = LOCK_PIN_RE.search((ROOT / "requirements.lock").read_text()).group(1)
-    pins = {"requirements.txt": req_pin, "pyproject.toml": proj_pin,
-            "requirements.lock": lock_pin}
+    pins = {"requirements.txt": _pin(PIN_RE, "requirements.txt"),
+            "pyproject.toml": _pin(PYPROJECT_PIN_RE, "pyproject.toml"),
+            "requirements.lock": _pin(LOCK_PIN_RE, "requirements.lock")}
+    pin = pins["requirements.txt"]
+    if pin is None:
+        print("WARNING: pymupdf is not pinned in requirements.txt; "
+              "skipping the release check")
+        return
     if len(set(pins.values())) != 1:
         print("WARNING: pymupdf pins drift between files: " + repr(pins))
-    pin = req_pin
     latest = _get_json("https://pypi.org/pypi/pymupdf/json")["info"]["version"]
-    print(f"pymupdf pinned=requirements.txt:{req_pin} "
-          f"pyproject.toml:{proj_pin} requirements.lock:{lock_pin} "
+    print(f"pymupdf pinned=requirements.txt:{pins['requirements.txt']} "
+          f"pyproject.toml:{pins['pyproject.toml']} "
+          f"requirements.lock:{pins['requirements.lock']} "
           f"latest={latest}")
     if latest == pin:
         print("pymupdf pin is current; nothing to do")
@@ -121,20 +129,22 @@ def check_tesseract(open_titles):
 
 
 def check_openpyxl(open_titles):
-    req_pin = OPENPYXL_PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
-    proj_match = OPENPYXL_PYPROJECT_PIN_RE.search((ROOT / "pyproject.toml").read_text())
-    proj_pin = proj_match.group(1) if proj_match else None
-    lock_pin = OPENPYXL_LOCK_PIN_RE.search((ROOT / "requirements.lock").read_text()).group(1)
-    pins = {"requirements.txt": req_pin, "pyproject.toml": proj_pin,
-            "requirements.lock": lock_pin}
-    if proj_pin is None:
+    pins = {"requirements.txt": _pin(OPENPYXL_PIN_RE, "requirements.txt"),
+            "pyproject.toml": _pin(OPENPYXL_PYPROJECT_PIN_RE, "pyproject.toml"),
+            "requirements.lock": _pin(OPENPYXL_LOCK_PIN_RE, "requirements.lock")}
+    pin = pins["requirements.txt"]
+    if pin is None:
+        print("WARNING: openpyxl is not pinned in requirements.txt; "
+              "skipping the release check")
+        return
+    if pins["pyproject.toml"] is None:
         print("WARNING: openpyxl not declared in pyproject.toml (Excel extra)")
-    if len(set(pins.values())) != 1:
+    elif len(set(pins.values())) != 1:
         print("WARNING: openpyxl pins drift between files: " + repr(pins))
-    pin = req_pin
     latest = _get_json("https://pypi.org/pypi/openpyxl/json")["info"]["version"]
-    print(f"openpyxl pinned=requirements.txt:{req_pin} "
-          f"pyproject.toml:{proj_pin} requirements.lock:{lock_pin} "
+    print(f"openpyxl pinned=requirements.txt:{pins['requirements.txt']} "
+          f"pyproject.toml:{pins['pyproject.toml']} "
+          f"requirements.lock:{pins['requirements.lock']} "
           f"latest={latest}")
     if latest == pin:
         print("openpyxl pin is current; nothing to do")

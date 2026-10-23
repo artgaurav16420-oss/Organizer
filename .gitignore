@@ -33,5 +33,3 @@ uv.lock
 
 # OpenCode tooling
 .opencode/node_modules/
-ruffI.txt
-ndi.txt

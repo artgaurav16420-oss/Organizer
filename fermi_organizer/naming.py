@@ -4,7 +4,12 @@ import os
 import re
 from collections import Counter
 
-from .config import MAX_PATH, NAME_SHORTEN_MAX_PASSES, TREE_MAX_DEPTH
+from .config import (
+    MAX_PATH,
+    NAME_SHORTEN_MAX_PASSES,
+    TREE_MAX_DEPTH,
+    PlacementPlanTooLarge,
+)
 
 
 def sanitize_folder_name(name):
@@ -77,15 +82,6 @@ def prefer_bom_names(names_of, ocr_named_stems, bom_names, stems=()):
         if bom_name:
             names[stem] = bom_name
     return names
-
-
-class PlacementPlanTooLarge(RuntimeError):
-    """The name plan would enumerate more root-to-leaf paths than allowed.
-
-    Raised from the placement walk as soon as the limit is passed, so a diamond
-    DAG in the tree cannot exhaust time and memory before the caller's fan-out
-    cap is consulted (measured: 3.1M placements / 805 MB on a 41-node ladder).
-    """
 
 
 def _collect_placements(children, roots, limit=None):
