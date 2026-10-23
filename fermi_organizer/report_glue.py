@@ -10,7 +10,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from .fsops import is_system_dir
+from .fsops import is_system_dir, _is_dir_link, _islink
 
 
 def names_from_tree(output):
@@ -28,6 +28,8 @@ def names_from_tree(output):
             for name in dn:
                 d = Path(dp) / name
                 if is_system_dir(d.name) or " " not in d.name:
+                    continue
+                if _is_dir_link(d) or _islink(d):
                     continue
                 rel = d.relative_to(o)
                 if is_system_dir(rel.parts[0]):
