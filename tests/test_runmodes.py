@@ -2699,6 +2699,51 @@ def test_incremental_places_a_branchy_bom_cycle_instead_of_refusing(
     assert not any("planning bound" in line for line in lines)
 
 
+def test_resolve_moved_folder_stops_before_a_reused_destination(tmp_path):
+    # A -> Y then B -> A: B's new home is A, not the original A's Y. A repeated
+    # lookup would follow the stale A -> Y mapping into the wrong tree.
+    a = tmp_path / "A"
+    y = tmp_path / "Y"
+    b = tmp_path / "B"
+    moved = {a: y, b: a}
+
+    assert runmodes._resolve_moved_folder(b, moved) == a
+    assert runmodes._resolve_moved_folder(a, moved) == y
+
+
+def test_incremental_supersede_stops_after_a_failed_swap(tmp_path, monkeypatch):
+    # A failed archive leaves its old stem live; later swaps would run against
+    # the pre-check graph that assumed it was gone. They are deferred instead.
+    old1 = tmp_path / "old1.pdf"
+    old2 = tmp_path / "old2.pdf"
+    new1 = tmp_path / "new1.pdf"
+    new2 = tmp_path / "new2.pdf"
+    organized = {"F10126106": [old1], "F10126107": [old2]}
+    new_index = {"F10126106_A": new1, "F10126107_A": new2}
+    new_stems = set(new_index)
+    org_stems = set(organized)
+    calls = []
+
+    def fake_swap(old_paths, new_pdf, *args, **kwargs):
+        calls.append(new_pdf.name)
+        return (False, 0) if new_pdf.name == "new1.pdf" else (True, 0)
+
+    monkeypatch.setattr(runmodes, "_swap_revision_files", fake_swap)
+    moved_dirs, _moves, _copies, _all_stems, swapped = \
+        runmodes._incremental_supersede(
+            [("F10126106_A", "F10126106"), ("F10126107_A", "F10126107")],
+            organized, {"F10126106": [], "F10126107": []}, {},
+            {"F10126106_A": [], "F10126107_A": []}, {}, new_index,
+            new_stems, org_stems, set(), tmp_path / "_superseded", tmp_path,
+            False, lambda m: None, 0)
+
+    assert calls == ["new1.pdf"]
+    assert swapped == []
+    assert moved_dirs == {}
+    assert set(organized) == {"F10126106", "F10126107"}
+    assert set(new_index) == {"F10126106_A", "F10126107_A"}
+
+
 def test_incremental_normalizes_nested_renames_before_adopting_child(
         tmp_path, make_pdf):
     # Parent and child both carry hand-edited names; the child stem sorts first,

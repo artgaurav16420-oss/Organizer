@@ -1754,6 +1754,28 @@ def test_survey_task_keeps_doc_open_for_an_abandoned_ocr_worker(
             doc.close()
 
 
+def test_ocr_reset_keeps_pins_for_live_abandoned_workers():
+    # A reset at the start of the next run must not drop the pin of a worker
+    # that is still alive; dead workers can be released.
+    class _Worker:
+        def __init__(self, alive):
+            self.alive = alive
+
+        def is_alive(self):
+            return self.alive
+
+    ocr = extraction._OcrContext()
+    live_doc, dead_doc = object(), object()
+    ocr._abandoned_docs = [(live_doc, _Worker(True)),
+                           (dead_doc, _Worker(False))]
+
+    ocr.reset()
+
+    assert len(ocr._abandoned_docs) == 1
+    assert ocr._abandoned_docs[0][0] is live_doc
+    assert ocr._abandoned_docs[0][1].is_alive()
+
+
 def test_words_cached_engine_error_is_recorded_as_an_issue(monkeypatch, tmp_path,
                                                            make_pdf):
     # pymupdf surfaces mupdf failures as RuntimeError; they must reach the run's

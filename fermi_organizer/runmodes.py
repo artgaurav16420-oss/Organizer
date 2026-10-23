@@ -962,19 +962,16 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
 
 
 def _resolve_moved_folder(folder, moved_dirs):
-    """Follow chained folder relocations recorded in `moved_dirs`.
+    """Follow folder relocations in the order they happened.
 
-    A parent and a nested child can both be renamed in one pass; the child's
-    entry then points inside the parent's old path. Resolve until the path
-    stops matching so later adoptions never look at a dead intermediate.
+    One ordered pass is deliberate. A repeated pass would follow a mapping
+    whose key was an old path later reused as another folder's destination,
+    resolving that newcomer into the wrong tree. Moves are recorded
+    chronologically, so one pass follows each folder's own chain.
     """
-    for _ in range(len(moved_dirs) + 1):
-        for old, new in moved_dirs.items():
-            if folder == old or folder.is_relative_to(old):
-                folder = new.joinpath(*folder.relative_to(old).parts)
-                break
-        else:
-            return folder
+    for old, new in moved_dirs.items():
+        if folder == old or folder.is_relative_to(old):
+            folder = new.joinpath(*folder.relative_to(old).parts)
     return folder
 
 
@@ -2258,10 +2255,12 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
                 # archived nor placed. Leave it as a new stem so it is placed
                 # (and retried next run); marking it organized here would
                 # strand its children at the output root. The stale organized
-                # copy stays until the retry succeeds.
+                # copy stays until the retry succeeds. Stop here: the pre-swap
+                # bound assumed this source would be archived, so later swaps
+                # would run against a graph it undercounted.
                 log(f"  WARNING: {s}: supersede swap failed - placing as a new PDF "
-                    "(retry next run)")
-                continue
+                    "(retry next run); later swaps deferred")
+                break
             org_boms[s] = new_boms.pop(s, [])
             org_used_on[s] = new_used_on.pop(s, [])
             org_boms.pop(o, None)

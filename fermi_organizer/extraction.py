@@ -170,7 +170,10 @@ class _OcrContext:
         self.page_memo = OrderedDict()
         self.words_memo = OrderedDict()
         self.page_scale = OrderedDict()
-        self._abandoned_docs = []
+        # Keep pins whose worker is still alive: clearing them here would let
+        # _open_pdf close a document the abandoned thread is still reading.
+        self._abandoned_docs = [(doc, thread) for doc, thread
+                                in self._abandoned_docs if thread.is_alive()]
         self._doc_seq = 0
 
     def _export_for_pymupdf(self, install_dir):
@@ -318,8 +321,8 @@ class _OcrContext:
                         # manager cannot close it under the C call.
                         doc = getattr(page, "parent", None)
                         if doc is not None and not any(
-                                d is doc for d in self._abandoned_docs):
-                            self._abandoned_docs.append(doc)
+                                d is doc for d, _t in self._abandoned_docs):
+                            self._abandoned_docs.append((doc, worker))
                         if issues is not None:
                             issues.append(
                                 f"{page_label}: OCR timed out after {timeout}s "
@@ -501,7 +504,7 @@ def _open_pdf(path):
     try:
         yield doc
     finally:
-        if not any(d is doc for d in OCR._abandoned_docs):
+        if not any(d is doc for d, _t in OCR._abandoned_docs):
             doc.close()
 
 
