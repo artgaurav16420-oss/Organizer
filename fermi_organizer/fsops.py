@@ -1390,7 +1390,7 @@ def _folder_removable(folder, planned_by_stem, output):
     PDF in its subtree is byte-identical to the copy the plan gives that stem,
     and it holds no non-PDF file. Returns (ok, reason) for the review line.
     """
-    reason = _subtree_link_or_unlistable(folder)
+    reason = _subtree_link_or_unlistable(folder, any_link=False)
     if reason is not None and folder.is_dir():
         # Not on disk yet (dry-run reads post-rename names): the rmtree below
         # fails harmlessly, so keep the pre-existing behaviour there.
@@ -1457,13 +1457,15 @@ def _remap_organized_under(organized, old, new):
                            if p.is_relative_to(old) else p for p in paths]
 
 
-def _subtree_link_or_unlistable(folder):
+def _subtree_link_or_unlistable(folder, any_link=True):
     """Why `folder`'s subtree cannot be trusted, or None when it is clean.
 
     rglob descends through NTFS junctions (followlinks only covers symlinks) and
     os.walk silently skips a level it cannot list, so either walk can miss a
     linked subtree: a move would carry the link along, and a delete would follow
-    it. Callers walk prune-first and refuse on the first hit.
+    it. Callers walk prune-first and refuse on the first hit. With any_link
+    False only directory links are refused here; a caller that inspects plain
+    symlink entries itself keeps its own, more specific, reason.
     """
     walk_errors = []
     if _is_dir_link(folder):
@@ -1472,7 +1474,9 @@ def _subtree_link_or_unlistable(folder):
                                                 onerror=walk_errors.append):
         for name in sorted(dirnames) + sorted(filenames):
             entry = Path(dirpath) / name
-            if _is_dir_link(entry) or _islink(entry):
+            if entry.is_dir() and _is_dir_link(entry):
+                return f"contains a symlink/junction: {entry.name}"
+            if any_link and _islink(entry):
                 return f"contains a symlink/junction: {entry.name}"
     if walk_errors:
         return f"cannot list the whole subtree ({walk_errors[0]})"
