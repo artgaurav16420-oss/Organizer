@@ -4,6 +4,33 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: review follow-ups (renames, supersede bound, OCR, junctions, atomic archives)
+- **`normalize_folder_names` renames parent folders before their descendants and
+  resolves chained `moved_dirs` entries**, so a child renamed before its ancestor
+  no longer leaves later adoption lookups pointing inside a dead path (which
+  logged "already moved, skipping" and dropped the copy).
+- **The incremental pre-supersede planning bound now excludes the stems a pending
+  supersede will archive**, so the walk graph matches the post-swap tree and an
+  over-bound plan is refused before any swap.
+- **An in-process OCR timeout pins the open document** until the abandoned worker
+  leaves MuPDF, instead of closing it on the main thread under the active C call.
+- **`remove_empty_dirs` prunes NTFS junctions and symlinks** with the same
+  `os.walk` + `_is_dir_link` pattern as the other tree scans, so repair cannot
+  sweep empty folders outside the output tree.
+- **Superseded and watermarked archives are copied atomically** (`_copy_atomic`),
+  so a killed copy cannot leave a truncated `.pdf` that later forces a permanent
+  numeric suffix.
+- Removed a dead `ITEM_RE` branch in `_line_bom_entries` and a redundant
+  `is_dir()` check in `report_glue.names_from_tree`.
+- **Format 3 no longer accepts a bare FERMI line that continues a prose note**:
+  a wrapped cross-reference after a genuine row is not a BOM child.
+- **OCR document pins survive `OCR.reset()` while their worker is alive**, so a
+  new run cannot drop a pin the abandoned thread still needs.
+- **`moved_dirs` resolves in chronological order (one pass)**, so a path reused
+  as another folder's destination cannot follow the previous folder's mapping.
+- **A failed supersede swap defers the remaining swaps**, because the pre-swap
+  bound assumed the failed source would be archived.
+
 ### Fix: codebase-review follow-ups (repair links, CI gates, manifest drift)
 - **Repair refuses to move a folder that is, or contains, a symlink or
   junction**, and a planned target reached through a linked folder no longer
