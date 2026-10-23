@@ -60,6 +60,22 @@ def _islink(path):
     return os.path.islink(_native(path))
 
 
+
+def _has_linked_ancestor(path, stop):
+    """True if any component between (exclusive) stop and path is a link.
+
+    Guards against a planned target that traverses a symlinked/junction
+    directory, which would point outside the tree.
+    """
+    cur = Path(path)
+    stop = Path(stop)
+    while cur != stop and cur != cur.parent:
+        if _islink(cur) or _is_dir_link(cur):
+            return True
+        cur = cur.parent
+    return False
+
+
 def _strip_ext_prefix(path):
     r"""Remove the `\\?\` / `\\?\UNC\` prefix `_native` adds to long paths.
 
@@ -1401,6 +1417,8 @@ def _folder_removable(folder, planned_by_stem, output):
         ok = False
         for t in targets:
             if _islink(t) or t == path or not t.exists():
+                continue
+            if _has_linked_ancestor(t, output):
                 continue
             if _same_bytes(path, t):
                 ok = True
