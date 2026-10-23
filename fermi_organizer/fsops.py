@@ -1390,6 +1390,11 @@ def _folder_removable(folder, planned_by_stem, output):
     PDF in its subtree is byte-identical to the copy the plan gives that stem,
     and it holds no non-PDF file. Returns (ok, reason) for the review line.
     """
+    reason = _subtree_link_or_unlistable(folder)
+    if reason is not None and folder.is_dir():
+        # Not on disk yet (dry-run reads post-rename names): the rmtree below
+        # fails harmlessly, so keep the pre-existing behaviour there.
+        return False, reason
     try:
         entries = list(folder.rglob("*"))
     except OSError as e:
@@ -1452,6 +1457,28 @@ def _remap_organized_under(organized, old, new):
                            if p.is_relative_to(old) else p for p in paths]
 
 
+def _subtree_link_or_unlistable(folder):
+    """Why `folder`'s subtree cannot be trusted, or None when it is clean.
+
+    rglob descends through NTFS junctions (followlinks only covers symlinks) and
+    os.walk silently skips a level it cannot list, so either walk can miss a
+    linked subtree: a move would carry the link along, and a delete would follow
+    it. Callers walk prune-first and refuse on the first hit.
+    """
+    walk_errors = []
+    if _is_dir_link(folder):
+        return "is a symlink/junction"
+    for dirpath, dirnames, filenames in os.walk(folder,
+                                                onerror=walk_errors.append):
+        for name in sorted(dirnames) + sorted(filenames):
+            entry = Path(dirpath) / name
+            if _is_dir_link(entry) or _islink(entry):
+                return f"contains a symlink/junction: {entry.name}"
+    if walk_errors:
+        return f"cannot list the whole subtree ({walk_errors[0]})"
+    return None
+
+
 def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
                  organized, lock):
     """Move a folder (with its subtree) to `target`; False when refused.
@@ -1465,26 +1492,12 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: source is a symlink/junction, refusing move "
             f"(manual review): {folder}")
         return False
-    # Prune-first walk: rglob descends through junctions, so it would traverse
-    # the very link this guard refuses before the check ever ran. Test each
-    # level's entries as they are listed, top-down. A level the walk cannot
-    # list is refused, never skipped: it could hide a link, and it would also
-    # hide the subtree from the MAX_PATH check below.
-    walk_errors = []
-    for dirpath, dirnames, filenames in os.walk(folder,
-                                                onerror=walk_errors.append):
-        for name in sorted(dirnames) + sorted(filenames):
-            entry = Path(dirpath) / name
-            if _is_dir_link(entry) or _islink(entry):
-                log(f"  WARNING: {stem}: source contains a symlink/junction, "
-                    f"refusing move (manual review): {entry}")
-                return False
-    if walk_errors and folder.is_dir():
-        # A descendant the walk cannot list could hide a link. (An absent root
-        # is not a refusal: dry-run reads the post-rename path, and the checks
-        # below decide what to do with a folder that is not on disk yet.)
-        log(f"  WARNING: {stem}: cannot list the whole subtree "
-            f"({walk_errors[0]}), refusing move (manual review): {folder}")
+    reason = _subtree_link_or_unlistable(folder)
+    if reason is not None and folder.is_dir():
+        # An absent root is not a refusal: dry-run reads the post-rename path,
+        # and the checks below decide what to do with a folder not yet on disk.
+        log(f"  WARNING: {stem}: source {reason}, refusing move "
+            f"(manual review): {folder}")
         return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "

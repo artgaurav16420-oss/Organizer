@@ -176,6 +176,37 @@ def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
         os.rmdir(link)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_folder_removable_refuses_a_junction_in_the_subtree(tmp_path):
+    # The twin check must not see files through a junction: they are not copies
+    # the plan put in the tree, and rmtree would act on the link.
+    import subprocess
+
+    root = tmp_path / "out"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126106.pdf").write_bytes(b"same")
+    dup = root / "OLD"
+    dup.mkdir()
+    (dup / "F10126106.pdf").write_bytes(b"same")
+    planned = {"F10126106": [("NEW",)]}
+    (root / "NEW").mkdir()
+    (root / "NEW" / "F10126106.pdf").write_bytes(b"same")
+
+    link = dup / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        ok, reason = fsops._folder_removable(dup, planned, root)
+        assert ok is False
+        assert "junction" in reason
+    finally:
+        os.rmdir(link)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="chmod hides a directory only on POSIX")
 def test_move_folder_refuses_an_unreadable_subtree(tmp_path):
     # os.walk skips a level it cannot list; the guard must refuse instead, or a
