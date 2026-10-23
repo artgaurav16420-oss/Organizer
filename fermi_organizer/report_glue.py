@@ -22,29 +22,28 @@ def names_from_tree(output):
         return names
     # Walk top-down so root folders (most authoritative) are seen first;
     # sort each level for deterministic conflict resolution.
-    if o.is_dir():
-        for dp, dn, _ in os.walk(o):
-            # Prune linked folders, don't just skip their own name: os.walk
-            # does not prune NTFS junctions (followlinks=False covers symlinks
-            # only), so a junction handed names from outside the tree to the
-            # workbook fallback. _is_dir_link also catches symlinked dirs.
-            dn[:] = sorted(d for d in dn if not _is_dir_link(Path(dp) / d))
-            for name in dn:
-                d = Path(dp) / name
-                if is_system_dir(d.name) or " " not in d.name:
-                    continue
-                rel = d.relative_to(o)
-                if is_system_dir(rel.parts[0]):
-                    continue
-                base, _, name_part = d.name.partition(" ")
-                if not re.match(r"^F(?:C)?\d+$", base):
-                    continue
-                # Prefer the authoritative root-level name over any stale
-                # nested copy that happens to share the same base stem.
-                if len(rel.parts) != 1 and base in conflicts:
-                    continue
-                if name_part:
-                    conflicts[base].add(name_part)
+    for dp, dn, _ in os.walk(o):
+        # Prune linked folders, don't just skip their own name: os.walk
+        # does not prune NTFS junctions (followlinks=False covers symlinks
+        # only), so a junction handed names from outside the tree to the
+        # workbook fallback. _is_dir_link also catches symlinked dirs.
+        dn[:] = sorted(d for d in dn if not _is_dir_link(Path(dp) / d))
+        for name in dn:
+            d = Path(dp) / name
+            if is_system_dir(d.name) or " " not in d.name:
+                continue
+            rel = d.relative_to(o)
+            if is_system_dir(rel.parts[0]):
+                continue
+            base, _, name_part = d.name.partition(" ")
+            if not re.match(r"^F(?:C)?\d+$", base):
+                continue
+            # Prefer the authoritative root-level name over any stale
+            # nested copy that happens to share the same base stem.
+            if len(rel.parts) != 1 and base in conflicts:
+                continue
+            if name_part:
+                conflicts[base].add(name_part)
     for base, cands in conflicts.items():
         if len(cands) == 1:
             names[base] = next(iter(cands))
