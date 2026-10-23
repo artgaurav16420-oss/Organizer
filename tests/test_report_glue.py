@@ -1,8 +1,32 @@
 """Workbook glue: tree-derived names; the .txt log is no longer parsed."""
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 import fermi_organizer.report_glue as report_glue
 from fermi_organizer.report_glue import names_from_tree
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_names_from_tree_ignores_a_linked_subtree(tmp_path):
+    # The walk must not *enter* a junction: skipping its own name still let
+    # names from outside the output tree reach the workbook fallback.
+    out = tmp_path / "out"
+    (out / "F10126106 Parent").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "F10126199 Foreign name").mkdir(parents=True)
+
+    link = out / "F10126106 Parent" / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        assert names_from_tree(out) == {"F10126106": "Parent"}
+    finally:
+        os.rmdir(link)
 
 
 def test_names_from_tree_reads_base_name_folders(tmp_path):

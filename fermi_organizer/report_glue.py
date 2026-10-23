@@ -10,7 +10,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from .fsops import is_system_dir, _is_dir_link, _islink
+from .fsops import is_system_dir, _is_dir_link
 
 
 def names_from_tree(output):
@@ -24,12 +24,14 @@ def names_from_tree(output):
     # sort each level for deterministic conflict resolution.
     if o.is_dir():
         for dp, dn, _ in os.walk(o):
-            dn.sort()
+            # Prune linked folders, don't just skip their own name: os.walk
+            # does not prune NTFS junctions (followlinks=False covers symlinks
+            # only), so a junction handed names from outside the tree to the
+            # workbook fallback. _is_dir_link also catches symlinked dirs.
+            dn[:] = sorted(d for d in dn if not _is_dir_link(Path(dp) / d))
             for name in dn:
                 d = Path(dp) / name
                 if is_system_dir(d.name) or " " not in d.name:
-                    continue
-                if _is_dir_link(d) or _islink(d):
                     continue
                 rel = d.relative_to(o)
                 if is_system_dir(rel.parts[0]):
