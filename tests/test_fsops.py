@@ -176,6 +176,28 @@ def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
         os.rmdir(link)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="chmod hides a directory only on POSIX")
+def test_move_folder_refuses_an_unreadable_subtree(tmp_path):
+    # os.walk skips a level it cannot list; the guard must refuse instead, or a
+    # link hidden there (and the subtree itself) would move unseen.
+    out = tmp_path / "out"
+    folder = out / "F10126106 PARENT PART"
+    hidden = folder / "unreadable"
+    hidden.mkdir(parents=True)
+    (hidden / "F10126107.pdf").write_bytes(b"child")
+    hidden.chmod(0o000)
+    try:
+        logged = []
+        moved = {}
+        target = out / "F10126106 RENAMED PART"
+        assert fsops._move_folder("F10126106", folder, target, out, False,
+                                  logged.append, moved, {}, None) is False
+        assert "cannot list the whole subtree" in "\n".join(logged)
+        assert folder.is_dir() and not target.exists()
+    finally:
+        hidden.chmod(0o755)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
 def test_move_folder_refuses_a_junction_inside_the_subtree(tmp_path):
     # The guard must refuse before the move, and must not descend through the

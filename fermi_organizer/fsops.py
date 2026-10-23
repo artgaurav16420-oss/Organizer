@@ -1467,14 +1467,25 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         return False
     # Prune-first walk: rglob descends through junctions, so it would traverse
     # the very link this guard refuses before the check ever ran. Test each
-    # level's entries as they are listed, top-down.
-    for dirpath, dirnames, filenames in os.walk(folder):
+    # level's entries as they are listed, top-down. A level the walk cannot
+    # list is refused, never skipped: it could hide a link, and it would also
+    # hide the subtree from the MAX_PATH check below.
+    walk_errors = []
+    for dirpath, dirnames, filenames in os.walk(folder,
+                                                onerror=walk_errors.append):
         for name in sorted(dirnames) + sorted(filenames):
             entry = Path(dirpath) / name
             if _is_dir_link(entry) or _islink(entry):
                 log(f"  WARNING: {stem}: source contains a symlink/junction, "
                     f"refusing move (manual review): {entry}")
                 return False
+    if walk_errors and folder.is_dir():
+        # A descendant the walk cannot list could hide a link. (An absent root
+        # is not a refusal: dry-run reads the post-rename path, and the checks
+        # below decide what to do with a folder that is not on disk yet.)
+        log(f"  WARNING: {stem}: cannot list the whole subtree "
+            f"({walk_errors[0]}), refusing move (manual review): {folder}")
+        return False
     if _exists(target):
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")
