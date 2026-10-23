@@ -416,14 +416,14 @@ def test_run_incremental_failed_archive_keeps_parked_orphan(tmp_path, make_pdf,
     make_pdf(in_dir / "F10126109.pdf", ["NAME", "Old rev"])
     make_pdf(in_dir / "F10126150.pdf", ["NAME", "Unrelated new part"])
 
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(s, d):
-        if Path(d).name == "F10126109.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        if Path(fsrc.name).name == "F10126109.pdf":
             raise OSError("locked")
-        return real_copy2(s, d)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
     run_incremental(in_dir, out, False, logged.append, jobs=1)
 
@@ -2697,3 +2697,81 @@ def test_incremental_places_a_branchy_bom_cycle_instead_of_refusing(
     assert ctx["counters"]["cycles"] >= 1
     assert ctx["counters"]["copies"] >= 4
     assert not any("planning bound" in line for line in lines)
+
+
+def test_incremental_normalizes_nested_renames_before_adopting_child(
+        tmp_path, make_pdf):
+    # Parent and child both carry hand-edited names; the child stem sorts first,
+    # so the old stem-order pass renamed it before its ancestor and left
+    # moved_dirs pointing inside the ancestor's old path. The later adoption of
+    # the child under a new root then logged "already moved, skipping".
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126900.pdf",
+             ["FERMI PART LIST", "F10126100 CHILD PART", "NAME", "PARENT ASSY"])
+    make_pdf(src / "F10126100.pdf", ["NAME", "CHILD PART"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+
+    parent = next(p for p in out.iterdir()
+                  if p.is_dir() and p.name.startswith("F10126900"))
+    parent = parent.rename(parent.with_name("F10126900 HAND"))
+    child = next(p for p in parent.iterdir()
+                 if p.is_dir() and p.name.startswith("F10126100"))
+    child.rename(child.with_name("F10126100 HAND"))
+
+    src2 = tmp_path / "in2"
+    src2.mkdir()
+    make_pdf(src2 / "F10127000.pdf",
+             ["FERMI PART LIST", "F10126100 CHILD PART", "NAME", "NEW ROOT"])
+    logged = []
+    run_incremental(src2, out, False, logged.append, jobs=1)
+
+    assert (out / "F10126900 PARENT ASSY" / "F10126100 CHILD PART"
+            / "F10126100.pdf").is_file()
+    assert (out / "F10127000 NEW ROOT" / "F10126100 CHILD PART"
+            / "F10126100.pdf").is_file()
+    assert not any("already moved, skipping" in line and "F10126100" in line
+                   for line in logged)
+
+
+def test_incremental_walk_bound_uses_post_swap_stems(tmp_path, make_pdf,
+                                                     monkeypatch):
+    # A base-number reference exact-matches the plain organized stem; the
+    # incoming revision's subtree must still be visible to the pre-supersede
+    # bound, and the run must refuse before archiving the old revision.
+    src = tmp_path / "in"
+    src.mkdir()
+    make_pdf(src / "F10126999.pdf",
+             ["FERMI PART LIST", "F10126106 CHILD PART", "NAME", "PARENT"])
+    make_pdf(src / "F10126106.pdf", ["NAME", "CHILD"])
+    out = tmp_path / "out"
+    run_full(src, out, False, lambda m: None, jobs=1)
+
+    src2 = tmp_path / "in2"
+    src2.mkdir()
+    make_pdf(src2 / "F10126106_A.pdf",
+             ["FERMI PART LIST", "F10126107 A PART", "F10126108 B PART",
+              "NAME", "CHILD"])
+    make_pdf(src2 / "F10126107.pdf", ["NAME", "A PART"])
+    make_pdf(src2 / "F10126108.pdf", ["NAME", "B PART"])
+    monkeypatch.setattr(runmodes, "MAX_PLANNED_COPIES", 2)
+    monkeypatch.setattr(runmodes, "PLAN_PLACEMENT_FACTOR", 1)
+    seen = []
+    real_count = runmodes.planned_copy_count
+
+    def spy(children, roots):
+        seen.append((set(children), set(roots)))
+        return real_count(children, roots)
+
+    monkeypatch.setattr(runmodes, "planned_copy_count", spy)
+    logged = []
+    ctx = run_incremental(src2, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    # Post-swap the incoming revision hangs off the organized parent; only the
+    # old pre-fix graph made it a separate root.
+    assert seen and "F10126106_A" not in seen[0][1]
+    assert not (out / "_superseded").exists()
+    assert any(p.name == "F10126106.pdf" for p in out.rglob("*.pdf"))
+    assert any("planning bound" in line for line in logged)

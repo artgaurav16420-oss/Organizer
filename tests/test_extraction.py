@@ -1688,6 +1688,63 @@ def test_words_cached_timeout_is_recorded_not_raised(monkeypatch, tmp_path,
     doc.close()
 
 
+def test_survey_task_keeps_doc_open_for_an_abandoned_ocr_worker(
+        monkeypatch, tmp_path):
+    # A timed-out worker still holds `page` inside MuPDF. survey_task must not
+    # close the Document when its `with _open_pdf` block exits, or the C call
+    # can touch freed memory.
+    import threading
+
+    pdf = tmp_path / "scanned.pdf"
+    blank = fitz.open()
+    blank.new_page()
+    blank.save(str(pdf))
+    blank.close()
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(extraction, "OCR_INPROCESS_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "available", True)
+
+    def blocked(self, **kw):
+        started.set()
+        release.wait(5)
+        return None
+
+    monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr", blocked)
+    closed = []
+    real_close = fitz.Document.close
+
+    def tracking_close(self):
+        closed.append(self)
+        return real_close(self)
+
+    monkeypatch.setattr(fitz.Document, "close", tracking_close)
+    opened = []
+    real_open = fitz.open
+
+    def tracking_open(*args, **kwargs):
+        doc = real_open(*args, **kwargs)
+        opened.append(doc)
+        return doc
+
+    monkeypatch.setattr(extraction.pymupdf, "open", tracking_open)
+    try:
+        extraction.survey_task(str(pdf))
+        assert started.is_set()
+        assert closed == []
+        assert extraction.OCR._abandoned_docs
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "ocr-timeout":
+                thread.join(timeout=5)
+        extraction.OCR.reset()
+        for doc in opened:
+            doc.close()
+
+
 def test_words_cached_engine_error_is_recorded_as_an_issue(monkeypatch, tmp_path,
                                                            make_pdf):
     # pymupdf surfaces mupdf failures as RuntimeError; they must reach the run's

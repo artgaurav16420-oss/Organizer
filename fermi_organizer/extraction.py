@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -154,6 +155,7 @@ class _OcrContext:
         self.page_memo = OrderedDict()
         self.words_memo = OrderedDict()
         self.page_scale = OrderedDict()
+        self._abandoned_docs = []
         self._doc_seq = 0
 
     def reset(self, enabled=True):
@@ -168,6 +170,7 @@ class _OcrContext:
         self.page_memo = OrderedDict()
         self.words_memo = OrderedDict()
         self.page_scale = OrderedDict()
+        self._abandoned_docs = []
         self._doc_seq = 0
 
     def _export_for_pymupdf(self, install_dir):
@@ -310,6 +313,13 @@ class _OcrContext:
                 if worker.is_alive():
                     worker.join(2)
                     if worker.is_alive():
+                        # The worker is still inside MuPDF with `page`. Keep
+                        # the Document alive so the main thread's context
+                        # manager cannot close it under the C call.
+                        doc = getattr(page, "parent", None)
+                        if doc is not None and not any(
+                                d is doc for d in self._abandoned_docs):
+                            self._abandoned_docs.append(doc)
                         if issues is not None:
                             issues.append(
                                 f"{page_label}: OCR timed out after {timeout}s "
@@ -477,7 +487,22 @@ def _native(path):
     from . import fsops
     return fsops._native(path)
 
-_open_pdf = lambda p: pymupdf.open(_native(p))
+
+@contextmanager
+def _open_pdf(path):
+    """Open `path`, but never close a document a timed-out OCR thread still uses.
+
+    `words_cached` abandons a daemon thread inside MuPDF's OCR call after the
+    timeout. Closing the Document on the main thread then would free C memory
+    under that call, so the document is pinned until the process exits (or the
+    next `OCR.reset()`).
+    """
+    doc = pymupdf.open(_native(path))
+    try:
+        yield doc
+    finally:
+        if not any(d is doc for d in OCR._abandoned_docs):
+            doc.close()
 
 
 def normalize(s):
@@ -1132,7 +1157,7 @@ def _line_bom_entries(lines, page_num):
                     if ITEM_RE.match(lines[i]):
                         i += 1
                         break
-                    if ITEM_RE.match(lines[i]) or FERMI_RE.match(lines[i]):
+                    if FERMI_RE.match(lines[i]):
                         break
                     i += 1
                 continue

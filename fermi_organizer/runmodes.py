@@ -961,6 +961,23 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
     return moves, copies
 
 
+def _resolve_moved_folder(folder, moved_dirs):
+    """Follow chained folder relocations recorded in `moved_dirs`.
+
+    A parent and a nested child can both be renamed in one pass; the child's
+    entry then points inside the parent's old path. Resolve until the path
+    stops matching so later adoptions never look at a dead intermediate.
+    """
+    for _ in range(len(moved_dirs) + 1):
+        for old, new in moved_dirs.items():
+            if folder == old or folder.is_relative_to(old):
+                folder = new.joinpath(*folder.relative_to(old).parts)
+                break
+        else:
+            return folder
+    return folder
+
+
 def _current_folder_of(stem, organized, output, moved_dirs):
     """Shallowest live folder for a stem, remapped through supersede moves."""
     paths = [p for p in organized.get(stem, [])
@@ -970,11 +987,7 @@ def _current_folder_of(stem, organized, output, moved_dirs):
     pdf = pick_shallowest(paths)
     rel = pdf.relative_to(output)
     old_folder = output.joinpath(*rel.parts[:-1])
-    # Remap folders that were moved under a superseding revision's folder.
-    for old, new in moved_dirs.items():
-        if old_folder == old or old_folder.is_relative_to(old):
-            return new.joinpath(*old_folder.relative_to(old).parts)
-    return old_folder
+    return _resolve_moved_folder(old_folder, moved_dirs)
 
 
 def _longest_dest_path(target_path, current):
@@ -1003,12 +1016,8 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     child_path = pick_shallowest(child_paths)
     child_folder = child_path.parent
     # Follow earlier relocations: the folder may have moved along with an
-    # adopted ancestor claimed earlier this run.
-    current = child_folder
-    for old, new in moved_dirs.items():
-        if current == old or current.is_relative_to(old):
-            current = new / current.relative_to(old)
-            break
+    # adopted ancestor claimed earlier this run. Chain parent+child renames.
+    current = _resolve_moved_folder(child_folder, moved_dirs)
     # A dry run never moves anything, so a folder it "moved" is simulated
     # at its destination: accept that as present for later claimants.
     # A child below a moved ancestor counts too (exact equality would
@@ -1082,41 +1091,40 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
     over-long target is logged and skipped, never fatal. Returns the number of
     folders renamed."""
     renamed = 0
-    for stem in sorted(folder_names):
-        paths = organized.get(stem)
-        if not paths:
+    candidates = []
+    for stem, paths in organized.items():
+        wanted = folder_names.get(stem)
+        if wanted is None:
             continue
-        wanted = folder_names[stem]
-        for path in list(paths):
-            folder = path.parent
-            # Follow earlier relocations: an ancestor claimed earlier this run
-            # may already have moved the folder.
-            for old, new in moved_dirs.items():
-                if folder == old or folder.is_relative_to(old):
-                    folder = new / folder.relative_to(old)
-                    break
-            if folder.name == wanted:
+        for path in paths:
+            candidates.append((stem, path, wanted))
+    # Parents first: a child renamed before its ancestor leaves `moved_dirs`
+    # pointing inside the ancestor's old path (resolved by the chain helper).
+    candidates.sort(key=lambda item: (len(item[1].parts), item[0], str(item[1])))
+    for stem, path, wanted in candidates:
+        folder = _resolve_moved_folder(path.parent, moved_dirs)
+        if folder.name == wanted:
+            continue
+        target = folder.parent / wanted
+        if len(str(target)) > MAX_PATH:
+            log(f"  WARNING: {stem}: folder name not normalized "
+                f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
+            continue
+        if _exists(target):
+            log(f"  WARNING: {stem}: folder name not normalized "
+                f"(destination exists, manual review): {target.relative_to(output)}")
+            continue
+        if dry_run:
+            log(f"  [DRY-RUN] rename {folder.name} -> {wanted}")
+        else:
+            _ensure_lock(lock, log)
+            try:
+                folder.rename(target)
+            except OSError as e:
+                log(f"  WARNING: {stem}: rename failed ({target}): {e}")
                 continue
-            target = folder.parent / wanted
-            if len(str(target)) > MAX_PATH:
-                log(f"  WARNING: {stem}: folder name not normalized "
-                    f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
-                continue
-            if _exists(target):
-                log(f"  WARNING: {stem}: folder name not normalized "
-                    f"(destination exists, manual review): {target.relative_to(output)}")
-                continue
-            if dry_run:
-                log(f"  [DRY-RUN] rename {folder.name} -> {wanted}")
-            else:
-                _ensure_lock(lock, log)
-                try:
-                    folder.rename(target)
-                except OSError as e:
-                    log(f"  WARNING: {stem}: rename failed ({target}): {e}")
-                    continue
-            moved_dirs[folder] = target
-            renamed += 1
+        moved_dirs[folder] = target
+        renamed += 1
     if renamed:
         log(f"Normalized {renamed} folder name(s) to this run's plan")
     return renamed
@@ -1138,12 +1146,8 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
     child_path = pick_shallowest(child_paths)
     child_folder = child_path.parent
     # Follow earlier relocations: the folder may have moved along with an
-    # adopted ancestor claimed earlier this run.
-    current = child_folder
-    for old, new in moved_dirs.items():
-        if current == old or current.is_relative_to(old):
-            current = new / current.relative_to(old)
-            break
+    # adopted ancestor claimed earlier this run. Chain parent+child renames.
+    current = _resolve_moved_folder(child_folder, moved_dirs)
     # A dry run never moves anything, so a folder it "moved" is simulated
     # at its destination: accept that as present for later claimants.
     # A child below a moved ancestor counts too (exact equality would
@@ -1304,10 +1308,7 @@ def _adopted_copy_estimate(roots, children, org_children_of, organized,
         paths = organized.get(c, [])
         folder = pick_shallowest(paths).parent if paths else None
         if folder is not None:
-            for old, new in moved_dirs.items():
-                if folder == old or folder.is_relative_to(old):
-                    folder = new / folder.relative_to(old)
-                    break
+            folder = _resolve_moved_folder(folder, moved_dirs)
         return folder
 
     nested = {}
@@ -2734,8 +2735,13 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     # costs O(nodes) instead of enumerating, and it runs before any swap/move.
     walk_refused = False
     if not refused:
-        _walk_stems = new_stems | org_stems
-        _walk_boms = {**org_boms, **new_boms}
+        # Match the post-swap graph: the old revision is archived before the
+        # plan is built, so a base-number reference that exact-matched it must
+        # resolve to the incoming revision here too.
+        _superseded_org = {o for _s, o in supersede_pairs}
+        _walk_stems = (new_stems | org_stems) - _superseded_org
+        _walk_boms = {k: v for k, v in {**org_boms, **new_boms}.items()
+                      if k not in _superseded_org}
         _walk_children, _walk_parents = _graph_edges(_walk_boms, _walk_stems)
         # Break cycles first, exactly as the plan does: a cyclic graph has no
         # roots, and _copy_counter has no cycle guard, so an unbroken branchy
@@ -2745,14 +2751,9 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         break_cycles(_walk_children, _walk_parents, lambda msg: None)
         _walk_roots, _ = _classify_roots(_walk_stems, _walk_parents,
                                          _walk_boms, _walk_children)
-        # The count is exact for this graph. It differs from the plan's graph in
-        # one corner: this view holds BOTH revisions of a pending supersede,
-        # while the plan sees only the post-swap stems, and a base-number
-        # reference that exact-matched the old plain stem then prefix-matches
-        # the new revision - so a pathological subtree can still be refused by
-        # the backstop after the swap. The walk stays bounded either way (that
-        # is what the backstop is for), and archive-before-replace holds, so
-        # this is a reporting-order corner, not a data-safety one.
+        # The count is exact for the post-swap graph: pending supersede sources
+        # are excluded above, so a reference that exact-matched the old plain
+        # stem resolves to the incoming revision here as it will after the swap.
         _walk_planned = planned_copy_count(_walk_children, _walk_roots)
         _walk_limit = MAX_PLANNED_COPIES * PLAN_PLACEMENT_FACTOR
         if _walk_planned > _walk_limit:
