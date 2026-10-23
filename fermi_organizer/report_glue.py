@@ -35,6 +35,10 @@ def names_from_tree(output):
                 base, _, name_part = d.name.partition(" ")
                 if not re.match(r"^F(?:C)?\d+$", base):
                     continue
+                # Prefer the authoritative root-level name over any stale
+                # nested copy that happens to share the same base stem.
+                if len(rel.parts) != 1 and base in conflicts:
+                    continue
                 if name_part:
                     conflicts[base].add(name_part)
     for base, cands in conflicts.items():

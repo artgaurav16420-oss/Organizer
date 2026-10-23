@@ -123,10 +123,12 @@ def check_tesseract(open_titles):
 def check_openpyxl(open_titles):
     req_pin = OPENPYXL_PIN_RE.search((ROOT / "requirements.txt").read_text()).group(1)
     proj_match = OPENPYXL_PYPROJECT_PIN_RE.search((ROOT / "pyproject.toml").read_text())
-    proj_pin = proj_match.group(1) if proj_match else req_pin
+    proj_pin = proj_match.group(1) if proj_match else None
     lock_pin = OPENPYXL_LOCK_PIN_RE.search((ROOT / "requirements.lock").read_text()).group(1)
     pins = {"requirements.txt": req_pin, "pyproject.toml": proj_pin,
             "requirements.lock": lock_pin}
+    if proj_pin is None:
+        print("WARNING: openpyxl not declared in pyproject.toml (Excel extra)")
     if len(set(pins.values())) != 1:
         print("WARNING: openpyxl pins drift between files: " + repr(pins))
     pin = req_pin

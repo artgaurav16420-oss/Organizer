@@ -308,12 +308,14 @@ class _OcrContext:
                 worker.start()
                 worker.join(timeout)
                 if worker.is_alive():
-                    if issues is not None:
-                        issues.append(
-                            f"{page_label}: OCR timed out after {timeout}s "
-                            "(tesseract process may still finish in background)")
-                    _memo_put(self.words_memo, key, words)
-                    return words
+                    worker.join(2)
+                    if worker.is_alive():
+                        if issues is not None:
+                            issues.append(
+                                f"{page_label}: OCR timed out after {timeout}s "
+                                "(tesseract process may still finish in background)")
+                        _memo_put(self.words_memo, key, words)
+                        return words
                 if "error" in result:
                     raise RuntimeError(result["error"])
                 tp = result.get("tp")
