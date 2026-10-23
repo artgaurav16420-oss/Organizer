@@ -1165,8 +1165,8 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                shutil.copy2(_native(pdf), _native(target))
-            except OSError as e:
+                _copy_atomic(pdf, target)
+            except (OSError, ValueError) as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
         # already=True means the destination was proven byte-identical by the
@@ -1205,8 +1205,8 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                shutil.copy2(_native(p), _native(target))
-            except OSError as e:
+                _copy_atomic(p, target)
+            except (OSError, ValueError) as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
                 continue
         # already=True: proven byte-identical archive exists - skip the
@@ -1339,8 +1339,17 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
     of deleting folders another run now owns. Returns the number removed.
     """
     removed = 0
-    dirs = sorted((p for p in output.rglob("*") if p.is_dir()),
-                  key=lambda p: len(p.parts), reverse=True)
+    dirs = []
+    # os.walk with explicit pruning: rglob follows NTFS junctions, so a linked
+    # folder in the tree could make the sweep remove empty dirs outside it.
+    for dirpath, dirnames, _files in os.walk(output, followlinks=False):
+        dirnames[:] = [d for d in dirnames
+                       if not _is_dir_link(Path(dirpath) / d)]
+        for d in dirnames:
+            path = Path(dirpath) / d
+            if not _is_dir_link(path):
+                dirs.append(path)
+    dirs.sort(key=lambda p: len(p.parts), reverse=True)
     for path in dirs:
         rel = path.relative_to(output)
         if not rel.parts or rel.parts[0].startswith("_"):

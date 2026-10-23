@@ -20,6 +20,7 @@ from fermi_organizer.fsops import (
     is_system_dir,
     place_files,
     release_run_lock,
+    remove_empty_dirs,
     retire_adopted_orphans,
     run_lock_lost,
     scan_output_tree,
@@ -172,6 +173,45 @@ def test_build_pdf_index_skips_directory_junctions(tmp_path, make_pdf):
         index, _dupes = build_pdf_index(inp, logged.append)
         assert set(index) == {"F10126999"}
         assert "Skipped 1 linked folder(s)" in "\n".join(logged)
+    finally:
+        os.rmdir(link)
+
+
+def test_remove_empty_dirs_prunes_linked_folders(tmp_path, monkeypatch):
+    # A linked folder is not part of the tree: its empty descendants must not
+    # be swept, even when the link itself resolves to a directory.
+    root = tmp_path / "out"
+    (root / "a" / "empty").mkdir(parents=True)
+    (root / "linked" / "empty").mkdir(parents=True)
+    real_is_link = fsops._is_dir_link
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda p: p == root / "linked" or real_is_link(p))
+
+    assert remove_empty_dirs(root, False, lambda m: None) == 2
+    assert not (root / "a").exists()
+    assert (root / "linked" / "empty").is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_remove_empty_dirs_does_not_descend_junctions(tmp_path):
+    # rglob follows junctions and would rmdir empty directories outside the
+    # output tree; the prune-first walk must leave both the target and the
+    # junction alone.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    (outside / "empty").mkdir(parents=True)
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    try:
+        assert remove_empty_dirs(root, False, lambda m: None) == 0
+        assert (outside / "empty").is_dir()
+        assert link.is_dir()
     finally:
         os.rmdir(link)
 
@@ -662,9 +702,8 @@ def test_copy_superseded_identical_archive_not_recopied_every_run(tmp_path, monk
     copy_superseded({"F10126106": old_pdf}, out, False, lambda m: None,
                     overwrite=True)
     calls = []
-    real_copy2 = fsops.shutil.copy2
-    monkeypatch.setattr(fsops.shutil, "copy2",
-                        lambda a, b: calls.append(a) or real_copy2(a, b))
+    monkeypatch.setattr(fsops, "_copy_atomic",
+                        lambda src, dst: calls.append(src))
     logged = []
 
     n, archived = copy_superseded({"F10126106": old_pdf}, out, False,
@@ -684,9 +723,8 @@ def test_copy_watermarked_identical_archive_not_recopied(tmp_path, monkeypatch):
     out.mkdir()
     copy_watermarked_duplicates([w1], out, False, lambda m: None)
     calls = []
-    real_copy2 = fsops.shutil.copy2
-    monkeypatch.setattr(fsops.shutil, "copy2",
-                        lambda a, b: calls.append(a) or real_copy2(a, b))
+    monkeypatch.setattr(fsops, "_copy_atomic",
+                        lambda src, dst: calls.append(src))
     logged = []
 
     n = copy_watermarked_duplicates([w1], out, False, logged.append)
@@ -1020,14 +1058,14 @@ def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     good_pdf.write_text("v2")
     out = tmp_path / "out"
     out.mkdir()
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(s, d):
-        if Path(s).name == "F10126106.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        if Path(fsrc.name).name == "F10126106.pdf":
             raise OSError("locked")
-        return real_copy2(s, d)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
 
     n, archived = copy_superseded({"F10126106": bad_pdf, "F10126107": good_pdf},
@@ -1040,6 +1078,31 @@ def test_copy_superseded_failure_warns_and_continues(tmp_path, monkeypatch):
     assert (out / "_superseded" / "F10126107.pdf").is_file()
     assert not (out / "_superseded" / "F10126106.pdf").exists()
     assert "WARNING: F10126106: copy failed" in "\n".join(logged)
+
+
+def test_copy_superseded_atomic_copy_leaves_no_partial_archive(tmp_path, monkeypatch):
+    # A killed copy must not leave a truncated final-name PDF: resolve_archive_
+    # target would then keep it forever behind a numeric suffix.
+    src = tmp_path / "in"
+    src.mkdir()
+    pdf = src / "F10126106.pdf"
+    pdf.write_text("v1")
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def flaky_copyfileobj(fsrc, fdst, *a, **k):
+        fdst.write(b"%PDF-1.7 partial")
+        raise OSError("killed")
+
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", flaky_copyfileobj)
+    logged = []
+
+    n, archived = copy_superseded({"F10126106": pdf}, out, False, logged.append)
+
+    assert (n, archived) == (0, set())
+    assert not (out / "_superseded" / "F10126106.pdf").exists()
+    assert not list((out / "_superseded").glob("*.copy_tmp.*"))
+    assert "copy failed" in "\n".join(logged)
 
 
 def test_copy_watermarked_duplicates_success_and_dry_run(tmp_path):
@@ -1152,14 +1215,14 @@ def test_copy_watermarked_duplicates_failure_warns_and_continues(tmp_path, monke
     good_pdf.write_text("v2")
     out = tmp_path / "out"
     out.mkdir()
-    real_copy2 = fsops.shutil.copy2
+    real_copyfileobj = fsops.shutil.copyfileobj
 
-    def fake_copy2(s, d):
-        if Path(s).name == "F10126106.pdf":
+    def fake_copyfileobj(fsrc, fdst, *a, **k):
+        if Path(fsrc.name).name == "F10126106.pdf":
             raise OSError("permission denied")
-        return real_copy2(s, d)
+        return real_copyfileobj(fsrc, fdst, *a, **k)
 
-    monkeypatch.setattr(fsops.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
 
     n = copy_watermarked_duplicates([bad_pdf, good_pdf], out, dry_run=False, log=logged.append)
@@ -1168,6 +1231,30 @@ def test_copy_watermarked_duplicates_failure_warns_and_continues(tmp_path, monke
     assert (out / "_superseded" / "F10126107.pdf").is_file()
     assert not (out / "_superseded" / "F10126106.pdf").exists()
     assert "WARNING: F10126106.pdf: copy failed" in "\n".join(logged)
+
+
+def test_copy_watermarked_atomic_copy_leaves_no_partial_archive(tmp_path,
+                                                                monkeypatch):
+    src = tmp_path / "in"
+    src.mkdir()
+    pdf = src / "F10126106.pdf"
+    pdf.write_text("v1")
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def flaky_copyfileobj(fsrc, fdst, *a, **k):
+        fdst.write(b"%PDF-1.7 partial")
+        raise OSError("killed")
+
+    monkeypatch.setattr(fsops.shutil, "copyfileobj", flaky_copyfileobj)
+    logged = []
+
+    n = copy_watermarked_duplicates([pdf], out, dry_run=False, log=logged.append)
+
+    assert n == 0
+    assert not (out / "_superseded" / "F10126106.pdf").exists()
+    assert not list((out / "_superseded").glob("*.copy_tmp.*"))
+    assert "copy failed" in "\n".join(logged)
 
 
 def test_copy_watermarked_duplicates_symlink_refused(tmp_path):
