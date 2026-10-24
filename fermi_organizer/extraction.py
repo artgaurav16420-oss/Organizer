@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime
 from pathlib import Path
 
@@ -798,17 +798,16 @@ def _ocr_strip_tokens(page, rect, psm="7"):
     else:
         passes = ((zoom_hi, "7", "3"), (zoom_lo, "6", "1"), (zoom_hi, "6", "3"))
     pngs = {}
-    try:
+    with ExitStack() as stack:
         results = []
         failed = 0
         last_err = None
         for zoom, mode, oem in passes:
             if zoom not in pngs:
                 pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect)
-                with tempfile.NamedTemporaryFile(
-                        prefix="fermipdf_ocr_", suffix=".png", delete=False) as tmp:
-                    png = tmp.name
-                    tmp.close()
+                tmp = stack.enter_context(tempfile.NamedTemporaryFile(
+                    prefix="fermipdf_ocr_", suffix=".png"))
+                png = tmp.name
                 pngs[zoom] = png
                 pix.save(png)
             try:
@@ -852,14 +851,6 @@ def _ocr_strip_tokens(page, rect, psm="7"):
         if failed == len(passes):
             raise last_err
         return []
-    finally:
-        for png in pngs.values():
-            try:
-                os.unlink(png)
-            except OSError:
-                # Best-effort temp cleanup: a locked or already-removed file
-                # must not fail the OCR path.
-                pass
 
 
 def _partslist_header(words):
@@ -1809,11 +1800,8 @@ def _ocr_words_zoom(page, clip, zoom=8, psm="11"):
         max_zoom = (OCR_MAX_RENDER_MP * 1e6 / (clip.width * clip.height)) ** 0.5
         zoom = min(zoom, max(1.0, max_zoom))
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip)
-    with tempfile.NamedTemporaryFile(
-            prefix="fermipdf_ocr_", suffix=".png", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(prefix="fermipdf_ocr_", suffix=".png") as tmp:
         png = tmp.name
-        tmp.close()
-    try:
         pix.save(png)
         # Tesseract takes its options BEFORE the config file: with "tsv" first,
         # every --psm/--oem after it was silently dropped and the pass always
@@ -1838,11 +1826,6 @@ def _ocr_words_zoom(page, clip, zoom=8, psm="11"):
                 w, h = w / zoom, h / zoom
             words.append((x0, y0, x0 + w, y0 + h, text, 0, 0, 0))
         return words
-    finally:
-        try:
-            os.unlink(png)
-        except OSError:
-            pass
 
 
 def _ocr_drawing_number(raw):
