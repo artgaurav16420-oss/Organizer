@@ -4,6 +4,84 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.3.0 — 2026-10-26
+
+### Fix: repaired refusals that were never in the notes
+- **Repair refuses a subtree it cannot list** (commit `8f599d4`): a folder whose
+  descendant listing fails could exceed the path guard half-way through a move,
+  so the move is refused and reported as a review line (exit 2).
+- **The reconcile depth guard is `>` not `>=`** (`9d5235d`): the deepest planned
+  folder is now reconciled instead of being skipped one level early.
+- **Staging sweeps only match ASCII digits** (`9d5235d`): the
+  `.pdf.supersede_tmp.<pid>` / `.pdf.copy_tmp.<pid>` cleanup regex used `\d`,
+  which in Python also matches non-ASCII digits, so a user file named with
+  Unicode digits could be deleted as a swept leftover.
+- **`release.yml` fails when the wheel version does not match the tag**
+  (`9d5235d`), so a mis-tagged release cannot publish a misleading asset.
+
+### Fix: the OCR report no longer crashes on a scanned drawing with BOM rows
+- `OCR.report_lines()` joined `ev["bom"]` entries, which are `(value, page,
+  method, description)` tuples, so a scanned drawing whose OCR found a parts
+  list raised `TypeError` in the report block — after the copies were already
+  written, turning a successful run into exit 1. The line now renders each
+  entry's part number, and a test exercises the real formatter instead of a
+  stubbed lambda.
+
+### Tests: close the unexercised safety paths (review batch 4)
+- The watermark OCG-layer, stamp-annotation and light-large-text signatures
+  are tested (three of six were unverified while deciding what gets archived).
+- Repair's second-claimant copy (`_place_copy`, 1/21 lines) is tested.
+- The OCR worker bootstrap is tested with a failing Tesseract and with OCR off.
+- The second-run Run History trend chart is tested.
+- `_join_split_f_tokens` covers two-span, distant, other-line and short-digit
+  cases; `repair_cleanup` covers a failed `rmtree`.
+- The docstring gate now walks classes and methods (five `_OcrContext` methods
+  were undocumented while the gate reported clean); they are documented.
+- `_scan_used_on`'s unreachable second-pool branch (16 statements) is deleted:
+  every caller passes the survey cache, and a second pool would re-open every
+  PDF the single-open survey just read.
+- `extract_bom_entries` delegates to `survey_task`, so the size/page guard
+  sequence exists once instead of twice.
+
+### Performance and structure (review batch 3)
+- **Repair and name-normalisation no longer rescan the move list per folder.**
+  `FolderMoves` indexes relocations by their own path, so resolving a folder
+  looks up its ancestors instead of walking every recorded move. An all-move
+  repair measured 1.18 s / 4.14 s / 15.32 s at 250 / 500 / 1,000 folders before
+  (4x per doubling, ~6.5 min at 5,000) and 5.6 / 11.4 / 22.3 ms after.
+- **The workbook reuses style objects.** Building 25,000 body cells allocated a
+  fresh `Font`, `PatternFill` and `Alignment` per cell (3.72 s); the cached
+  forms take 0.70 s and the workbook's font/fill tables stay at 4 and 5 entries.
+- **Read-only tree scanning lives in `treescan`.** `report_glue` and the
+  workbook no longer import the mutating filesystem module, so importing a
+  report helper does not drag in PyMuPDF and the OCR stack.
+
+### Fix: review batch 1 (revisions, lock, linked ancestors, jobs)
+- **Two-letter revisions (AA..ZZ) are read from the filename again.** The
+  title-block check accepted only a one-character revision, so every AA..ZZ
+  drawing reported a phantom `revision: - vs AA` row and inflated the Dashboard
+  count, while `graph.revision_rank` already ranked AA as 27. `graph.revision_token`
+  is now the single rule, and the workbook's NAME fallback uses
+  `graph.sheet_token`/`revision_token` instead of its own copies.
+- **A run that cannot create the output-tree lock refuses instead of running
+  unlocked.** An `OSError` other than `FileExistsError` (ACL denial, `EMFILE`, a
+  share that rejects `O_EXCL`) used to log a warning and continue, which let two
+  runs interleave placement, supersede swaps and repair deletes in one tree. It
+  now raises `LockUnavailableError` (exit 1).
+- **Every copy path refuses a symlinked/junction ancestor.** `place_files`,
+  `copy_superseded`, `copy_watermarked_duplicates`, `copy_orphans`,
+  `_place_copy` and the supersede swap checked only the leaf, so a link sitting
+  at a planned folder, `_superseded/` or `_orphans/` wrote outside the tree while
+  the run reported success. The guard now lives in `_staged_copy`, and a refused
+  archive aborts the swap before the in-tree old revision is unlinked.
+- **`--jobs` is bounded at 256.** A dropped decimal point asked the spawn pool
+  for a billion workers; values above the ceiling are now a usage error, and 0
+  (auto) and 1 (serial) keep their meanings.
+- **`pymupdf.TOOLS` is guarded** like the other optional pymupdf surface, so a
+  build without it cannot abort a run on the first PDF.
+
 ### Fix: review follow-ups (renames, supersede bound, OCR, junctions, atomic archives)
 - **`normalize_folder_names` renames parent folders before their descendants and
   resolves chained `moved_dirs` entries**, so a child renamed before its ancestor

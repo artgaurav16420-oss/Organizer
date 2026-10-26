@@ -55,14 +55,24 @@ def test_no_dead_imports(path):
 
 
 def _undocumented_public_functions(path):
+    """Public functions/methods without a docstring, module level and in classes.
+
+    Walking only `tree.body` exempted every class and method: the five public
+    methods of `_OcrContext` were undocumented while the gate reported the
+    surface clean.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     out = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name.startswith("_"):
-                continue
-            if ast.get_docstring(node) is None:
-                out.append(f"{path.name}:{node.name}")
+
+    def visit(nodes):
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not node.name.startswith("_") and ast.get_docstring(node) is None:
+                    out.append(f"{path.name}:{node.name}")
+            elif isinstance(node, ast.ClassDef):
+                visit(node.body)
+
+    visit(tree.body)
     return out
 
 

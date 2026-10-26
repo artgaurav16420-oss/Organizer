@@ -27,14 +27,16 @@ from .extraction import (
     resolve_jobs,
     run_parallel,
     survey_task,
-    title_task,
 )
 from .fsops import (
+    FolderMoves,
     LockLostError,
     _copy_atomic,
     _ensure_lock,
     _exists,
+    _has_linked_ancestor,
     _islink,
+    refuse_linked_target,
     _native,
     _same_bytes,
     _staged_copy,
@@ -72,6 +74,7 @@ from .graph import (
     match_pdfs,
     planned_paths,
     revision_rank,
+    revision_token,
     snap_ref,
     split_superseded,
 )
@@ -254,7 +257,7 @@ def _titleblock_mismatches(titleblocks, log):
     out = []
     for stem, (fname, number, rev, name, scanned) in sorted(titleblocks.items()):
         parts = stem.split("_")
-        srev = parts[1] if len(parts) > 1 and len(parts[1]) == 1 else ""
+        srev = revision_token(stem)
         number_mismatch = bool(number) and number != parts[0]
         if number_mismatch and scanned and _edit1(number, parts[0]):
             number_mismatch = False
@@ -578,41 +581,30 @@ def _scan_boms(items, jobs, log, require_desc):
 
 
 def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
-    """USED ON + NAME extraction. Logs header + per-PDF lines + blank.
-    Returns (used_on_of, names_of).
+    """Report the USED ON + NAME figures already collected by survey_task.
 
-    When `used_on_cache` is given (survey_task already opened these PDFs), no
-    second extraction pool is started: the cached figures are re-reported for
-    the USED ON section (see _scan_boms).
+    Logs the header, one line per PDF, then a blank line. Returns
+    (used_on_of, names_of).
+
+    `used_on_cache` is optional because callers may legitimately have no survey
+    results yet (`_full_scan_used_on` defaults to None); None means "nothing
+    cached", not "run a second pool". This used to carry a whole second
+    extraction pool for that case; every caller now passes the survey results,
+    so the branch was dead code (16 statements) that no test and no run could
+    reach - and a second pool would re-open every PDF the single-open survey
+    had just read.
     """
-    if used_on_cache is not None:
-        used_on_of = {}
-        names_of = {}
-        log(header)
-        for (stem, _pdf) in items:
-            if stem not in used_on_cache:
-                continue
-            used = used_on_cache.get(stem) or []
-            used_on_of[stem] = used
-            if names_cache and names_cache.get(stem):
-                names_of[stem] = names_cache[stem]
-            if used:
-                log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
-        log("")
-        return used_on_of, names_of
+    used_on_cache = used_on_cache or {}
     used_on_of = {}
     names_of = {}
     log(header)
-    results = run_parallel(title_task, [str(p) for _, p in items],
-                           jobs, OCR.enabled)
-    for (stem, _pdf), res in zip(items, results, strict=True):
-        if res[0] == "error":
-            log(f"  {stem}: ERROR reading PDF: {res[1]}")
+    for (stem, _pdf) in items:
+        if stem not in used_on_cache:
             continue
-        _, used, name = res
+        used = used_on_cache.get(stem) or []
         used_on_of[stem] = used
-        if name:
-            names_of[stem] = name
+        if names_cache and names_cache.get(stem):
+            names_of[stem] = names_cache[stem]
         if used:
             log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
     log("")
@@ -814,6 +806,15 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
     run's tree."""
     moved = []
     copies = 0
+    if _has_linked_ancestor(sup_dir, output):
+        # A junction at _superseded/ can make an outside file look like the
+        # existing archive; resolve_archive_target would then report
+        # already=True, the guarded copy would be skipped, and the tree's old
+        # revision would be unlinked with its only copy outside the managed
+        # tree. Refuse the archive before touching anything.
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to supersede: {sup_dir}")
+        return moved, copies
     for p in old_paths:
         _ensure_lock(lock, log)
         target_old = sup_dir / p.name
@@ -842,19 +843,25 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
         else:
             # Atomic-ish swap: stage the new revision next to its target first,
             # then archive the old revision, then replace, then drop the old file.
+            created = False
             try:
                 os.makedirs(_native(sup_dir), exist_ok=True)
-                _staged_copy(new_pdf, staging)
+                _staged_copy(new_pdf, staging, output)
+                created = True
                 if archived:
                     # Atomic archive copy: a raw copy2 leaves a truncated PDF
                     # under a real _superseded/ name if the write dies halfway,
                     # and the next workbook lists that stub as a valid archived
                     # revision (_copy_atomic stages + os.replace, or removes its
                     # own staging file on failure).
-                    _copy_atomic(p, archive_target)
+                    _copy_atomic(p, archive_target, output)
                 os.replace(_native(staging), _native(target_new))
             except OSError as e:
-                if _exists(staging):
+                # Only clean up a staging file this swap created: when the
+                # guard refuses the copy before _staged_copy writes anything,
+                # unlinking the staging name would follow the junction and
+                # delete a same-named file outside the tree.
+                if created and _exists(staging):
                     try:
                         os.unlink(_native(staging))
                     except OSError:
@@ -935,6 +942,8 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     if dry_run:
                         log(f"  [DRY-RUN] copy {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
+                    elif refuse_linked_target(target_path, output, log, c):
+                        continue
                     else:
                         try:
                             shutil.copytree(str(child_folder), str(target_path),
@@ -949,6 +958,8 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     continue
                 if dry_run:
                     log(f"  [DRY-RUN] move {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
+                elif refuse_linked_target(target_path, output, log, c):
+                    continue
                 else:
                     try:
                         shutil.move(str(child_folder), str(target_path))
@@ -969,6 +980,8 @@ def _resolve_moved_folder(folder, moved_dirs):
     resolving that newcomer into the wrong tree. Moves are recorded
     chronologically, so one pass follows each folder's own chain.
     """
+    if isinstance(moved_dirs, FolderMoves):
+        return moved_dirs.resolve(folder)
     for old, new in moved_dirs.items():
         if folder == old or folder.is_relative_to(old):
             folder = new.joinpath(*folder.relative_to(old).parts)
@@ -1054,6 +1067,8 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         # Recheck ownership before the long copy: a steal racing place_files
         # must stop this run the way it stops place_files (LockLostError).
         _ensure_lock(lock, log)
+        if refuse_linked_target(target_path, output, log, c):
+            return 0
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
         copied = False
@@ -1184,6 +1199,8 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
             moved_dirs[current] = target_path
         else:
             _ensure_lock(lock, log)
+            if refuse_linked_target(target_path, output, log, c):
+                return 0, 0
             try:
                 shutil.move(str(current), str(target_path))
             except OSError as e:
@@ -1435,6 +1452,8 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     can_move = True
     if dry_run:
         log(f"  [DRY-RUN] mkdir {target_folder}")
+    elif refuse_linked_target(target_folder, output, log, R):
+        can_move = False
     else:
         try:
             target_folder.mkdir(parents=True, exist_ok=True)
@@ -1657,6 +1676,34 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     return total_copies, refused, skipped
 
 
+def _build_run_context(*, counters, missing, chk, orphans, roots,
+                       used_on_mismatches, used_on_bugs, titleblock_mismatches,
+                       watermarks, names, refused, skipped):
+    """The structured run context every mode returns (one shape, one builder).
+
+    Both modes used to assemble this dict by hand from their own finalizer, one
+    taking 29 parameters and one 19, with four adjacent same-typed list
+    parameters at the call site: a transposed pair type-checks and silently
+    writes one sheet's rows into another. Keyword-only here, so that cannot
+    happen again.
+    """
+    return {
+        "counters": counters,
+        "missing": missing,
+        "chk": chk,
+        "orphans": orphans,
+        "roots": roots,
+        "used_on_mismatches": used_on_mismatches,
+        "used_on_bugs": used_on_bugs,
+        "titleblock_mismatches": titleblock_mismatches,
+        "scanned": OCR.scanned_stems(),
+        "watermarks": watermarks,
+        "names": names,
+        "placement_refused": refused,
+        "skipped_roots": list(skipped),
+    }
+
+
 def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     warning_count, unmatched, chk_stems, used_on_of, used_mism,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
@@ -1676,27 +1723,26 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     if skipped:
         summary.append(f"  Roots skipped (oversized): {len(skipped)}")
     _log_summary(summary, log)
-    return {
-        "counters": {
+    return _build_run_context(
+        counters={
             "scanned": len(index),
             "roots": len(roots),
             "copies": total_copies,
             "cycles": len(removed),
             "warnings": warning_count,
         },
-        "missing": unmatched,
-        "chk": chk_stems,
-        "orphans": orphans,
-        "roots": [(r, sorted(set(used_on_of.get(r, [])))) for r in roots],
-        "used_on_mismatches": used_mism,
-        "used_on_bugs": used_on_bugs,
-        "titleblock_mismatches": tb_mismatches,
-        "scanned": OCR.scanned_stems(),
-        "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(names_of, unmatched, bom_names),
-        "placement_refused": refused,
-        "skipped_roots": list(skipped),
-    }
+        missing=unmatched,
+        chk=chk_stems,
+        orphans=orphans,
+        roots=[(r, sorted(set(used_on_of.get(r, [])))) for r in roots],
+        used_on_mismatches=used_mism,
+        used_on_bugs=used_on_bugs,
+        titleblock_mismatches=tb_mismatches,
+        watermarks=sorted(watermarks.items()),
+        names=_ctx_names(names_of, unmatched, bom_names),
+        refused=refused,
+        skipped=skipped,
+    )
 
 
 def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
@@ -2235,7 +2281,7 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
     # Supersede in place. When a new revision supersedes an organized one, the
     # old revision's PDF(s) move to _superseded/ and the new revision's PDF takes their
     # place in the tree. The new stem is then treated as organized for this run.
-    moved_dirs = {}  # old_folder -> new_folder
+    moved_dirs = FolderMoves()  # old_folder -> new_folder (chronological)
     total_moves = 0
     swapped_old: list = []
     if supersede_pairs:
@@ -2508,29 +2554,28 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
     if skipped:
         summary.append(f"  Roots skipped (oversized): {len(skipped)}")
     _log_summary(summary, log)
-    return {
-        "counters": {
+    return _build_run_context(
+        counters={
             "scanned": scanned_new,
             "roots": len(new_roots),
             "copies": total_copies,
             "cycles": len(removed),
             "warnings": warning_count,
         },
-        "missing": unmatched,
-        "chk": chk_stems,
-        "orphans": _live_orphan_stems(output),
-        "roots": [(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
-        "used_on_mismatches": incr_mism,
-        "used_on_bugs": used_on_bugs,
-        "titleblock_mismatches": tb_mismatches,
-        "scanned": OCR.scanned_stems(),
-        "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(merged_names if merged_names is not None
-                            else _merge_names(org_names or {}, new_names),
-                            unmatched, bom_names),
-        "placement_refused": refused,
-        "skipped_roots": list(skipped),
-    }
+        missing=unmatched,
+        chk=chk_stems,
+        orphans=_live_orphan_stems(output),
+        roots=[(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
+        used_on_mismatches=incr_mism,
+        used_on_bugs=used_on_bugs,
+        titleblock_mismatches=tb_mismatches,
+        watermarks=sorted(watermarks.items()),
+        names=_ctx_names(merged_names if merged_names is not None
+                         else _merge_names(org_names or {}, new_names),
+                         unmatched, bom_names),
+        refused=refused,
+        skipped=skipped,
+    )
 
 
 def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
@@ -2764,7 +2809,7 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
     swapped_old: list = []
     if refused:
-        moved_dirs, total_moves = {}, 0
+        moved_dirs, total_moves = FolderMoves(), 0
         log("  supersede skipped: placement refused (no swaps/moves while over cap)")
     else:
         moved_dirs, total_moves, total_copies, all_stems, swapped_old = \
@@ -2897,20 +2942,35 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         # The tree changed after placement: finalize must see it as it is now,
         # so do not hand it the pre-reconcile scan.
         reused_scan_res = None
-    ctx = _incremental_finalize(stored_orphans, output, dry_run, log,
-                                scanned_new, organized, reported_roots,
-                                new_children, removed, total_copies,
-                                total_moves, warning_count, unmatched,
-                                chk_stems, merged_used_on, incr_mism,
-                                used_on_bugs, tb_mismatches, watermarks,
-                                new_names, bom_names,
-                                org_names=org_names,
-                                merged_names=merged_names,
-                                superseded=archived_new | set(swapped_old),
-                                planned=planned,
-                                scan_res=reused_scan_res,
-                                refused=refused, skipped=skipped,
-                                repair=repair)
+    ctx = _incremental_finalize(
+        stored_orphans=stored_orphans,
+        output=output,
+        dry_run=dry_run,
+        log=log,
+        scanned_new=scanned_new,
+        organized=organized,
+        new_roots=reported_roots,
+        new_children=new_children,
+        removed=removed,
+        total_copies=total_copies,
+        total_moves=total_moves,
+        warning_count=warning_count,
+        unmatched=unmatched,
+        chk_stems=chk_stems,
+        roots_used_on=merged_used_on,
+        incr_mism=incr_mism,
+        used_on_bugs=used_on_bugs,
+        tb_mismatches=tb_mismatches,
+        watermarks=watermarks,
+        new_names=new_names,
+        bom_names=bom_names,
+        org_names=org_names,
+        merged_names=merged_names,
+        superseded=archived_new | set(swapped_old),
+        planned=planned,
+        scan_res=reused_scan_res,
+        refused=refused, skipped=skipped,
+        repair=repair)
     if repair:
         repair_cleanup(repair_meta, log)
         ctx["repair"] = repair_counts

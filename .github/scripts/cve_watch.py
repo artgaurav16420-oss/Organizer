@@ -24,12 +24,65 @@ OPENPYXL_PYPROJECT_PIN_RE = re.compile(r'"openpyxl==([^"]+)"', re.M)
 OPENPYXL_LOCK_PIN_RE = re.compile(r"^openpyxl==([^\s\\]+)", re.M)
 TESS_PIN = "5.5.3"
 TESS_API = "https://api.github.com/repos/tesseract-ocr/tesseract/releases/latest"
+OSV_API = "https://api.osv.dev/v1/query"
 LABEL = "cve-watch"
 
 
 def _get_json(url):
     with urllib.request.urlopen(url, timeout=30) as resp:
         return json.load(resp)
+
+
+def _post_json(url, payload):
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)
+
+
+def advisories_for(package, version):
+    """[(id, summary)] for advisories covering package==version, via OSV.
+
+    The version-string diff above only notices a *newer release*. An advisory
+    against the pinned version itself (CVE-2026-82035 was exactly that) stayed
+    invisible, which is the case this query exists to catch.
+    """
+    payload = {"package": {"name": package, "ecosystem": "PyPI"},
+               "version": version}
+    try:
+        data = _post_json(OSV_API, payload)
+    except (OSError, ValueError) as e:
+        print(f"WARNING: OSV query failed for {package} {version}: {e}")
+        return []
+    out = []
+    for vuln in data.get("vulns", []) or []:
+        summary = (vuln.get("summary") or vuln.get("details") or "").splitlines()
+        out.append((vuln.get("id", "?"), summary[0][:160] if summary else ""))
+    return out
+
+
+def check_advisories(open_titles):
+    """Open a tracking issue for any advisory that covers a pinned version."""
+    pins = {"pymupdf": _pin(PIN_RE, "requirements.txt"),
+            "openpyxl": _pin(OPENPYXL_PIN_RE, "requirements.txt")}
+    for package, version in pins.items():
+        if not version:
+            continue
+        for vuln_id, summary in advisories_for(package, version):
+            print(f"{package} {version}: advisory {vuln_id} - {summary}")
+            needle = f"{package} advisory {vuln_id}"
+            if any(needle in t for t in open_titles):
+                print(f"{package} advisory {vuln_id} already tracked; nothing to do")
+                continue
+            _track(
+                f"{package} advisory {vuln_id} covers the pin ({version})",
+                (f"An OSV advisory covers the pinned version.\n\n"
+                 f"- Package: `{package}`\n- Pinned: `{version}`\n"
+                 f"- Advisory: `{vuln_id}`\n- Summary: {summary}\n\n"
+                 "Standing action: confirm the affected code path is unused "
+                 "here (see docs/adr/0003-pymupdf-cve-pin.md for the compensating "
+                 "control) or bump/mitigate."))
 
 
 def _gh(*args):
@@ -167,6 +220,7 @@ def main():
     check_pymupdf(open_titles)
     check_openpyxl(open_titles)
     check_tesseract(open_titles)
+    check_advisories(open_titles)
 
 
 if __name__ == "__main__":

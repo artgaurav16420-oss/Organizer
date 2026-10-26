@@ -9,6 +9,7 @@ from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (
     RUN_LOCK_NAME,
     LockLostError,
+    LockUnavailableError,
     RunLockedError,
     abandon_run_lock,
     acquire_run_lock,
@@ -302,9 +303,10 @@ def test_move_folder_refuses_a_junction_inside_the_subtree(tmp_path):
         os.rmdir(link)
 
 
-def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
-    # Review finding: a failed lock write must not leak the O_EXCL-created
-    # file (no lock path exists to clean it up) and refuse later runs.
+def test_run_lock_write_failure_cleans_up_and_refuses(tmp_path, monkeypatch):
+    # A failed lock write must not leak the O_EXCL-created file, and it must
+    # refuse the run: a run that cannot take the lock does not proceed
+    # unlocked (two processes against one output interleave placement).
     out = tmp_path / "out"
     out.mkdir()
 
@@ -314,9 +316,10 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     monkeypatch.setattr(fsops.json, "dumps", boom)
     logged = []
 
-    assert acquire_run_lock(out, False, logged.append) is None
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, logged.append)
+    assert "could not write run lock" in str(exc.value)
     assert not (out / RUN_LOCK_NAME).exists()
-    assert any("could not write run lock" in m for m in logged)
     # A later run is not refused by the leaked file.
     monkeypatch.undo()
     lock = acquire_run_lock(out, False, logged.append)
@@ -324,10 +327,25 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     release_run_lock(lock)
 
 
+def test_run_lock_create_failure_refuses(tmp_path, monkeypatch):
+    # Any OSError other than FileExistsError (ACL denial, EMFILE, a share that
+    # rejects O_EXCL) refuses the run instead of continuing unlocked.
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def boom(*a, **k):
+        raise PermissionError("ACL denies the lock name")
+
+    monkeypatch.setattr(fsops.os, "open", boom)
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, lambda m: None)
+    assert "could not create run lock" in str(exc.value)
+    assert not (out / RUN_LOCK_NAME).exists()
+
+
 def test_run_lock_heartbeat_start_failure_cleans_up(tmp_path, monkeypatch):
     # Thread.start() failing after creation must not leak a fresh lock that
-    # refuses later runs until stale: same degraded-unlocked path as a write
-    # failure.
+    # refuses later runs until stale, and must refuse this run.
     import threading
 
     def boom(self):
@@ -337,9 +355,10 @@ def test_run_lock_heartbeat_start_failure_cleans_up(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     logged = []
-    assert acquire_run_lock(out, False, logged.append) is None
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, logged.append)
+    assert "heartbeat" in str(exc.value)
     assert not (out / RUN_LOCK_NAME).exists()
-    assert any("heartbeat" in m for m in logged)
     assert str(out / RUN_LOCK_NAME) not in fsops._heartbeats
     # A later run is not refused by the leaked file.
     monkeypatch.undo()
@@ -1928,13 +1947,13 @@ def test_symlink_guard_checks_through_native_prefix(tmp_path, monkeypatch):
     n = copy_watermarked_duplicates([src], tmp_path, False, logged.append)
 
     assert n == 1  # no real link here; the copy proceeds
-    # The guard's two calls come first; shutil.copy2/copystat may add its own
-    # islink(dst) look on top (dst is already prefixed, so that one is blind-
-    # proof too - but it never refuses the write, hence the guard).
-    assert recorded[:2] == [
-        fsops._native(src),
-        fsops._native(tmp_path / "_superseded" / "F10126106.pdf"),
-    ]
+    # The archive-directory guard runs first (a junction at _superseded/ must
+    # be refused before any existing copy is trusted); the per-file guard then
+    # consults the source and the destination. shutil.copy2/copystat may add
+    # its own islink(dst) look on top.
+    assert fsops._native(tmp_path / "_superseded") in recorded
+    assert fsops._native(src) in recorded
+    assert fsops._native(tmp_path / "_superseded" / "F10126106.pdf") in recorded
 
 
 def test_strip_ext_prefix_round_trips_both_forms():
@@ -1952,3 +1971,193 @@ def test_is_dir_link_is_false_for_a_plain_directory(tmp_path):
     (plain / "nested").mkdir(parents=True)
     assert fsops._is_dir_link(plain) is False
     assert fsops._is_dir_link(plain / "nested") is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_files_refuses_a_junction_at_the_planned_folder(tmp_path, make_pdf):
+    # A junction sitting at a planned folder path redirects every copy for that
+    # subtree outside the output tree while the run reports success. The write
+    # must be refused and no byte may land outside.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "1.1.2.0 WIDGET"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = tmp_path / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    index = {"F10126106": src}
+    logged = []
+    try:
+        place_files({"F10126106": set()}, ["F10126106"], index, root, False,
+                    logged.append, folder_names={"F10126106": "1.1.2.0 WIDGET"})
+        assert list(outside.iterdir()) == []
+        assert any("linked/junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_copy_superseded_refuses_a_junction_at_the_archive_dir(tmp_path, make_pdf):
+    # Same guard for the archive paths: a junction at _superseded/ must not let
+    # the archive copy write outside the tree.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "_superseded"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = tmp_path / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    logged = []
+    try:
+        n, archived = copy_superseded({"F10126106": src}, root, False, logged.append)
+        assert n == 0
+        assert archived == set()
+        assert list(outside.iterdir()) == []
+        assert any("linked/junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+def test_folder_moves_resolve_matches_the_linear_scan():
+    # The indexed resolver must agree with the original one-pass scan on any
+    # chronological move list, including a path reused as a later destination.
+    import random
+
+    rnd = random.Random(1234)
+    base = Path("output")
+    folders = [base / f"F{i}" for i in range(6)] + [base / "F0" / "inner"]
+    for _ in range(300):
+        moves = fsops.FolderMoves()
+        plain = {}
+        for _ in range(rnd.randint(0, 8)):
+            old = rnd.choice(folders)
+            new = base / f"N{rnd.randint(0, 5)}"
+            moves[old] = new
+            plain[old] = new
+        for folder in folders:
+            expected = folder
+            for old, new in plain.items():
+                if expected == old or expected.is_relative_to(old):
+                    expected = new.joinpath(*expected.relative_to(old).parts)
+            assert moves.resolve(folder) == expected, (list(plain.items()), folder)
+
+
+def test_folder_moves_resolve_is_not_quadratic(monkeypatch):
+    # Repair on an off-plan tree was O(folders x moves): 1.18 s / 4.14 s /
+    # 15.32 s at 250 / 500 / 1,000 folders. Count the ancestor tests instead
+    # of timing, so the guard cannot flake on a slow runner.
+    calls = 0
+    real = Path.is_relative_to
+
+    def counting(self, other):
+        nonlocal calls
+        calls += 1
+        return real(self, other)
+
+    monkeypatch.setattr(Path, "is_relative_to", counting)
+    moves = fsops.FolderMoves()
+    base = Path("output")
+    for i in range(1000):
+        moves[base / f"F{i}"] = base / f"N{i}"
+    for i in range(1000):
+        moves.resolve(base / f"F{i}")
+    assert calls < 100_000, f"resolution looks quadratic again: {calls} ancestor tests"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_files_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
+    # The guard must run before mkdir(parents=True): a junction at an ANCESTOR
+    # of the planned folder otherwise has mkdir create the descendant directory
+    # outside the tree, even though the copy itself is refused afterwards.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    parent = tmp_path / "F10126106.pdf"
+    child = tmp_path / "F10126107.pdf"
+    make_pdf(parent, ["NAME", "PARENT"])
+    make_pdf(child, ["NAME", "CHILD"])
+    index = {"F10126106": parent, "F10126107": child}
+    logged = []
+    try:
+        place_files({"F10126106": {"F10126107"}, "F10126107": set()},
+                    ["F10126106"], index, root, False, logged.append,
+                    folder_names={"F10126106": "link", "F10126107": "child"})
+        assert not (outside / "child").exists(), "mkdir escaped the output tree"
+        assert list(outside.iterdir()) == []
+        assert any("junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_copy_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
+    # Repair's second-claimant copy created the target folder before the
+    # linked-ancestor check inside _copy_atomic, so mkdir(parents=True) could
+    # create the planned folder outside the tree.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    (root / "A").mkdir(parents=True)
+    link = root / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = root / "A" / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    organized = {"F10126106": [src]}
+    logged = []
+    try:
+        assert fsops._place_copy("F10126106", organized, link / "new", root,
+                                 False, logged.append, None) is False
+        assert not (outside / "new").exists(), "mkdir escaped the output tree"
+        assert any("junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+def test_copystat_failure_leaves_no_staging_file(tmp_path, monkeypatch):
+    # _staged_copy wrote the bytes, then copied metadata outside its cleanup
+    # block: a copystat failure escaped with the staging file on disk, and
+    # _copy_atomic (created=False) skipped its unlink.
+    import shutil as _shutil
+
+    def boom(*a, **k):
+        raise OSError("metadata copy failed")
+
+    monkeypatch.setattr(_shutil, "copystat", boom)
+    src = tmp_path / "F10126106.pdf"
+    src.write_bytes(b"bytes")
+    dst = tmp_path / "out" / "F10126106.pdf"
+    dst.parent.mkdir()
+
+    with pytest.raises(OSError):
+        fsops._copy_atomic(src, dst, tmp_path)
+    assert not list(dst.parent.glob("*.copy_tmp.*")), "staging file left behind"
+    assert not dst.exists()

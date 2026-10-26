@@ -154,3 +154,27 @@ def test_folder_names_do_not_depend_on_batch_order(tmp_path, make_pdf):
     # for being too long (the deepest copies used to be skipped).
     assert len(paths_a) == 3
     assert not any("path too long" in line for line in logged_a + logged_b)
+
+
+def test_both_modes_return_the_same_context_shape(tmp_path, make_pdf):
+    # One builder now produces the context for every mode; a key added to one
+    # mode and not the other used to be a silent workbook difference. Compare
+    # the key set and each value's type, excluding the documented per-mode
+    # exceptions (counters/scanned/orphans) plus repair-only extras.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_fixture(make_pdf, in_dir)
+
+    full = run_full(in_dir, tmp_path / "out_full", False, lambda m: None, jobs=1)
+    inc = run_incremental(in_dir, tmp_path / "out_inc", False, lambda m: None, jobs=1)
+
+    shared = set(full) & set(inc)
+    assert set(full) - {"repair", "repair_required"} == set(inc) - {
+        "repair", "repair_required"}, (
+            f"context keys differ: only full={set(full) - set(inc)}, "
+            f"only incremental={set(inc) - set(full)}")
+    skip = {"counters", "scanned", "orphans"}
+    for key in sorted(shared - skip):
+        assert type(full[key]) is type(inc[key]), (
+            f"{key}: full={type(full[key]).__name__} vs incremental="
+            f"{type(inc[key]).__name__}")

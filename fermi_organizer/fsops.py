@@ -19,6 +19,7 @@ from .config import (
     TREE_MAX_DEPTH,
     canonical_stem,
 )
+from . import treescan
 from .extraction import detect_watermark
 from .graph import is_chk_stem
 from .naming import folder_name_for
@@ -30,34 +31,18 @@ except ImportError:  # pragma: no cover
 
 
 def _native(path):
-    r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
-
-    With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
-    fails with ENOENT even though the file exists (input trees nest deep;
-    the output tree is bounded by MAX_PATH, so only input-derived paths hit
-    this - real run: 6 CHK archive copies failed without the prefix).
-    Drive paths get `\\?\`; UNC paths need the `\\?\UNC\server\share` form.
-    Forward-slash paths are left alone (`\\?\` rejects them; pathlib on
-    Windows always yields backslashes).
-    """
-    s = os.fspath(path)
-    if os.name != "nt" or len(s) < 260 or s.startswith("\\\\?\\"):
-        return path
-    if s.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + s[2:]
-    if os.path.isabs(s) and "/" not in s:
-        return "\\\\?\\" + s
-    return path
+    """Filesystem-op view of path (see treescan.native)."""
+    return treescan.native(path)
 
 
 def _exists(path):
-    """os.path.exists that sees beyond MAX_PATH (blind spot of Path.exists)."""
+    """os.path.exists that sees beyond MAX_PATH (Path.exists goes blind)."""
     return os.path.exists(_native(path))
 
 
 def _islink(path):
-    """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
-    return os.path.islink(_native(path))
+    """os.path.islink that sees beyond MAX_PATH."""
+    return treescan.islink(path)
 
 
 def _has_linked_ancestor(path, stop):
@@ -76,46 +61,13 @@ def _has_linked_ancestor(path, stop):
 
 
 def _strip_ext_prefix(path):
-    r"""Remove the `\\?\` / `\\?\UNC\` prefix `_native` adds to long paths.
-
-    Both sides of the link comparison below go through it: `_native` prefixes
-    only the side that crosses 260 chars, and `os.path.realpath` keeps the
-    prefix, so an unprefixed pair would report the first long directory in a
-    tree as a link (and prune its PDFs).
-    """
-    text = os.fspath(path)
-    if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[len("\\\\?\\UNC\\"):]
-    if text.startswith("\\\\?\\"):
-        return text[len("\\\\?\\"):]
-    return text
+    """Remove the extended-length prefix (see treescan.strip_ext_prefix)."""
+    return treescan.strip_ext_prefix(path)
 
 
 def _is_dir_link(path):
-    """True for a directory that resolves somewhere other than its own name.
-
-    os.path.islink is False for an NTFS junction (a reparse point, not a
-    symlink), and os.walk(followlinks=False) does not prune junctions - so a
-    junction inside the input folder was traversed and its PDFs indexed as
-    drawings of this folder. Both cases are refused here, before the walk
-    descends: the documented invariant is that linked folders are never input.
-
-    Resolution is compared against the *resolved* parent, so an input folder
-    that itself sits under a junction (or a mapped share) does not mark every
-    child as a link, and a reparse point that is not a redirect (a OneDrive
-    placeholder) still resolves beside its parent and is kept.
-    """
-    if _islink(path):
-        return True
-    try:
-        parent = _strip_ext_prefix(os.path.realpath(_native(Path(path).parent)))
-        resolved = _strip_ext_prefix(os.path.realpath(_native(path)))
-    except (OSError, ValueError):
-        # Unreadable: let the walk decide (an unreadable entry is skipped by
-        # _classify_input_pdf like any other).
-        return False
-    expected = os.path.join(parent, Path(path).name)
-    return os.path.normcase(resolved) != os.path.normcase(expected)
+    """True for a directory that resolves elsewhere (see treescan.is_dir_link)."""
+    return treescan.is_dir_link(path)
 
 
 def _pdf_watermarked(path):
@@ -429,7 +381,7 @@ def fit_roots_within_cap(children, roots, log, weights=None, extra=None):
     return kept, skipped
 
 
-def _staged_copy(src, staging):
+def _staged_copy(src, staging, stop=None):
     """Copy `src` into a freshly created staging file, written through the
     created handle.
 
@@ -441,7 +393,16 @@ def _staged_copy(src, staging):
     link even with O_EXCL), and stream the bytes through the fd - the write
     can never go through a link. Metadata is copied after. A live attacker
     replacing staging names inside the tree is out of scope, as documented
-    for shared writable outputs."""
+    for shared writable outputs.
+
+    `stop` is the output-tree root. When given, a symlinked/junction ancestor
+    between it and the staging path is refused before the copy: a link already
+    sitting at a planned folder path (or at `_superseded/`, `_orphans/`)
+    would otherwise write outside the tree while the run reports success.
+    """
+    if stop is not None and _has_linked_ancestor(Path(staging).parent, stop):
+        raise OSError(
+            f"target folder traverses a symlinked/junction ancestor, refusing: {staging}")
     if _islink(staging):
         raise OSError(f"staging path is a symlink, refusing: {staging}")
     try:
@@ -464,33 +425,45 @@ def _staged_copy(src, staging):
     try:
         with open(_native(src), "rb") as fsrc, os.fdopen(fd, "wb") as fdst:
             shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+        # Metadata belongs inside the cleanup block: a copystat failure used to
+        # escape with the staging file already written, and the caller's
+        # created=False path then skipped the unlink, leaving it behind.
+        shutil.copystat(_native(src), _native(staging))
     except BaseException:
         try:
             os.unlink(_native(staging))
         except OSError:
             pass
         raise
-    shutil.copystat(_native(src), _native(staging))
 
 
-def _copy_atomic(src, dst):
+def _copy_atomic(src, dst, stop=None):
     """Copy `src` to `dst` via a staging name in the target folder.
 
     shutil.copy2 writes the destination in place, so a failure mid-write
     leaves a truncated PDF at `dst` that later runs treat as placed and never
     retry. Stage next to the target and os.replace, so the target is either
     absent or complete; a failed attempt removes its own staging file. See
-    _staged_copy for the symlink/race handling of the staging path.
+    _staged_copy for the symlink/race handling of the staging path and for
+    `stop` (the output root that bounds the linked-ancestor check).
+
+    Cleanup only touches a staging file this call actually created (or, for
+    the legacy stop=None path, the pre-existing behaviour). Unlinking the
+    staging name after a refusal would follow a junction and could delete a
+    same-named file outside the tree that this copy never wrote.
     """
     tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
+    created = False
     try:
-        _staged_copy(src, tmp)
+        _staged_copy(src, tmp, stop)
+        created = True
         os.replace(_native(tmp), _native(dst))
     except (OSError, ValueError):
-        try:
-            os.unlink(_native(tmp))
-        except OSError:
-            pass
+        if created or stop is None:
+            try:
+                os.unlink(_native(tmp))
+            except OSError:
+                pass
         raise
 
 
@@ -558,6 +531,16 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 # copy2 failure: only this file is lost, children are still tried.
                 # ValueError catches embedded-NUL style hostile names that
                 # raise before the syscall (guards must stay "not fatal").
+                #
+                # The linked-ancestor check has to run BEFORE mkdir: a junction
+                # at a planned folder would otherwise have parents=True create
+                # descendant directories outside the output tree, and the copy
+                # guard would only refuse the file afterwards.
+                if _has_linked_ancestor(current_folder, folder):
+                    log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
+                        f"symlinked/junction ancestor, refusing): {current_folder}")
+                    failed_count += count_copies(stem)
+                    continue
                 try:
                     current_folder.mkdir(parents=True, exist_ok=True)
                 except (OSError, ValueError) as e:
@@ -565,7 +548,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     failed_count += count_copies(stem)
                     continue
                 try:
-                    _copy_atomic(pdf, target)
+                    _copy_atomic(pdf, target, folder)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
@@ -584,7 +567,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
 
 def is_system_dir(name):
     """Convention: any top-level directory whose name starts with '_' is a system dir."""
-    return name.startswith("_")
+    return treescan.is_system_dir(name)
 
 
 RUN_LOCK_NAME = ".fermi_organizer.lock"
@@ -603,6 +586,16 @@ _CLAIM_RE = re.compile(re.escape(RUN_LOCK_NAME) + r"\.claim\.[0-9]+$")
 
 class RunLockedError(Exception):
     """Another run holds the output-tree lock; this run is refused."""
+
+
+class LockUnavailableError(RunLockedError):
+    """The output-tree lock could not be created (ACL denial, EMFILE, a share
+    that rejects O_EXCL).
+
+    Refusing is the only safe answer: the lock is what keeps two runs out of
+    one tree, so a run that cannot take it must not proceed unlocked. Exits 1
+    through the CLI's RunLockedError handler.
+    """
 
 
 class LockLostError(RunLockedError):
@@ -625,9 +618,10 @@ _heartbeats = {}
 
 
 def acquire_run_lock(output, dry_run, log):
-    """Exclusive per-output-tree lock; returns the lock path, None when the
-    lock could not be created (warned, run continues unlocked), and raises
-    RunLockedError when another run may hold the tree.
+    """Exclusive per-output-tree lock; returns the lock path, or None when the
+    output tree does not exist yet (nothing to protect). Raises
+    RunLockedError when another run may hold the tree and
+    LockUnavailableError when the lock cannot be created at all.
 
     A lock older than RUN_LOCK_STALE_SECS is stolen with a warning (a crashed
     run leaks its lock; the steal message is the audit trail). Anything
@@ -662,9 +656,9 @@ def acquire_run_lock(output, dry_run, log):
         except FileExistsError:
             pass  # held or stale - adjudicated below.
         except OSError as e:
-            log(f"  WARNING: could not create run lock ({lock.name}): {e} - "
-                "continuing unlocked (do not run two processes against one output)")
-            return None
+            raise LockUnavailableError(
+                f"could not create run lock ({lock.name}): {e} - refusing to "
+                "run unlocked (two processes against one output would interleave)") from e
         else:
             try:
                 token = json.dumps({"pid": os.getpid(),
@@ -682,14 +676,14 @@ def acquire_run_lock(output, dry_run, log):
                     pass
                 # The O_EXCL-created file would otherwise linger (no lock path
                 # to clean up) and refuse later runs until stale: remove it
-                # and run unlocked like a creation failure.
+                # and refuse the run like a creation failure.
                 try:
                     os.unlink(_native(lock))
                 except OSError:
                     pass
-                log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
-                    "continuing unlocked (do not run two processes against one output)")
-                return None
+                raise LockUnavailableError(
+                    f"could not write run lock ({lock.name}): {e} - refusing to "
+                    "run unlocked") from e
             try:
                 _heartbeat_start(lock, token)
             except RuntimeError as e:
@@ -700,9 +694,9 @@ def acquire_run_lock(output, dry_run, log):
                     os.unlink(_native(lock))
                 except OSError:
                     pass
-                log(f"  WARNING: could not start run lock heartbeat ({lock.name}): {e} - "
-                    "continuing unlocked (do not run two processes against one output)")
-                return None
+                raise LockUnavailableError(
+                    f"could not start run lock heartbeat ({lock.name}): {e} - "
+                    "refusing to run unlocked") from e
             return lock
         try:
             raw = lock.read_bytes()
@@ -906,34 +900,11 @@ def _heartbeat_stop(lock):
 def scan_output_tree(output):
     """Live scan of the output folder, categorized by the system-dir convention.
 
-    Returns {'tree': [pdf paths in the organized tree],
-             'sup': [pdf paths under _superseded*],
-             'orph': [pdf paths under _orphans*]}.
-    Any other '_' prefixed top-level name is excluded from all three lists.
+    Thin re-export of treescan.scan_output_tree for compatibility; the
+    read-only consumers import treescan directly so they do not pull in
+    PyMuPDF through this module.
     """
-    output = Path(output)
-    tree, sup, orph = [], [], []
-    if output.is_dir():
-        out_root = output
-        for dirpath, dirnames, filenames in os.walk(out_root):
-            # Prune linked folders for the same reason the input scan does: a
-            # junction inside the tree would otherwise list PDFs from outside
-            # it as tree members (repair mode moves and deletes from this list).
-            dirnames[:] = [d for d in dirnames
-                           if not _is_dir_link(Path(dirpath) / d)]
-            for name in filenames:
-                if not name.lower().endswith(".pdf"):
-                    continue
-                p = Path(dirpath) / name
-                top = p.relative_to(out_root).parts[0]
-                if is_system_dir(top):
-                    if top.startswith("_superseded"):
-                        sup.append(p)
-                    elif top.startswith("_orphans"):
-                        orph.append(p)
-                else:
-                    tree.append(p)
-    return {"tree": tree, "sup": sup, "orph": orph}
+    return treescan.scan_output_tree(output)
 
 
 def sweep_supersede_staging(output, dry_run, log):
@@ -1141,6 +1112,13 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
     n = 0
     archived = set()
     sf = folder / "_superseded"
+    if _has_linked_ancestor(sf, folder):
+        # A junction at _superseded/ makes an outside file look like the
+        # archive, so an existing-copy check would retire a source whose only
+        # copy is outside the managed tree. Refuse the whole directory.
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to archive: {sf}")
+        return 0, archived
     for stem, pdf in sorted(old.items()):
         target = sf / pdf.name
         if _islink(pdf) or _islink(target):
@@ -1165,7 +1143,7 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                _copy_atomic(pdf, target)
+                _copy_atomic(pdf, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
@@ -1191,6 +1169,10 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     n = 0
     sf = folder / "_superseded"
     planned = {}
+    if _has_linked_ancestor(sf, folder):
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to archive: {sf}")
+        return 0
     for p in sorted(paths):
         target = sf / p.name
         if _islink(p) or _islink(target):
@@ -1205,7 +1187,7 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                _copy_atomic(p, target)
+                _copy_atomic(p, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
                 continue
@@ -1221,6 +1203,10 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
     n = 0
     renames = renames or {}
     orphans_dir = folder / "_orphans"
+    if _has_linked_ancestor(orphans_dir, folder):
+        log(f"  WARNING: _orphans/ traverses a symlinked/junction ancestor, "
+            f"refusing to park orphans: {orphans_dir}")
+        return 0
     for o in orphans:
         pdf = index.get(o)
         if pdf is None:
@@ -1235,7 +1221,7 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
         else:
             try:
                 os.makedirs(_native(orphans_dir), exist_ok=True)
-                _copy_atomic(pdf, target)
+                _copy_atomic(pdf, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
@@ -1445,10 +1431,71 @@ def _folder_removable(folder, planned_by_stem, output):
 
 def _remap_folder(folder, moved_dirs):
     """Folder after earlier moves this run (exact or ancestor match)."""
+    if isinstance(moved_dirs, FolderMoves):
+        return moved_dirs.resolve(folder)
     for old, new in moved_dirs.items():
         if folder == old or folder.is_relative_to(old):
             return new.joinpath(*folder.relative_to(old).parts)
     return folder
+
+
+class FolderMoves(dict):
+    """Chronological folder relocations with a resolved-path index.
+
+    Insertion order is chronology, exactly how the move passes record them.
+    Plain-dict semantics are kept (item assignment, items(), values(), `in`,
+    len) because callers already use it that way, so the only change is that
+    resolve() answers the old linear-scan question without scanning every
+    move per folder.
+
+    The old form was O(folders x moves): repair on a tree that is entirely
+    off-plan measured 1.18 s / 4.14 s / 15.32 s at 250 / 500 / 1,000 folders
+    (4x per doubling, ~6.5 min at 5,000). resolve() looks up only the query
+    folder's own ancestors, so the cost is O(depth x applied moves).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._seq = 0
+        self._order = {}
+        self._new = {}
+        for old, new in super().items():
+            self._remember(Path(old), Path(new))
+
+    def _remember(self, old, new):
+        # A plain dict keeps a re-assigned key at its FIRST insertion position
+        # with the LAST value; mirror that exactly, or resolution order drifts.
+        if old not in self._order:
+            self._seq += 1
+            self._order[old] = self._seq
+        self._new[old] = new
+
+    def __setitem__(self, old, new):
+        super().__setitem__(old, new)
+        self._remember(Path(old), Path(new))
+
+    def resolve(self, folder):
+        """`folder` after every recorded move, applied in chronological order.
+
+        One ordered pass is deliberate: a repeated pass would follow a
+        mapping whose key was an old path later reused as another folder's
+        destination, resolving that newcomer into the wrong tree. This loop
+        picks the earliest not-yet-applied move among the current path's
+        ancestors, which is exactly that same single ordered pass.
+        """
+        current = Path(folder)
+        applied = 0
+        while True:
+            best = None
+            for ancestor in (current, *current.parents):
+                seq = self._order.get(ancestor)
+                if seq is not None and seq > applied and (best is None or seq < best[0]):
+                    best = (seq, ancestor)
+            if best is None:
+                return current
+            seq, old = best
+            current = self._new[old].joinpath(*current.relative_to(old).parts)
+            applied = seq
 
 
 def _drop_organized_under(organized, folder):
@@ -1492,6 +1539,22 @@ def _subtree_link_or_unlistable(folder, any_link=True):
     return None
 
 
+def refuse_linked_target(target, output, log, label):
+    """True (and logged) when a planned destination traverses a link.
+
+    Every mutating sink calls this before it creates or writes: mkdir, move,
+    copytree and the atomic copies. A symlink/junction anywhere between the
+    output root and the destination redirects the write outside the tree, and
+    the run would still report success. One helper so the message and the rule
+    cannot drift between call sites.
+    """
+    if _has_linked_ancestor(target, output):
+        log(f"  WARNING: {label}: destination traverses a symlinked/junction "
+            f"ancestor, refusing: {target}")
+        return True
+    return False
+
+
 def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
                  organized, lock):
     """Move a folder (with its subtree) to `target`; False when refused.
@@ -1532,6 +1595,8 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
             f"{target.relative_to(output)}")
     else:
         _ensure_lock(lock, log)
+        if refuse_linked_target(target, output, log, stem):
+            return False
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(folder), str(target))
@@ -1558,9 +1623,16 @@ def _place_copy(stem, organized, target, output, dry_run, log, lock):
         log(f"  [DRY-RUN] mkdir+copy {src.name} -> {target.relative_to(output)}")
         return True
     _ensure_lock(lock, log)
+    # Check before mkdir, like place_files: mkdir(parents=True) through a
+    # junction would create the planned folder outside the tree, and only the
+    # copy would be refused afterwards.
+    if _has_linked_ancestor(target, output):
+        log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
+            f"symlinked/junction ancestor, refusing): {target}")
+        return False
     try:
         target.mkdir(parents=True, exist_ok=True)
-        _copy_atomic(src, dst)
+        _copy_atomic(src, dst, output)
     except (OSError, ValueError) as e:
         log(f"  WARNING: {stem}: copy failed ({dst}): {e}")
         return False

@@ -57,8 +57,12 @@ except ImportError:
     _OPENPYXL_OK = False
 
 from fermi_organizer.config import canonical_stem  # noqa: E402
-from fermi_organizer.fsops import scan_output_tree  # noqa: E402
-from fermi_organizer.graph import revision_letter_rank  # noqa: E402
+from fermi_organizer.treescan import scan_output_tree  # noqa: E402
+from fermi_organizer.graph import (  # noqa: E402
+    revision_letter_rank,
+    revision_token,
+    sheet_token,
+)
 
 # ---------------------------------------------------------------- design tokens
 FONT = "Arial"
@@ -103,13 +107,38 @@ ROW_H = 21
 
 
 # -------------------------------------------------------------------- helpers
+_STYLE_FONT = {}
+_STYLE_FILL = {}
+_STYLE_ALIGN = {}
+
+
 def _font(size=10, bold=False, color=INK, italic=False, underline=None):
-    return Font(name=FONT, size=size, bold=bold, italic=italic, color=color,
-                underline=underline)
+    """Cached Font: a rebuild must not allocate one per cell (5x on 25k cells)."""
+    key = (size, bold, color, italic, underline)
+    font = _STYLE_FONT.get(key)
+    if font is None:
+        font = _STYLE_FONT[key] = Font(
+            name=FONT, size=size, bold=bold, italic=italic, color=color,
+            underline=underline)
+    return font
 
 
 def _solid(hex_color):
-    return PatternFill("solid", fgColor=hex_color)
+    """Cached solid PatternFill (same reason as _font)."""
+    fill = _STYLE_FILL.get(hex_color)
+    if fill is None:
+        fill = _STYLE_FILL[hex_color] = PatternFill("solid", fgColor=hex_color)
+    return fill
+
+
+def _align(horizontal, vertical="center", indent=0, wrap=False):
+    """Cached Alignment for the list-sheet body cells."""
+    key = (horizontal, vertical, indent, wrap)
+    align = _STYLE_ALIGN.get(key)
+    if align is None:
+        align = _STYLE_ALIGN[key] = Alignment(
+            horizontal=horizontal, vertical=vertical, indent=indent, wrap_text=wrap)
+    return align
 
 
 def _page_setup(ws):
@@ -292,8 +321,7 @@ def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
             horiz = aligns[ci - 1]
             # No wrapping: rows stay one line tall; the last column may overflow
             # into the empty space to its right.
-            c.alignment = Alignment(horizontal=horiz, vertical="center",
-                                    indent=1 if horiz == "left" else 0)
+            c.alignment = _align(horiz, indent=1 if horiz == "left" else 0)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 c.number_format = "#,##0"
         if pills:
@@ -363,18 +391,12 @@ def _save_history(xlsx_path, rows, log=None):
 
 def _sheet_of(stem):
     """Sheet suffix of a stem ('DWG2' in 'F10126106_A___DWG2'), or None."""
-    for part in stem.split("_")[1:]:
-        if part.startswith("DWG") and part[3:].isdigit():
-            return part
-    return None
+    return sheet_token(stem)
 
 
 def _rev_of(stem):
     """Revision string of a stem ('A' in 'F10126106_A___DWG2'), or ''."""
-    parts = stem.split("_")
-    if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2:
-        return parts[1]
-    return ""
+    return revision_token(stem)
 
 
 def _fallback_name(resolved, stem, index=None):
@@ -644,6 +666,10 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
         row = 5 + (i // 4) * 4
         _card(dash, row, _CARD_SPANS[i % 4], label, val, pal, cap,
               f"#'{sheet}'!A1" if sheet else None)
+    # Cards occupy rows 5..(5 + 4*(rows-1) + 2); the block below starts after the
+    # following spacer row. Derive it instead of hardcoding 13, so a 9th card
+    # cannot land on the section header.
+    card_rows = (len(cards) + 3) // 4
     dash.row_dimensions[8].height = 12
     dash.row_dimensions[12].height = 14
 
@@ -669,7 +695,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     todo = sum(1 for _, n, _, _, _ in items if n)
     act = sum(1 for _, n, _, _, a in items if n and a)
     rev = todo - act
-    r = 13
+    r = 5 + 4 * card_rows
     _box(dash, r, 2, 16, "NEEDS ATTENTION", _font(11, True, DARK), None,
          Alignment(horizontal="left", vertical="center"),
          Border(bottom=Side(style="medium", color=DARK)))

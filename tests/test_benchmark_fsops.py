@@ -1,5 +1,8 @@
-"""Benchmark and verification script for scan_output_tree optimization."""
-import time
+"""Verification tests for the single-scan incremental path.
+
+The timing harness lives in tools/benchmark_incremental.py: it is a
+measurement, not an assertion, and pytest never collected it here.
+"""
 from unittest.mock import patch
 
 from fermi_organizer import fsops
@@ -77,40 +80,3 @@ def test_run_incremental_calls_scan_output_tree_once(tmp_path):
         scan_count = 0
         run_incremental(output, output, dry_run=True, log=lambda msg: None)
         assert scan_count == 1, f"Expected 1 scan_output_tree call in run_incremental, got {scan_count}"
-
-
-def benchmark_incremental_flow(tmp_path):
-    output = create_mock_output_tree(tmp_path, num_organized=1500, num_sup=300, num_orph=300)
-
-    scan_count = 0
-    original_scan = fsops.scan_output_tree
-
-    def counting_scan(folder):
-        nonlocal scan_count
-        scan_count += 1
-        return original_scan(folder)
-
-    iterations = 20
-    last_scan_count = 0
-
-    with patch("fermi_organizer.runmodes.scan_output_tree", side_effect=counting_scan), \
-         patch.object(fsops, "scan_output_tree", side_effect=counting_scan):
-        start_time = time.perf_counter()
-        for _ in range(iterations):
-            scan_count = 0
-            run_incremental(output, output, dry_run=True, log=lambda msg: None)
-            last_scan_count = scan_count
-        total_time = time.perf_counter() - start_time
-
-    avg_time_ms = (total_time / iterations) * 1000
-    print("\n--- Benchmark Results ---")
-    print(f"Iterations: {iterations}")
-    print(f"Total calls to scan_output_tree per incremental run: {last_scan_count}")
-    print(f"Avg execution time per run: {avg_time_ms:.3f} ms")
-
-
-if __name__ == "__main__":
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as td:
-        benchmark_incremental_flow(Path(td))

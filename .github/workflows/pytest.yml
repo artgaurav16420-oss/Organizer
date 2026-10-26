@@ -42,9 +42,11 @@ jobs:
             requirements-dev.txt
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install --require-hashes -r requirements-dev.txt
-      # Coverage ratchet: 83 is the measured baseline floor (actual ~84%);
-      # raise it when coverage improves, never lower it to absorb a regression.
-      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=83
+      # Coverage ratchet: 87 is the branch-inclusive floor (line 89.70%,
+      # branch 88.0% measured 2026-10-26; pyproject enables branch coverage,
+      # so the reported total is the branch-aware one). Raise it when coverage
+      # improves, never lower it to absorb a regression.
+      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=87
   test-windows:
     # MAX_PATH, _native(), os.replace and symlink-refusal tests skip off-Windows.
     # No coverage ratchet here by design: the ratchet is enforced once, on the
@@ -100,6 +102,19 @@ jobs:
         run: |
           "$RUNNER_TEMP/wheelenv/bin/fermi-organize" --help > /dev/null
           "$RUNNER_TEMP/wheelenv/bin/python" -c "import fermi_report_xlsx"
+      # The [excel] extra is what a wheel-only user installs to get the
+      # workbook; prove it resolves and actually enables the workbook, then
+      # prove a bare install degrades gracefully instead of crashing.
+      - name: Install the wheel with the excel extra
+        run: |
+          python -m venv "$RUNNER_TEMP/excelenv"
+          "$RUNNER_TEMP/excelenv/bin/pip" install "$(ls dist/*.whl)[excel]"
+          "$RUNNER_TEMP/excelenv/bin/python" -c "import fermi_report_xlsx as fx; assert fx._OPENPYXL_OK"
+      - name: The bare wheel skips the workbook without crashing
+        run: |
+          python -m venv "$RUNNER_TEMP/bareenv"
+          "$RUNNER_TEMP/bareenv/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/bareenv/bin/python" -c "import fermi_report_xlsx as fx; assert not fx._OPENPYXL_OK"
       - name: Upload wheel artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -121,4 +136,6 @@ jobs:
             requirements.lock
             requirements-dev.txt
       - run: pip install --require-hashes -r requirements-dev.txt
-      - run: ruff check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py
+      # .github/scripts is part of the shipped CI surface: leaving it out let a
+      # broken cve_watch.py pass every gate until the Monday cron failed.
+      - run: ruff check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py .github/scripts

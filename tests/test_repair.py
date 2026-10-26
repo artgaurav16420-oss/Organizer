@@ -7,6 +7,8 @@ damaged trees converging on a full-run plan).
 import shutil
 from pathlib import Path
 
+import os
+
 import pytest
 
 from fermi_organizer.fsops import _folder_removable, reconcile_tree, remove_empty_dirs
@@ -501,3 +503,82 @@ def test_sweep_stale_repair_staging_only_removes_old_prefixed_dirs(tmp_path, mon
     assert not stale.exists()
     assert fresh.exists() and other.exists()
     assert any("abandoned repair staging" in line for line in logged)
+
+
+def test_reconcile_copies_into_a_second_planned_folder(tmp_path, make_pdf):
+    # A stem claimed by two planned parents and present in only one folder: the
+    # reconcile pass must copy it into the second, not report success without
+    # the copy (this path had 1/21 statements covered).
+    from fermi_organizer.fsops import FolderMoves, reconcile_tree
+
+    out = tmp_path / "out"
+    (out / "A").mkdir(parents=True)
+    make_pdf(out / "A" / "F10126106.pdf", ["NAME", "WIDGET"])
+    organized = {"F10126106": [out / "A" / "F10126106.pdf"]}
+    planned = {"F10126106": [("A",), ("B",)]}
+    logged = []
+
+    counts, review = reconcile_tree(organized, planned, out, False,
+                                    logged.append, FolderMoves())
+
+    assert (out / "B" / "F10126106.pdf").is_file()
+    assert counts["copied"] == 1
+    assert counts["review"] == 0
+    assert review == []
+    assert sorted(p.relative_to(out).parts[0] for p in organized["F10126106"]) == [
+        "A", "B"]
+
+
+def test_repair_cleanup_warns_when_rmtree_fails(tmp_path, monkeypatch):
+    # A staging dir that cannot be removed must warn, not raise: the run has
+    # already done its work by then.
+    import shutil
+
+    from fermi_organizer import runmodes
+
+    staging = tmp_path / "fermi_repair_x"
+    staging.mkdir()
+    monkeypatch.setattr(runmodes.shutil, "rmtree",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("busy")))
+    logged = []
+    runmodes.repair_cleanup({"staging_dir": str(staging)}, logged.append)
+    assert any("could not remove repair staging" in m for m in logged)
+    assert staging.is_dir()
+    monkeypatch.undo()
+    shutil.rmtree(staging)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_reconcile_move_refuses_a_linked_destination(tmp_path, make_pdf):
+    # A move into a planned folder that sits under a junction writes the whole
+    # subtree outside the tree. The move must be refused and reported, leaving
+    # the stale copy in place.
+    import subprocess
+
+    from fermi_organizer.fsops import FolderMoves, reconcile_tree
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    out = tmp_path / "out"
+    (out / "OLD").mkdir(parents=True)
+    make_pdf(out / "OLD" / "F10126106.pdf", ["NAME", "WIDGET"])
+    link = out / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    organized = {"F10126106": [out / "OLD" / "F10126106.pdf"]}
+    planned = {"F10126106": [("link", "NEW")]}
+    logged = []
+    try:
+        counts, review = reconcile_tree(organized, planned, out, False,
+                                        logged.append, FolderMoves())
+        assert (out / "OLD" / "F10126106.pdf").is_file(), "stale copy was moved"
+        assert not (outside / "NEW").exists(), "move escaped the output tree"
+        assert counts["moved"] == 0
+        assert counts["review"] == 1
+        assert any("junction" in line for line in logged)
+        assert any("refused" in line for line in review)
+    finally:
+        os.rmdir(link)

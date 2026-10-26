@@ -78,3 +78,41 @@ def test_cli_dry_run_smoke(tmp_path, make_pdf):
     assert "Mode: DRY-RUN" in reports[0].read_text(encoding="utf-8")
     assert (out / "organize_fermi_report.xlsx").is_file()
     assert not list(out.rglob("*.pdf"))
+
+
+def test_jobs_ceiling_is_a_usage_error():
+    # A dropped decimal point must not ask the spawn pool for a billion
+    # workers: --jobs is bounded, and 0/1 keep their meanings.
+    import pytest
+
+    parser = build_parser()
+    assert parser.parse_args(["in", "--jobs", "0"]).jobs == 0
+    assert parser.parse_args(["in", "--jobs", "1"]).jobs == 1
+    assert parser.parse_args(["in", "--jobs", "8"]).jobs == 8
+    with pytest.raises(SystemExit):
+        parser.parse_args(["in", "--jobs", str(10 ** 9)])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["in", "--jobs", "-2"])
+
+
+def test_resolve_jobs_caps_a_typo():
+    from fermi_organizer.config import MAX_JOBS
+    from fermi_organizer.extraction import resolve_jobs
+
+    assert resolve_jobs(0) >= 1
+    assert resolve_jobs(1) == 1
+    assert resolve_jobs(10 ** 9) == MAX_JOBS
+    assert resolve_jobs("abc") >= 1
+
+
+def test_resolve_jobs_caps_the_auto_count(monkeypatch):
+    # The auto path (--jobs 0) must respect MAX_JOBS too: a host reporting
+    # thousands of CPUs would otherwise start an oversized pool.
+    from fermi_organizer import extraction
+    from fermi_organizer.config import MAX_JOBS
+
+    monkeypatch.setattr(extraction.os, "cpu_count", lambda: 4096)
+    assert extraction.resolve_jobs(0) == MAX_JOBS
+    assert extraction.resolve_jobs(None) == MAX_JOBS
+    monkeypatch.setattr(extraction.os, "cpu_count", lambda: 4)
+    assert extraction.resolve_jobs(0) == 4
