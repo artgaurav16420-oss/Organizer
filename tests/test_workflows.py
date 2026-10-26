@@ -18,9 +18,11 @@ def _text(name):
 
 def test_every_action_is_pinned_to_a_commit_sha():
     # A tag is movable; a SHA is not. `uses: actions/checkout@v7` would let the
-    # upstream tag be re-pointed at new code without a commit here.
+    # upstream tag be re-pointed at new code without a commit here. Both
+    # extensions count: GitHub accepts .yaml, and a file it accepts is a file
+    # this gate must read.
     uses = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted(list(WORKFLOWS.glob("*.yml")) + list(WORKFLOWS.glob("*.yaml"))):
         for line in path.read_text(encoding="utf-8").splitlines():
             match = re.match(r"\s*-?\s*uses:\s*(\S+)", line)
             if match:
@@ -38,13 +40,14 @@ def test_release_build_needs_a_green_test_job():
     # in parallel with pytest and publishes the wheel from a red commit.
     text = _text("release.yml")
     assert re.search(r"^  verify:\s*$", text, re.M), "release.yml has no verify job"
-    assert re.search(r"^    needs:\s*verify\s*$", text, re.M), (
-        "release.yml's build job must need: verify")
     verify = text.split("  verify:", 1)[1].split("\n  build:", 1)[0]
     assert "python -m pytest" in verify, "the release gate must run the test suite"
-    # The build must still be gated, not merely ordered after.
-    build = text.split("\n  build:", 1)[1]
-    assert re.search(r"^    needs:\s*", build, re.M), "build lost its needs: key"
+    # Scope the needs: assertion to the build job block. Searching the whole
+    # file would pass if any other job kept `needs: verify` while build lost it.
+    match = re.search(r"^  build:\n(.*?)(?=^  \S|\Z)", text, re.M | re.S)
+    assert match, "release.yml has no build job block"
+    assert re.search(r"^    needs:\s*verify\s*$", match.group(1), re.M), (
+        "release.yml's build job must need: verify")
 
 
 def test_ci_lints_the_github_scripts():
@@ -63,3 +66,16 @@ def test_packaging_job_exercises_the_excel_extra():
     text = _text("pytest.yml")
     assert "[excel]" in text, "the packaging job must install the excel extra"
     assert "_OPENPYXL_OK" in text, "the extra must be proven to enable the workbook"
+
+
+def test_scan_used_on_tolerates_a_missing_cache():
+    # _full_scan_used_on defaults used_on_of to None; None means "nothing
+    # cached", not "crash". Removing the dead second-pool branch must not make
+    # the documented default raise TypeError.
+    from fermi_organizer.runmodes import _scan_used_on
+
+    logged = []
+    used, names = _scan_used_on([("F10126106", None)], 1,
+                                "--- Scanning USED ON fields ---", logged.append)
+    assert used == {} and names == {}
+    assert any("Scanning USED ON" in line for line in logged)

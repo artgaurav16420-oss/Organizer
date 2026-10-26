@@ -578,18 +578,21 @@ def _scan_boms(items, jobs, log, require_desc):
         used_on_of, used_names, bom_votes
 
 
-def _scan_used_on(items, jobs, header, log, used_on_cache, names_cache=None):
+def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
     """Report the USED ON + NAME figures already collected by survey_task.
 
     Logs the header, one line per PDF, then a blank line. Returns
     (used_on_of, names_of).
 
-    This used to also carry a second extraction pool for callers that had no
-    cache; every caller now passes the survey results, so that branch was dead
-    code (16 statements) that no test and no run could reach. A second pool
-    would also re-open every PDF the run had just read, which is exactly what
-    the single-open survey removed.
+    `used_on_cache` is optional because callers may legitimately have no survey
+    results yet (`_full_scan_used_on` defaults to None); None means "nothing
+    cached", not "run a second pool". This used to carry a whole second
+    extraction pool for that case; every caller now passes the survey results,
+    so the branch was dead code (16 statements) that no test and no run could
+    reach - and a second pool would re-open every PDF the single-open survey
+    had just read.
     """
+    used_on_cache = used_on_cache or {}
     used_on_of = {}
     names_of = {}
     log(header)
