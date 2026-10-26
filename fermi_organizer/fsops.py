@@ -1602,6 +1602,13 @@ def _place_copy(stem, organized, target, output, dry_run, log, lock):
         log(f"  [DRY-RUN] mkdir+copy {src.name} -> {target.relative_to(output)}")
         return True
     _ensure_lock(lock, log)
+    # Check before mkdir, like place_files: mkdir(parents=True) through a
+    # junction would create the planned folder outside the tree, and only the
+    # copy would be refused afterwards.
+    if _has_linked_ancestor(target, output):
+        log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
+            f"symlinked/junction ancestor, refusing): {target}")
+        return False
     try:
         target.mkdir(parents=True, exist_ok=True)
         _copy_atomic(src, dst, output)

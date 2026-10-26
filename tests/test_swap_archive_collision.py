@@ -339,3 +339,38 @@ def test_copy_atomic_does_not_unlink_through_a_junction(tmp_path):
         assert planted.exists(), "cleanup deleted a file outside the tree"
     finally:
         os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_swap_does_not_unlink_a_staging_file_it_did_not_create(tmp_path):
+    # The guard can refuse before _staged_copy writes anything; cleaning the
+    # staging name then follows the junction and deletes a same-named file
+    # outside the tree that this swap never created.
+    import subprocess
+
+    out = tmp_path / "out"
+    out.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = out / "1.1.2.0 WIDGET"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    old = link / "F10126106_A.pdf"
+    old.write_bytes(b"old revision bytes")
+    planted = link / f"F10126106_B.pdf.supersede_tmp.{os.getpid()}"
+    planted.write_bytes(b"not ours")
+    new_pdf = tmp_path / "F10126106_B.pdf"
+    new_pdf.write_bytes(b"new revision bytes")
+    logged = []
+    try:
+        moved, _copies = _swap_revision_files([old], new_pdf, out / "_superseded",
+                                              out, False, logged.append)
+        assert moved == []
+        assert planted.exists(), "cleanup deleted a file outside the tree"
+        assert old.read_bytes() == b"old revision bytes"
+        assert any("supersede failed" in m for m in logged)
+    finally:
+        os.rmdir(link)

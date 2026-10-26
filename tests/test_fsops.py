@@ -2110,3 +2110,33 @@ def test_place_files_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
         assert any("junction ancestor" in m for m in logged)
     finally:
         os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_copy_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
+    # Repair's second-claimant copy created the target folder before the
+    # linked-ancestor check inside _copy_atomic, so mkdir(parents=True) could
+    # create the planned folder outside the tree.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    (root / "A").mkdir(parents=True)
+    link = root / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = root / "A" / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    organized = {"F10126106": [src]}
+    logged = []
+    try:
+        assert fsops._place_copy("F10126106", organized, link / "new", root,
+                                 False, logged.append, None) is False
+        assert not (outside / "new").exists(), "mkdir escaped the output tree"
+        assert any("junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)

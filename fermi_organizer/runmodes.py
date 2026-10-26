@@ -842,9 +842,11 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
         else:
             # Atomic-ish swap: stage the new revision next to its target first,
             # then archive the old revision, then replace, then drop the old file.
+            created = False
             try:
                 os.makedirs(_native(sup_dir), exist_ok=True)
                 _staged_copy(new_pdf, staging, output)
+                created = True
                 if archived:
                     # Atomic archive copy: a raw copy2 leaves a truncated PDF
                     # under a real _superseded/ name if the write dies halfway,
@@ -854,7 +856,11 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
                     _copy_atomic(p, archive_target, output)
                 os.replace(_native(staging), _native(target_new))
             except OSError as e:
-                if _exists(staging):
+                # Only clean up a staging file this swap created: when the
+                # guard refuses the copy before _staged_copy writes anything,
+                # unlinking the staging name would follow the junction and
+                # delete a same-named file outside the tree.
+                if created and _exists(staging):
                     try:
                         os.unlink(_native(staging))
                     except OSError:
