@@ -4,6 +4,30 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: the OCR report no longer crashes on a scanned drawing with BOM rows
+- `OCR.report_lines()` joined `ev["bom"]` entries, which are `(value, page,
+  method, description)` tuples, so a scanned drawing whose OCR found a parts
+  list raised `TypeError` in the report block — after the copies were already
+  written, turning a successful run into exit 1. The line now renders each
+  entry's part number, and a test exercises the real formatter instead of a
+  stubbed lambda.
+
+### Tests: close the unexercised safety paths (review batch 4)
+- The watermark OCG-layer, stamp-annotation and light-large-text signatures
+  are tested (three of six were unverified while deciding what gets archived).
+- Repair's second-claimant copy (`_place_copy`, 1/21 lines) is tested.
+- The OCR worker bootstrap is tested with a failing Tesseract and with OCR off.
+- The second-run Run History trend chart is tested.
+- `_join_split_f_tokens` covers two-span, distant, other-line and short-digit
+  cases; `repair_cleanup` covers a failed `rmtree`.
+- The docstring gate now walks classes and methods (five `_OcrContext` methods
+  were undocumented while the gate reported clean); they are documented.
+- `_scan_used_on`'s unreachable second-pool branch (16 statements) is deleted:
+  every caller passes the survey cache, and a second pool would re-open every
+  PDF the single-open survey just read.
+- `extract_bom_entries` delegates to `survey_task`, so the size/page guard
+  sequence exists once instead of twice.
+
 ### Performance and structure (review batch 3)
 - **Repair and name-normalisation no longer rescan the move list per folder.**
   `FolderMoves` indexes relocations by their own path, so resolving a folder

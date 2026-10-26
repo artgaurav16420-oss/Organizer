@@ -83,3 +83,26 @@ def test_ocr_event_delta_merge_roundtrip():
     assert merged.event_delta(set()) == delta
     merged.merge_events(None)
     assert merged.event_delta(set()) == delta
+
+
+def test_ocr_worker_init_survives_a_failing_tesseract(monkeypatch):
+    # The worker bootstrap re-enables OCR in each spawned interpreter; a
+    # missing/broken Tesseract must degrade to text-only, never raise into the
+    # pool (this was 1/7 covered).
+    def boom():
+        raise OSError("tesseract not found")
+
+    monkeypatch.setattr(extraction.OCR, "ensure_tesseract", boom)
+    extraction._ocr_worker_init(True)
+    assert extraction.OCR.enabled is True
+    assert "tesseract check failed" in (extraction.OCR.reason or "")
+    extraction.OCR.reset(enabled=False)
+
+
+def test_ocr_worker_init_disabled_skips_the_check(monkeypatch):
+    called = []
+    monkeypatch.setattr(extraction.OCR, "ensure_tesseract",
+                        lambda: called.append(True) or True)
+    extraction._ocr_worker_init(False)
+    assert extraction.OCR.enabled is False
+    assert called == []

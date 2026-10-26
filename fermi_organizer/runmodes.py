@@ -27,7 +27,6 @@ from .extraction import (
     resolve_jobs,
     run_parallel,
     survey_task,
-    title_task,
 )
 from .fsops import (
     FolderMoves,
@@ -579,42 +578,28 @@ def _scan_boms(items, jobs, log, require_desc):
         used_on_of, used_names, bom_votes
 
 
-def _scan_used_on(items, jobs, header, log, used_on_cache=None, names_cache=None):
-    """USED ON + NAME extraction. Logs header + per-PDF lines + blank.
-    Returns (used_on_of, names_of).
+def _scan_used_on(items, jobs, header, log, used_on_cache, names_cache=None):
+    """Report the USED ON + NAME figures already collected by survey_task.
 
-    When `used_on_cache` is given (survey_task already opened these PDFs), no
-    second extraction pool is started: the cached figures are re-reported for
-    the USED ON section (see _scan_boms).
+    Logs the header, one line per PDF, then a blank line. Returns
+    (used_on_of, names_of).
+
+    This used to also carry a second extraction pool for callers that had no
+    cache; every caller now passes the survey results, so that branch was dead
+    code (16 statements) that no test and no run could reach. A second pool
+    would also re-open every PDF the run had just read, which is exactly what
+    the single-open survey removed.
     """
-    if used_on_cache is not None:
-        used_on_of = {}
-        names_of = {}
-        log(header)
-        for (stem, _pdf) in items:
-            if stem not in used_on_cache:
-                continue
-            used = used_on_cache.get(stem) or []
-            used_on_of[stem] = used
-            if names_cache and names_cache.get(stem):
-                names_of[stem] = names_cache[stem]
-            if used:
-                log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
-        log("")
-        return used_on_of, names_of
     used_on_of = {}
     names_of = {}
     log(header)
-    results = run_parallel(title_task, [str(p) for _, p in items],
-                           jobs, OCR.enabled)
-    for (stem, _pdf), res in zip(items, results, strict=True):
-        if res[0] == "error":
-            log(f"  {stem}: ERROR reading PDF: {res[1]}")
+    for (stem, _pdf) in items:
+        if stem not in used_on_cache:
             continue
-        _, used, name = res
+        used = used_on_cache.get(stem) or []
         used_on_of[stem] = used
-        if name:
-            names_of[stem] = name
+        if names_cache and names_cache.get(stem):
+            names_of[stem] = names_cache[stem]
         if used:
             log(f"  {stem}: USED ON {', '.join(sorted(set(used)))}")
     log("")

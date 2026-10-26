@@ -881,3 +881,24 @@ def test_workbook_context_typeddict():
     }
     assert ctx["output"] == "/tmp/out"
     assert ctx.get("run_mode") == "EXECUTE"
+
+
+def test_second_run_renders_the_history_trend_chart(tmp_path):
+    # The n>=2 block (trend note + LineChart) only runs on a relaunch against an
+    # existing workbook; a defect there used to ship green because every test
+    # built a first-run workbook.
+    import fermi_report_xlsx as fx
+
+    out = tmp_path / "out"
+    out.mkdir()
+    fx.refresh_from_run(out, "EXECUTE", "2026-10-26 10:00", {"scanned": 3, "copies": 2},
+                        [], [], [], "report one")
+    fx.refresh_from_run(out, "EXECUTE", "2026-10-26 11:00", {"scanned": 4, "copies": 3},
+                        [], [], [], "report two")
+
+    xlsx = out / "organize_fermi_report.xlsx"
+    from openpyxl import load_workbook
+
+    ws = load_workbook(xlsx)["Run History"]
+    assert len(ws._charts) == 1
+    assert ws.max_row >= 3

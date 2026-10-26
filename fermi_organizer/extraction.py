@@ -274,6 +274,12 @@ class _OcrContext:
         return exe
 
     def doc_key(self, page):
+        """Cache key for one page: (document name, page number).
+
+        In-memory documents share the empty-name fallback, so each one gets a
+        per-run sequence number; without it two anonymous docs would memoize
+        each other's words.
+        """
         parent = getattr(page, "parent", None)
         name = str(getattr(parent, "name", "") or getattr(parent, "metadata", {}).get("name", "") or "")
         if not name:
@@ -294,6 +300,11 @@ class _OcrContext:
         return scale
 
     def words_cached(self, page, issues=None, page_label=""):
+        """OCR words for a page, memoized per (document, page) in this run.
+
+        Returns [] when OCR is disabled or Tesseract is unavailable; failures
+        are reported through `issues` and never raise.
+        """
         key = self.doc_key(page)
         if key in self.words_memo:
             self.words_memo.move_to_end(key)
@@ -422,6 +433,11 @@ class _OcrContext:
         return result
 
     def report_lines(self):
+        """Human-readable OCR summary lines for the run report.
+
+        One line per scanned PDF with its OCR pages, USED ON, NAME and BOM
+        counts, then a totals line. Empty when OCR never ran.
+        """
         lines = []
         total_pages, total_secs = 0, 0.0
         for path, ev in sorted(self.events.items()):
@@ -432,7 +448,13 @@ class _OcrContext:
                 fields.append("USED ON=" + ",".join(ev["used_on"]))
             if ev["name"]:
                 fields.append("NAME=" + repr(ev["name"]))
-            fields.append("BOM=" + (",".join(ev["bom"]) if ev["bom"] else "none"))
+            # ev["bom"] holds parts-list entries (value, page, method, desc),
+            # not strings: joining the tuples raised TypeError on any scanned
+            # drawing whose OCR found BOM rows, i.e. exactly when the report
+            # mattered. Render the part number of each entry.
+            fields.append("BOM=" + (",".join(
+                str(v[0]) if isinstance(v, (tuple, list)) else str(v)
+                for v in ev["bom"]) if ev["bom"] else "none"))
             lines.append(f"  {stem}: page(s) {pages}: " + "; ".join(fields))
             total_pages += len(ev["pages"])
             total_secs += ev["secs"]
@@ -455,6 +477,11 @@ class _OcrContext:
         return out
 
     def event_delta(self, before_keys):
+        """OCR events recorded since `before_keys` was sampled.
+
+        The per-task slice a pool worker returns to the parent so its OCR
+        report stays complete.
+        """
         delta = {}
         for k in self.events:
             if k in before_keys:
@@ -468,6 +495,7 @@ class _OcrContext:
         return delta
 
     def merge_events(self, delta):
+        """Fold a worker's `event_delta` back into the parent's event map."""
         for k, ev in (delta or {}).items():
             cur = self.events.setdefault(k, {"pages": set(), "used_on": None,
                                              "name": None, "bom": [], "secs": 0.0})
@@ -1730,19 +1758,17 @@ def extract_bom_from_doc(doc, issues):
 
 
 def extract_bom_entries(pdf_path):
-    """Returns (entries, method, issues)."""
-    issues = []
-    size_msg = _pdf_size_issue(pdf_path)
-    if size_msg is not None:
-        issues.append(size_msg)
+    """Returns (entries, method, issues) for one PDF.
+
+    Delegates to `survey_task` so the size/page guard sequence exists once: it
+    used to be written twice, and a guard change applied to the run path left
+    this test-facing path asserting behaviour the run no longer had.
+    """
+    status, payload, method, _used, issues = survey_task(pdf_path)[:5]
+    if status == "error":
+        issues.append(str(payload))
         return [], "skipped", issues
-    with _open_pdf(pdf_path) as doc:
-        pages_msg = _doc_pages_issue(doc)
-        if pages_msg is not None:
-            issues.append(pages_msg)
-            return [], "skipped", issues
-        entries, method = extract_bom_from_doc(doc, issues)
-    return entries, method, issues
+    return payload, method, issues
 
 
 def extract_used_on(doc):

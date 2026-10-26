@@ -501,3 +501,46 @@ def test_sweep_stale_repair_staging_only_removes_old_prefixed_dirs(tmp_path, mon
     assert not stale.exists()
     assert fresh.exists() and other.exists()
     assert any("abandoned repair staging" in line for line in logged)
+
+
+def test_reconcile_copies_into_a_second_planned_folder(tmp_path, make_pdf):
+    # A stem claimed by two planned parents and present in only one folder: the
+    # reconcile pass must copy it into the second, not report success without
+    # the copy (this path had 1/21 statements covered).
+    from fermi_organizer.fsops import FolderMoves, reconcile_tree
+
+    out = tmp_path / "out"
+    (out / "A").mkdir(parents=True)
+    make_pdf(out / "A" / "F10126106.pdf", ["NAME", "WIDGET"])
+    organized = {"F10126106": [out / "A" / "F10126106.pdf"]}
+    planned = {"F10126106": [("A",), ("B",)]}
+    logged = []
+
+    counts, review = reconcile_tree(organized, planned, out, False,
+                                    logged.append, FolderMoves())
+
+    assert (out / "B" / "F10126106.pdf").is_file()
+    assert counts["copied"] == 1
+    assert counts["review"] == 0
+    assert review == []
+    assert sorted(p.relative_to(out).parts[0] for p in organized["F10126106"]) == [
+        "A", "B"]
+
+
+def test_repair_cleanup_warns_when_rmtree_fails(tmp_path, monkeypatch):
+    # A staging dir that cannot be removed must warn, not raise: the run has
+    # already done its work by then.
+    import shutil
+
+    from fermi_organizer import runmodes
+
+    staging = tmp_path / "fermi_repair_x"
+    staging.mkdir()
+    monkeypatch.setattr(runmodes.shutil, "rmtree",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("busy")))
+    logged = []
+    runmodes.repair_cleanup({"staging_dir": str(staging)}, logged.append)
+    assert any("could not remove repair staging" in m for m in logged)
+    assert staging.is_dir()
+    monkeypatch.undo()
+    shutil.rmtree(staging)

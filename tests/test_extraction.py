@@ -1793,3 +1793,104 @@ def test_words_cached_engine_error_is_recorded_as_an_issue(monkeypatch, tmp_path
     assert extraction.OCR.words_cached(page, issues, "page 1") == []
     assert issues == ["page 1: OCR failed: engine gone"]
     doc.close()
+
+
+def test_detect_watermark_ocg_layer(tmp_path):
+    # A watermark optional-content layer is evidence even when no text says so.
+    import pymupdf
+
+    p = tmp_path / "F10126106.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "SOME DRAWING", fontsize=11)
+    doc.add_ocg("Watermark")
+    doc.save(str(p))
+    doc.close()
+
+    with pymupdf.open(str(p)) as doc:
+        assert extraction.detect_watermark(doc) == "watermark layer: Watermark"
+
+
+def test_detect_watermark_stamp_annotation(tmp_path):
+    # A stamp/text annotation carrying the phrase is the signature pdf writers
+    # use for "preliminary" stamps.
+    import pymupdf
+
+    p = tmp_path / "F10126106.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "SOME DRAWING", fontsize=11)
+    page.add_text_annot((72, 120), "PRELIMINARY - NOT FOR CONSTRUCTION")
+    doc.save(str(p))
+    doc.close()
+
+    with pymupdf.open(str(p)) as doc:
+        evidence = extraction.detect_watermark(doc)
+    assert evidence is not None
+    assert evidence.startswith("watermark annotation: PRELIMINARY")
+
+
+def test_detect_watermark_light_large_text(tmp_path):
+    # Big pale lettering is the third visual signature: min channel > 0.6 and
+    # max channel < 1.0 (pure white is page background, not a watermark).
+    import pymupdf
+
+    p = tmp_path / "F10126106.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 250), "LIGHT", fontsize=60, color=(0.85, 0.85, 0.85))
+    doc.save(str(p))
+    doc.close()
+
+    with pymupdf.open(str(p)) as doc:
+        assert extraction.detect_watermark(doc) == "light large text: LIGHT"
+
+
+def test_join_split_f_tokens_cases():
+    # Tesseract splits 'F10187546' into ('F', '10187546'); the join must fire
+    # only for an adjacent digit run and must never invent a part number.
+    def w(text, x0, y0, x1, y1):
+        return (x0, y0, x1, y1, text, 0, 0, 0)
+
+    # Two-span join.
+    joined = extraction._join_split_f_tokens([w("F", 10, 20, 14, 30), w("10187546", 15, 20, 40, 30)])
+    assert [x[4] for x in joined] == ["F10187546"]
+
+    # FC prefix joins too.
+    joined = extraction._join_split_f_tokens([w("FC", 10, 20, 16, 30), w("1234567", 17, 20, 40, 30)])
+    assert [x[4] for x in joined] == ["FC1234567"]
+
+    # A digit run too far away (x gap > 12) is a different column: keep both.
+    joined = extraction._join_split_f_tokens([w("F", 10, 20, 14, 30), w("10187546", 40, 20, 60, 30)])
+    assert [x[4] for x in joined] == ["F", "10187546"]
+
+    # A different line (dy > 4) is not a join candidate.
+    joined = extraction._join_split_f_tokens([w("F", 10, 20, 14, 30), w("10187546", 15, 40, 40, 50)])
+    assert [x[4] for x in joined] == ["F", "10187546"]
+
+    # A short digit run is not a part number.
+    joined = extraction._join_split_f_tokens([w("F", 10, 20, 14, 30), w("1234", 15, 20, 30, 30)])
+    assert [x[4] for x in joined] == ["F", "1234"]
+
+    # Non-F tokens pass through untouched.
+    words = [w("NAME", 10, 20, 30, 30)]
+    assert extraction._join_split_f_tokens(words) == words
+
+
+def test_ocr_report_lines_render_real_events():
+    # The run report's OCR block was only ever reached through a stubbed
+    # lambda; assert the real formatting of a scanned drawing line.
+    extraction.OCR.reset(enabled=True)
+    try:
+        extraction.OCR.events["F10126106.pdf"] = {
+            "pages": {0, 1}, "used_on": ["F10126105"], "name": "WIDGET",
+            "bom": [("F10126107", 1, "text-fallback", "CHILD")], "secs": 1.25,
+        }
+        lines = extraction.OCR.report_lines()
+    finally:
+        extraction.OCR.reset(enabled=False)
+    assert any("F10126106.pdf" in line for line in lines)
+    assert any("page(s) 1, 2" in line for line in lines)
+    assert any("USED ON=F10126105" in line for line in lines)
+    assert any("NAME='WIDGET'" in line for line in lines)
+    assert any("BOM=F10126107" in line for line in lines)
