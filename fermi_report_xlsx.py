@@ -666,6 +666,10 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
         row = 5 + (i // 4) * 4
         _card(dash, row, _CARD_SPANS[i % 4], label, val, pal, cap,
               f"#'{sheet}'!A1" if sheet else None)
+    # Cards occupy rows 5..(5 + 4*(rows-1) + 2); the block below starts after the
+    # following spacer row. Derive it instead of hardcoding 13, so a 9th card
+    # cannot land on the section header.
+    card_rows = (len(cards) + 3) // 4
     dash.row_dimensions[8].height = 12
     dash.row_dimensions[12].height = 14
 
@@ -691,7 +695,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     todo = sum(1 for _, n, _, _, _ in items if n)
     act = sum(1 for _, n, _, _, a in items if n and a)
     rev = todo - act
-    r = 13
+    r = 5 + 4 * card_rows
     _box(dash, r, 2, 16, "NEEDS ATTENTION", _font(11, True, DARK), None,
          Alignment(horizontal="left", vertical="center"),
          Border(bottom=Side(style="medium", color=DARK)))

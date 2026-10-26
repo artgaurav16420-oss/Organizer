@@ -4,6 +4,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.3.0 — 2026-10-26
+
 ### Fix: repaired refusals that were never in the notes
 - **Repair refuses a subtree it cannot list** (commit `8f599d4`): a folder whose
   descendant listing fails could exceed the path guard half-way through a move,
