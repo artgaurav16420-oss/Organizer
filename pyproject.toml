@@ -31,3 +31,22 @@ py-modules = ["fermi_report_xlsx"]
 
 [tool.setuptools.packages.find]
 include = ["fermi_organizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Keep `pytest -q` fast: coverage flags stay opt-in so a routine run does not
+# pay the tracing cost. CI passes --cov explicitly.
+addopts = ""
+
+[tool.coverage.run]
+source = ["fermi_organizer", "fermi_report_xlsx"]
+# Branch coverage is the number that matters for this codebase: most defects
+# found in review live in an unexercised branch (a failure recovery, a second
+# revision, a skipped archive), not in an unexecuted line.
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+]

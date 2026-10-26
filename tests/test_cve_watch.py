@@ -51,3 +51,48 @@ def test_dependency_pins_agree_across_manifests():
         missing = sorted(f for f, v in pins.items() if v is None)
         assert not missing, f"{name} is not pinned in {missing}"
         assert len(set(pins.values())) == 1, f"{name} pins drift: {pins}"
+
+
+def _load_watch():
+    """Import .github/scripts/cve_watch.py as a module."""
+    import importlib.util
+    import sys
+
+    path = ROOT / ".github" / "scripts" / "cve_watch.py"
+    spec = importlib.util.spec_from_file_location("cve_watch", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["cve_watch"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_cve_watch_parses_and_runs_with_stubbed_network():
+    # The watcher used to be a file no test ever imported: a syntax error or a
+    # refactor break merged green and only the Monday cron failed. Import it and
+    # run every check against stubbed endpoints.
+    watch = _load_watch()
+    tracked = []
+    watch._open_watch_titles = lambda: []
+    watch._track = lambda title, body: tracked.append(title)
+    watch._get_json = lambda url: (
+        {"info": {"version": "2.0"}} if "pymupdf" in url
+        else {"info": {"version": "3.1.5"}} if "openpyxl" in url
+        else {"tag_name": "5.5.3"})
+    watch._post_json = lambda url, payload: {"vulns": [
+        {"id": "OSV-TEST-1", "summary": "test advisory"}]}
+    watch.main()
+    # pymupdf 1.28.2 vs latest 2.0 -> pin-drift issue; openpyxl current; OSV hits.
+    assert any("PyMuPDF 2.0" in t for t in tracked)
+    assert any("OSV-TEST-1" in t for t in tracked)
+    assert not any("openpyxl 3.1.5 released" in t for t in tracked)
+
+
+def test_advisory_query_is_best_effort():
+    # A failed OSV call warns and returns [], it never aborts the watch.
+    watch = _load_watch()
+
+    def boom(url, payload):
+        raise OSError("network down")
+
+    watch._post_json = boom
+    assert watch.advisories_for("pymupdf", "1.28.2") == []
