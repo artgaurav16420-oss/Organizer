@@ -30,6 +30,7 @@ from .extraction import (
     title_task,
 )
 from .fsops import (
+    FolderMoves,
     LockLostError,
     _copy_atomic,
     _ensure_lock,
@@ -970,6 +971,8 @@ def _resolve_moved_folder(folder, moved_dirs):
     resolving that newcomer into the wrong tree. Moves are recorded
     chronologically, so one pass follows each folder's own chain.
     """
+    if isinstance(moved_dirs, FolderMoves):
+        return moved_dirs.resolve(folder)
     for old, new in moved_dirs.items():
         if folder == old or folder.is_relative_to(old):
             folder = new.joinpath(*folder.relative_to(old).parts)
@@ -2236,7 +2239,7 @@ def _incremental_supersede(supersede_pairs, organized, org_boms, org_used_on,
     # Supersede in place. When a new revision supersedes an organized one, the
     # old revision's PDF(s) move to _superseded/ and the new revision's PDF takes their
     # place in the tree. The new stem is then treated as organized for this run.
-    moved_dirs = {}  # old_folder -> new_folder
+    moved_dirs = FolderMoves()  # old_folder -> new_folder (chronological)
     total_moves = 0
     swapped_old: list = []
     if supersede_pairs:
@@ -2765,7 +2768,7 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
 
     swapped_old: list = []
     if refused:
-        moved_dirs, total_moves = {}, 0
+        moved_dirs, total_moves = FolderMoves(), 0
         log("  supersede skipped: placement refused (no swaps/moves while over cap)")
     else:
         moved_dirs, total_moves, total_copies, all_stems, swapped_old = \

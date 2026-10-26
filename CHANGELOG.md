@@ -4,6 +4,19 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Performance and structure (review batch 3)
+- **Repair and name-normalisation no longer rescan the move list per folder.**
+  `FolderMoves` indexes relocations by their own path, so resolving a folder
+  looks up its ancestors instead of walking every recorded move. An all-move
+  repair measured 1.18 s / 4.14 s / 15.32 s at 250 / 500 / 1,000 folders before
+  (4x per doubling, ~6.5 min at 5,000) and 5.6 / 11.4 / 22.3 ms after.
+- **The workbook reuses style objects.** Building 25,000 body cells allocated a
+  fresh `Font`, `PatternFill` and `Alignment` per cell (3.72 s); the cached
+  forms take 0.70 s and the workbook's font/fill tables stay at 4 and 5 entries.
+- **Read-only tree scanning lives in `treescan`.** `report_glue` and the
+  workbook no longer import the mutating filesystem module, so importing a
+  report helper does not drag in PyMuPDF and the OCR stack.
+
 ### Fix: review batch 1 (revisions, lock, linked ancestors, jobs)
 - **Two-letter revisions (AA..ZZ) are read from the filename again.** The
   title-block check accepted only a one-character revision, so every AA..ZZ

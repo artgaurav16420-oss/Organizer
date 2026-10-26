@@ -46,3 +46,23 @@ def test_log_parsing_helpers_removed():
 def test_no_prior_report_fallback_in_source():
     src = Path(report_glue.__file__).read_text(encoding="utf-8")
     assert "organize_fermi_pdfs_report" not in src
+
+
+def test_importing_the_read_only_layer_does_not_load_pymupdf():
+    # The presentation helpers used to import fsops, which imports extraction
+    # and therefore PyMuPDF + the OCR stack. A read-only consumer must be
+    # importable without the PDF engine.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for module in ("fermi_organizer.treescan", "fermi_organizer.report_glue"):
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             f"import sys, {module}; "
+             "assert \'pymupdf\' not in sys.modules, \'pymupdf pulled in\'; "
+             "assert \'fermi_organizer.extraction\' not in sys.modules"],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, f"{module}: {proc.stdout}{proc.stderr}"

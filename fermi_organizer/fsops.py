@@ -19,6 +19,7 @@ from .config import (
     TREE_MAX_DEPTH,
     canonical_stem,
 )
+from . import treescan
 from .extraction import detect_watermark
 from .graph import is_chk_stem
 from .naming import folder_name_for
@@ -30,34 +31,18 @@ except ImportError:  # pragma: no cover
 
 
 def _native(path):
-    r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
-
-    With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
-    fails with ENOENT even though the file exists (input trees nest deep;
-    the output tree is bounded by MAX_PATH, so only input-derived paths hit
-    this - real run: 6 CHK archive copies failed without the prefix).
-    Drive paths get `\\?\`; UNC paths need the `\\?\UNC\server\share` form.
-    Forward-slash paths are left alone (`\\?\` rejects them; pathlib on
-    Windows always yields backslashes).
-    """
-    s = os.fspath(path)
-    if os.name != "nt" or len(s) < 260 or s.startswith("\\\\?\\"):
-        return path
-    if s.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + s[2:]
-    if os.path.isabs(s) and "/" not in s:
-        return "\\\\?\\" + s
-    return path
+    """Filesystem-op view of path (see treescan.native)."""
+    return treescan.native(path)
 
 
 def _exists(path):
-    """os.path.exists that sees beyond MAX_PATH (blind spot of Path.exists)."""
+    """os.path.exists that sees beyond MAX_PATH (Path.exists goes blind)."""
     return os.path.exists(_native(path))
 
 
 def _islink(path):
-    """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
-    return os.path.islink(_native(path))
+    """os.path.islink that sees beyond MAX_PATH."""
+    return treescan.islink(path)
 
 
 def _has_linked_ancestor(path, stop):
@@ -76,46 +61,13 @@ def _has_linked_ancestor(path, stop):
 
 
 def _strip_ext_prefix(path):
-    r"""Remove the `\\?\` / `\\?\UNC\` prefix `_native` adds to long paths.
-
-    Both sides of the link comparison below go through it: `_native` prefixes
-    only the side that crosses 260 chars, and `os.path.realpath` keeps the
-    prefix, so an unprefixed pair would report the first long directory in a
-    tree as a link (and prune its PDFs).
-    """
-    text = os.fspath(path)
-    if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[len("\\\\?\\UNC\\"):]
-    if text.startswith("\\\\?\\"):
-        return text[len("\\\\?\\"):]
-    return text
+    """Remove the extended-length prefix (see treescan.strip_ext_prefix)."""
+    return treescan.strip_ext_prefix(path)
 
 
 def _is_dir_link(path):
-    """True for a directory that resolves somewhere other than its own name.
-
-    os.path.islink is False for an NTFS junction (a reparse point, not a
-    symlink), and os.walk(followlinks=False) does not prune junctions - so a
-    junction inside the input folder was traversed and its PDFs indexed as
-    drawings of this folder. Both cases are refused here, before the walk
-    descends: the documented invariant is that linked folders are never input.
-
-    Resolution is compared against the *resolved* parent, so an input folder
-    that itself sits under a junction (or a mapped share) does not mark every
-    child as a link, and a reparse point that is not a redirect (a OneDrive
-    placeholder) still resolves beside its parent and is kept.
-    """
-    if _islink(path):
-        return True
-    try:
-        parent = _strip_ext_prefix(os.path.realpath(_native(Path(path).parent)))
-        resolved = _strip_ext_prefix(os.path.realpath(_native(path)))
-    except (OSError, ValueError):
-        # Unreadable: let the walk decide (an unreadable entry is skipped by
-        # _classify_input_pdf like any other).
-        return False
-    expected = os.path.join(parent, Path(path).name)
-    return os.path.normcase(resolved) != os.path.normcase(expected)
+    """True for a directory that resolves elsewhere (see treescan.is_dir_link)."""
+    return treescan.is_dir_link(path)
 
 
 def _pdf_watermarked(path):
@@ -594,7 +546,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
 
 def is_system_dir(name):
     """Convention: any top-level directory whose name starts with '_' is a system dir."""
-    return name.startswith("_")
+    return treescan.is_system_dir(name)
 
 
 RUN_LOCK_NAME = ".fermi_organizer.lock"
@@ -927,34 +879,11 @@ def _heartbeat_stop(lock):
 def scan_output_tree(output):
     """Live scan of the output folder, categorized by the system-dir convention.
 
-    Returns {'tree': [pdf paths in the organized tree],
-             'sup': [pdf paths under _superseded*],
-             'orph': [pdf paths under _orphans*]}.
-    Any other '_' prefixed top-level name is excluded from all three lists.
+    Thin re-export of treescan.scan_output_tree for compatibility; the
+    read-only consumers import treescan directly so they do not pull in
+    PyMuPDF through this module.
     """
-    output = Path(output)
-    tree, sup, orph = [], [], []
-    if output.is_dir():
-        out_root = output
-        for dirpath, dirnames, filenames in os.walk(out_root):
-            # Prune linked folders for the same reason the input scan does: a
-            # junction inside the tree would otherwise list PDFs from outside
-            # it as tree members (repair mode moves and deletes from this list).
-            dirnames[:] = [d for d in dirnames
-                           if not _is_dir_link(Path(dirpath) / d)]
-            for name in filenames:
-                if not name.lower().endswith(".pdf"):
-                    continue
-                p = Path(dirpath) / name
-                top = p.relative_to(out_root).parts[0]
-                if is_system_dir(top):
-                    if top.startswith("_superseded"):
-                        sup.append(p)
-                    elif top.startswith("_orphans"):
-                        orph.append(p)
-                else:
-                    tree.append(p)
-    return {"tree": tree, "sup": sup, "orph": orph}
+    return treescan.scan_output_tree(output)
 
 
 def sweep_supersede_staging(output, dry_run, log):
@@ -1466,10 +1395,71 @@ def _folder_removable(folder, planned_by_stem, output):
 
 def _remap_folder(folder, moved_dirs):
     """Folder after earlier moves this run (exact or ancestor match)."""
+    if isinstance(moved_dirs, FolderMoves):
+        return moved_dirs.resolve(folder)
     for old, new in moved_dirs.items():
         if folder == old or folder.is_relative_to(old):
             return new.joinpath(*folder.relative_to(old).parts)
     return folder
+
+
+class FolderMoves(dict):
+    """Chronological folder relocations with a resolved-path index.
+
+    Insertion order is chronology, exactly how the move passes record them.
+    Plain-dict semantics are kept (item assignment, items(), values(), `in`,
+    len) because callers already use it that way, so the only change is that
+    resolve() answers the old linear-scan question without scanning every
+    move per folder.
+
+    The old form was O(folders x moves): repair on a tree that is entirely
+    off-plan measured 1.18 s / 4.14 s / 15.32 s at 250 / 500 / 1,000 folders
+    (4x per doubling, ~6.5 min at 5,000). resolve() looks up only the query
+    folder's own ancestors, so the cost is O(depth x applied moves).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._seq = 0
+        self._order = {}
+        self._new = {}
+        for old, new in super().items():
+            self._remember(Path(old), Path(new))
+
+    def _remember(self, old, new):
+        # A plain dict keeps a re-assigned key at its FIRST insertion position
+        # with the LAST value; mirror that exactly, or resolution order drifts.
+        if old not in self._order:
+            self._seq += 1
+            self._order[old] = self._seq
+        self._new[old] = new
+
+    def __setitem__(self, old, new):
+        super().__setitem__(old, new)
+        self._remember(Path(old), Path(new))
+
+    def resolve(self, folder):
+        """`folder` after every recorded move, applied in chronological order.
+
+        One ordered pass is deliberate: a repeated pass would follow a
+        mapping whose key was an old path later reused as another folder's
+        destination, resolving that newcomer into the wrong tree. This loop
+        picks the earliest not-yet-applied move among the current path's
+        ancestors, which is exactly that same single ordered pass.
+        """
+        current = Path(folder)
+        applied = 0
+        while True:
+            best = None
+            for ancestor in (current, *current.parents):
+                seq = self._order.get(ancestor)
+                if seq is not None and seq > applied and (best is None or seq < best[0]):
+                    best = (seq, ancestor)
+            if best is None:
+                return current
+            seq, old = best
+            current = self._new[old].joinpath(*current.relative_to(old).parts)
+            applied = seq
 
 
 def _drop_organized_under(organized, folder):

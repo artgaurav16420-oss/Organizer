@@ -2030,3 +2030,49 @@ def test_copy_superseded_refuses_a_junction_at_the_archive_dir(tmp_path, make_pd
         assert any("linked/junction ancestor" in m for m in logged)
     finally:
         os.rmdir(link)
+
+
+def test_folder_moves_resolve_matches_the_linear_scan():
+    # The indexed resolver must agree with the original one-pass scan on any
+    # chronological move list, including a path reused as a later destination.
+    import random
+
+    rnd = random.Random(1234)
+    base = Path("output")
+    folders = [base / f"F{i}" for i in range(6)] + [base / "F0" / "inner"]
+    for _ in range(300):
+        moves = fsops.FolderMoves()
+        plain = {}
+        for _ in range(rnd.randint(0, 8)):
+            old = rnd.choice(folders)
+            new = base / f"N{rnd.randint(0, 5)}"
+            moves[old] = new
+            plain[old] = new
+        for folder in folders:
+            expected = folder
+            for old, new in plain.items():
+                if expected == old or expected.is_relative_to(old):
+                    expected = new.joinpath(*expected.relative_to(old).parts)
+            assert moves.resolve(folder) == expected, (list(plain.items()), folder)
+
+
+def test_folder_moves_resolve_is_not_quadratic(monkeypatch):
+    # Repair on an off-plan tree was O(folders x moves): 1.18 s / 4.14 s /
+    # 15.32 s at 250 / 500 / 1,000 folders. Count the ancestor tests instead
+    # of timing, so the guard cannot flake on a slow runner.
+    calls = 0
+    real = Path.is_relative_to
+
+    def counting(self, other):
+        nonlocal calls
+        calls += 1
+        return real(self, other)
+
+    monkeypatch.setattr(Path, "is_relative_to", counting)
+    moves = fsops.FolderMoves()
+    base = Path("output")
+    for i in range(1000):
+        moves[base / f"F{i}"] = base / f"N{i}"
+    for i in range(1000):
+        moves.resolve(base / f"F{i}")
+    assert calls < 100_000, f"resolution looks quadratic again: {calls} ancestor tests"
