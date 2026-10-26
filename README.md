@@ -265,9 +265,16 @@ contributors and coding agents need.
 ## Tests
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+# requirements-dev.txt is hash-pinned; installing it in the same invocation as
+# the unhashed requirements.txt makes pip demand hashes for everything. Install
+# the runtime deps and the dev lock separately.
+pip install -r requirements.txt
+pip install --require-hashes -r requirements-dev.txt
 python -m pytest -q
 ```
+
+`uv pip install --python .venv -r requirements.lock -r requirements-dev.txt -e .`
+is the hashed equivalent used by the project venv.
 
 Fixtures generate their PDFs at test time, so no binaries are checked in and Tesseract
 is not required.

@@ -57,8 +57,10 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
 ## Tesseract OCR
 
 - **License:** Apache-2.0 (external binary, not bundled or vendored).
-- Optional at runtime: only needed for scanned (image-only) PDFs; without it
-  those drawings are logged as orphans. 5.5.3+ recommended.
+- Optional at runtime: only needed for scanned (image-only) PDFs. Without it a
+  scanned drawing is still placed when a readable parent's parts list names it;
+  it is parked in `_orphans/` only when nothing readable defines its parent.
+  5.5.3+ recommended.
 - **Security:** eight advisories published 2026-09-10 for Tesseract **≤ 5.5.3**
   (CVE-2026-88047 through CVE-2026-88054; up to CVSS 8.6 HIGH): memory-safety
   flaws in legacy-model and LSTM `.traineddata` deserialization. Verified
@@ -68,8 +70,9 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
   only ever reads a locally rendered PNG), and the CLI OCR invocations are
   subprocess-bounded (120/180 s timeouts), so the threat model of this tool is
   not reached by feeding it hostile drawings. (The separate in-process
-  `get_textpage_ocr` full-page pass has no such subprocess timeout; it renders
-  and reads the page in-process rather than shelling out.)
+  `get_textpage_ocr` full-page pass is also bounded: it runs in a thread that
+  is joined with `OCR_INPROCESS_TIMEOUT_SEC` = 120 s, and a timeout is reported
+  as an OCR issue rather than hanging the run.)
   - **Mitigation note:** the legacy-engine vectors (88047/88051/88053) are
     additionally avoided by an LSTM-only engine (`--oem 1`); this tool also
     runs `--oem 3` passes for accuracy, so forcing oem 1 is an operator

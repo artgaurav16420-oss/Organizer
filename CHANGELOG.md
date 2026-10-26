@@ -4,6 +4,19 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: repaired refusals that were never in the notes
+- **Repair refuses a subtree it cannot list** (commit `8f599d4`): a folder whose
+  descendant listing fails could exceed the path guard half-way through a move,
+  so the move is refused and reported as a review line (exit 2).
+- **The reconcile depth guard is `>` not `>=`** (`9d5235d`): the deepest planned
+  folder is now reconciled instead of being skipped one level early.
+- **Staging sweeps only match ASCII digits** (`9d5235d`): the
+  `.pdf.supersede_tmp.<pid>` / `.pdf.copy_tmp.<pid>` cleanup regex used `\d`,
+  which in Python also matches non-ASCII digits, so a user file named with
+  Unicode digits could be deleted as a swept leftover.
+- **`release.yml` fails when the wheel version does not match the tag**
+  (`9d5235d`), so a mis-tagged release cannot publish a misleading asset.
+
 ### Fix: the OCR report no longer crashes on a scanned drawing with BOM rows
 - `OCR.report_lines()` joined `ev["bom"]` entries, which are `(value, page,
   method, description)` tuples, so a scanned drawing whose OCR found a parts
