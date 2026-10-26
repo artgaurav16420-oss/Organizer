@@ -1646,6 +1646,34 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     return total_copies, refused, skipped
 
 
+def _build_run_context(*, counters, missing, chk, orphans, roots,
+                       used_on_mismatches, used_on_bugs, titleblock_mismatches,
+                       watermarks, names, refused, skipped):
+    """The structured run context every mode returns (one shape, one builder).
+
+    Both modes used to assemble this dict by hand from their own finalizer, one
+    taking 29 parameters and one 19, with four adjacent same-typed list
+    parameters at the call site: a transposed pair type-checks and silently
+    writes one sheet's rows into another. Keyword-only here, so that cannot
+    happen again.
+    """
+    return {
+        "counters": counters,
+        "missing": missing,
+        "chk": chk,
+        "orphans": orphans,
+        "roots": roots,
+        "used_on_mismatches": used_on_mismatches,
+        "used_on_bugs": used_on_bugs,
+        "titleblock_mismatches": titleblock_mismatches,
+        "scanned": OCR.scanned_stems(),
+        "watermarks": watermarks,
+        "names": names,
+        "placement_refused": refused,
+        "skipped_roots": list(skipped),
+    }
+
+
 def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     warning_count, unmatched, chk_stems, used_on_of, used_mism,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
@@ -1665,27 +1693,26 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     if skipped:
         summary.append(f"  Roots skipped (oversized): {len(skipped)}")
     _log_summary(summary, log)
-    return {
-        "counters": {
+    return _build_run_context(
+        counters={
             "scanned": len(index),
             "roots": len(roots),
             "copies": total_copies,
             "cycles": len(removed),
             "warnings": warning_count,
         },
-        "missing": unmatched,
-        "chk": chk_stems,
-        "orphans": orphans,
-        "roots": [(r, sorted(set(used_on_of.get(r, [])))) for r in roots],
-        "used_on_mismatches": used_mism,
-        "used_on_bugs": used_on_bugs,
-        "titleblock_mismatches": tb_mismatches,
-        "scanned": OCR.scanned_stems(),
-        "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(names_of, unmatched, bom_names),
-        "placement_refused": refused,
-        "skipped_roots": list(skipped),
-    }
+        missing=unmatched,
+        chk=chk_stems,
+        orphans=orphans,
+        roots=[(r, sorted(set(used_on_of.get(r, [])))) for r in roots],
+        used_on_mismatches=used_mism,
+        used_on_bugs=used_on_bugs,
+        titleblock_mismatches=tb_mismatches,
+        watermarks=sorted(watermarks.items()),
+        names=_ctx_names(names_of, unmatched, bom_names),
+        refused=refused,
+        skipped=skipped,
+    )
 
 
 def run_full(folder, output, dry_run, log, jobs=0, rekey=False,
@@ -2497,29 +2524,28 @@ def _incremental_finalize(stored_orphans, output, dry_run, log, scanned_new,
     if skipped:
         summary.append(f"  Roots skipped (oversized): {len(skipped)}")
     _log_summary(summary, log)
-    return {
-        "counters": {
+    return _build_run_context(
+        counters={
             "scanned": scanned_new,
             "roots": len(new_roots),
             "copies": total_copies,
             "cycles": len(removed),
             "warnings": warning_count,
         },
-        "missing": unmatched,
-        "chk": chk_stems,
-        "orphans": _live_orphan_stems(output),
-        "roots": [(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
-        "used_on_mismatches": incr_mism,
-        "used_on_bugs": used_on_bugs,
-        "titleblock_mismatches": tb_mismatches,
-        "scanned": OCR.scanned_stems(),
-        "watermarks": sorted(watermarks.items()),
-        "names": _ctx_names(merged_names if merged_names is not None
-                            else _merge_names(org_names or {}, new_names),
-                            unmatched, bom_names),
-        "placement_refused": refused,
-        "skipped_roots": list(skipped),
-    }
+        missing=unmatched,
+        chk=chk_stems,
+        orphans=_live_orphan_stems(output),
+        roots=[(r, sorted(set(roots_used_on.get(r, [])))) for r in new_roots],
+        used_on_mismatches=incr_mism,
+        used_on_bugs=used_on_bugs,
+        titleblock_mismatches=tb_mismatches,
+        watermarks=sorted(watermarks.items()),
+        names=_ctx_names(merged_names if merged_names is not None
+                         else _merge_names(org_names or {}, new_names),
+                         unmatched, bom_names),
+        refused=refused,
+        skipped=skipped,
+    )
 
 
 def run_incremental(folder, output, dry_run, log, jobs=0, rekey=False,
@@ -2886,20 +2912,35 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
         # The tree changed after placement: finalize must see it as it is now,
         # so do not hand it the pre-reconcile scan.
         reused_scan_res = None
-    ctx = _incremental_finalize(stored_orphans, output, dry_run, log,
-                                scanned_new, organized, reported_roots,
-                                new_children, removed, total_copies,
-                                total_moves, warning_count, unmatched,
-                                chk_stems, merged_used_on, incr_mism,
-                                used_on_bugs, tb_mismatches, watermarks,
-                                new_names, bom_names,
-                                org_names=org_names,
-                                merged_names=merged_names,
-                                superseded=archived_new | set(swapped_old),
-                                planned=planned,
-                                scan_res=reused_scan_res,
-                                refused=refused, skipped=skipped,
-                                repair=repair)
+    ctx = _incremental_finalize(
+        stored_orphans=stored_orphans,
+        output=output,
+        dry_run=dry_run,
+        log=log,
+        scanned_new=scanned_new,
+        organized=organized,
+        new_roots=reported_roots,
+        new_children=new_children,
+        removed=removed,
+        total_copies=total_copies,
+        total_moves=total_moves,
+        warning_count=warning_count,
+        unmatched=unmatched,
+        chk_stems=chk_stems,
+        roots_used_on=merged_used_on,
+        incr_mism=incr_mism,
+        used_on_bugs=used_on_bugs,
+        tb_mismatches=tb_mismatches,
+        watermarks=watermarks,
+        new_names=new_names,
+        bom_names=bom_names,
+        org_names=org_names,
+        merged_names=merged_names,
+        superseded=archived_new | set(swapped_old),
+        planned=planned,
+        scan_res=reused_scan_res,
+        refused=refused, skipped=skipped,
+        repair=repair)
     if repair:
         repair_cleanup(repair_meta, log)
         ctx["repair"] = repair_counts
