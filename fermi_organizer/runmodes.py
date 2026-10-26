@@ -36,6 +36,7 @@ from .fsops import (
     _exists,
     _has_linked_ancestor,
     _islink,
+    refuse_linked_target,
     _native,
     _same_bytes,
     _staged_copy,
@@ -941,6 +942,8 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     if dry_run:
                         log(f"  [DRY-RUN] copy {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
+                    elif refuse_linked_target(target_path, output, log, c):
+                        continue
                     else:
                         try:
                             shutil.copytree(str(child_folder), str(target_path),
@@ -955,6 +958,8 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     continue
                 if dry_run:
                     log(f"  [DRY-RUN] move {child_folder.relative_to(output)} -> {target_path.relative_to(output)}")
+                elif refuse_linked_target(target_path, output, log, c):
+                    continue
                 else:
                     try:
                         shutil.move(str(child_folder), str(target_path))
@@ -1062,6 +1067,8 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         # Recheck ownership before the long copy: a steal racing place_files
         # must stop this run the way it stops place_files (LockLostError).
         _ensure_lock(lock, log)
+        if refuse_linked_target(target_path, output, log, c):
+            return 0
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
         copied = False
@@ -1192,6 +1199,8 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
             moved_dirs[current] = target_path
         else:
             _ensure_lock(lock, log)
+            if refuse_linked_target(target_path, output, log, c):
+                return 0, 0
             try:
                 shutil.move(str(current), str(target_path))
             except OSError as e:
@@ -1443,6 +1452,8 @@ def _place_above_organized_children(R, org_child, new_children, new_index, new_n
     can_move = True
     if dry_run:
         log(f"  [DRY-RUN] mkdir {target_folder}")
+    elif refuse_linked_target(target_folder, output, log, R):
+        can_move = False
     else:
         try:
             target_folder.mkdir(parents=True, exist_ok=True)

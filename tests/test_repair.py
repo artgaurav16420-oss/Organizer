@@ -7,6 +7,8 @@ damaged trees converging on a full-run plan).
 import shutil
 from pathlib import Path
 
+import os
+
 import pytest
 
 from fermi_organizer.fsops import _folder_removable, reconcile_tree, remove_empty_dirs
@@ -544,3 +546,39 @@ def test_repair_cleanup_warns_when_rmtree_fails(tmp_path, monkeypatch):
     assert staging.is_dir()
     monkeypatch.undo()
     shutil.rmtree(staging)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_reconcile_move_refuses_a_linked_destination(tmp_path, make_pdf):
+    # A move into a planned folder that sits under a junction writes the whole
+    # subtree outside the tree. The move must be refused and reported, leaving
+    # the stale copy in place.
+    import subprocess
+
+    from fermi_organizer.fsops import FolderMoves, reconcile_tree
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    out = tmp_path / "out"
+    (out / "OLD").mkdir(parents=True)
+    make_pdf(out / "OLD" / "F10126106.pdf", ["NAME", "WIDGET"])
+    link = out / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    organized = {"F10126106": [out / "OLD" / "F10126106.pdf"]}
+    planned = {"F10126106": [("link", "NEW")]}
+    logged = []
+    try:
+        counts, review = reconcile_tree(organized, planned, out, False,
+                                        logged.append, FolderMoves())
+        assert (out / "OLD" / "F10126106.pdf").is_file(), "stale copy was moved"
+        assert not (outside / "NEW").exists(), "move escaped the output tree"
+        assert counts["moved"] == 0
+        assert counts["review"] == 1
+        assert any("junction" in line for line in logged)
+        assert any("refused" in line for line in review)
+    finally:
+        os.rmdir(link)

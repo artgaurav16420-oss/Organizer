@@ -1539,6 +1539,22 @@ def _subtree_link_or_unlistable(folder, any_link=True):
     return None
 
 
+def refuse_linked_target(target, output, log, label):
+    """True (and logged) when a planned destination traverses a link.
+
+    Every mutating sink calls this before it creates or writes: mkdir, move,
+    copytree and the atomic copies. A symlink/junction anywhere between the
+    output root and the destination redirects the write outside the tree, and
+    the run would still report success. One helper so the message and the rule
+    cannot drift between call sites.
+    """
+    if _has_linked_ancestor(target, output):
+        log(f"  WARNING: {label}: destination traverses a symlinked/junction "
+            f"ancestor, refusing: {target}")
+        return True
+    return False
+
+
 def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
                  organized, lock):
     """Move a folder (with its subtree) to `target`; False when refused.
@@ -1579,6 +1595,8 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
             f"{target.relative_to(output)}")
     else:
         _ensure_lock(lock, log)
+        if refuse_linked_target(target, output, log, stem):
+            return False
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(folder), str(target))
