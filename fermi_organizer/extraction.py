@@ -2284,15 +2284,17 @@ def survey_task(pdf_path):
 
 
 def resolve_jobs(n=None):
-    """Worker count: n > 0 as given (capped at MAX_JOBS); 0/None/invalid =
-    CPU count (4 if unknown)."""
+    """Worker count: n > 0 as given, else the CPU count. Both capped at
+    MAX_JOBS (0/None/invalid = auto, 4 if the CPU count is unknown)."""
     try:
         n = int(n or 0)
     except (TypeError, ValueError):
         n = 0
     if n > 0:
         return min(n, MAX_JOBS)
-    return os.cpu_count() or 4
+    # The auto path needs the cap too: a host reporting thousands of CPUs would
+    # otherwise start a pool larger than the advertised maximum.
+    return min(os.cpu_count() or 4, MAX_JOBS)
 
 
 def run_parallel(task, paths, jobs=0, ocr_enabled=True):
