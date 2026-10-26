@@ -2140,3 +2140,24 @@ def test_place_copy_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
         assert any("junction ancestor" in m for m in logged)
     finally:
         os.rmdir(link)
+
+
+def test_copystat_failure_leaves_no_staging_file(tmp_path, monkeypatch):
+    # _staged_copy wrote the bytes, then copied metadata outside its cleanup
+    # block: a copystat failure escaped with the staging file on disk, and
+    # _copy_atomic (created=False) skipped its unlink.
+    import shutil as _shutil
+
+    def boom(*a, **k):
+        raise OSError("metadata copy failed")
+
+    monkeypatch.setattr(_shutil, "copystat", boom)
+    src = tmp_path / "F10126106.pdf"
+    src.write_bytes(b"bytes")
+    dst = tmp_path / "out" / "F10126106.pdf"
+    dst.parent.mkdir()
+
+    with pytest.raises(OSError):
+        fsops._copy_atomic(src, dst, tmp_path)
+    assert not list(dst.parent.glob("*.copy_tmp.*")), "staging file left behind"
+    assert not dst.exists()

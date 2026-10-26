@@ -425,13 +425,16 @@ def _staged_copy(src, staging, stop=None):
     try:
         with open(_native(src), "rb") as fsrc, os.fdopen(fd, "wb") as fdst:
             shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+        # Metadata belongs inside the cleanup block: a copystat failure used to
+        # escape with the staging file already written, and the caller's
+        # created=False path then skipped the unlink, leaving it behind.
+        shutil.copystat(_native(src), _native(staging))
     except BaseException:
         try:
             os.unlink(_native(staging))
         except OSError:
             pass
         raise
-    shutil.copystat(_native(src), _native(staging))
 
 
 def _copy_atomic(src, dst, stop=None):
