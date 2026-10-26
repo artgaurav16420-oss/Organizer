@@ -520,6 +520,16 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 # copy2 failure: only this file is lost, children are still tried.
                 # ValueError catches embedded-NUL style hostile names that
                 # raise before the syscall (guards must stay "not fatal").
+                #
+                # The linked-ancestor check has to run BEFORE mkdir: a junction
+                # at a planned folder would otherwise have parents=True create
+                # descendant directories outside the output tree, and the copy
+                # guard would only refuse the file afterwards.
+                if _has_linked_ancestor(current_folder, folder):
+                    log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
+                        f"symlinked/junction ancestor, refusing): {current_folder}")
+                    failed_count += count_copies(stem)
+                    continue
                 try:
                     current_folder.mkdir(parents=True, exist_ok=True)
                 except (OSError, ValueError) as e:

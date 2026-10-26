@@ -1766,6 +1766,10 @@ def extract_bom_entries(pdf_path):
     """
     status, payload, method, _used, issues = survey_task(pdf_path)[:5]
     if status == "error":
+        # survey_task reports an error with issues=None (it never reaches the
+        # issue-collecting code); appending to it would raise AttributeError
+        # over the very failure we are trying to report.
+        issues = list(issues or [])
         issues.append(str(payload))
         return [], "skipped", issues
     return payload, method, issues

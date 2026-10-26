@@ -1894,3 +1894,15 @@ def test_ocr_report_lines_render_real_events():
     assert any("USED ON=F10126105" in line for line in lines)
     assert any("NAME='WIDGET'" in line for line in lines)
     assert any("BOM=F10126107" in line for line in lines)
+
+
+def test_extract_bom_entries_reports_an_unreadable_pdf(tmp_path):
+    # survey_task returns issues=None on its error path; the delegating wrapper
+    # must report that as a skipped entry, not raise AttributeError over it.
+    bad = tmp_path / "F10126106.pdf"
+    bad.write_bytes(b"not a pdf at all")
+
+    entries, method, issues = extraction.extract_bom_entries(str(bad))
+    assert entries == []
+    assert method == "skipped"
+    assert issues and any("not a pdf" in m.lower() or m for m in issues)

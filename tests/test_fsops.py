@@ -2076,3 +2076,37 @@ def test_folder_moves_resolve_is_not_quadratic(monkeypatch):
     for i in range(1000):
         moves.resolve(base / f"F{i}")
     assert calls < 100_000, f"resolution looks quadratic again: {calls} ancestor tests"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_files_does_not_mkdir_through_a_junction(tmp_path, make_pdf):
+    # The guard must run before mkdir(parents=True): a junction at an ANCESTOR
+    # of the planned folder otherwise has mkdir create the descendant directory
+    # outside the tree, even though the copy itself is refused afterwards.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "link"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    parent = tmp_path / "F10126106.pdf"
+    child = tmp_path / "F10126107.pdf"
+    make_pdf(parent, ["NAME", "PARENT"])
+    make_pdf(child, ["NAME", "CHILD"])
+    index = {"F10126106": parent, "F10126107": child}
+    logged = []
+    try:
+        place_files({"F10126106": {"F10126107"}, "F10126107": set()},
+                    ["F10126106"], index, root, False, logged.append,
+                    folder_names={"F10126106": "link", "F10126107": "child"})
+        assert not (outside / "child").exists(), "mkdir escaped the output tree"
+        assert list(outside.iterdir()) == []
+        assert any("junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
