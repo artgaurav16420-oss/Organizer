@@ -7,6 +7,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from .config import MAX_JOBS
 from .extraction import OCR, resolve_jobs
 from .fsops import (
     LockLostError,
@@ -23,6 +24,24 @@ from .runmodes import (
     run_incremental,
     run_repair,
 )
+
+
+def _jobs_arg(raw):
+    """argparse type for --jobs: an int in 0..MAX_JOBS.
+
+    0 keeps its meaning (auto = CPU count) and 1 stays serial. A value above
+    the ceiling is a usage error rather than a silent clamp: a dropped decimal
+    point ('--jobs 1000000000') is a typo the operator wants to see.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid int value: {raw!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = auto, 1 = serial)")
+    if value > MAX_JOBS:
+        raise argparse.ArgumentTypeError(f"must be <= {MAX_JOBS}")
+    return value
 
 
 def build_parser():
@@ -46,8 +65,9 @@ def build_parser():
                              "_orphans/, promote wrongly archived _superseded/ revisions, drop "
                              "verified duplicates. Places nothing new; reads no source folder")
     parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback for scanned (image-only) PDFs")
-    parser.add_argument("--jobs", type=int, default=0,
-                        help="Parallel extraction workers (0=auto = CPU count, 1=serial)")
+    parser.add_argument("--jobs", type=_jobs_arg, default=0,
+                        help=f"Parallel extraction workers (0=auto = CPU count, 1=serial, "
+                             f"max {MAX_JOBS})")
     parser.add_argument("--rekey-titleblock", action="store_true",
                         help="Trust the title block over the filename: re-key a misnamed text PDF to its "
                              "title-block drawing number (only when that drawing is not already present)")

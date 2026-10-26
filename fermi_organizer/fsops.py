@@ -429,7 +429,7 @@ def fit_roots_within_cap(children, roots, log, weights=None, extra=None):
     return kept, skipped
 
 
-def _staged_copy(src, staging):
+def _staged_copy(src, staging, stop=None):
     """Copy `src` into a freshly created staging file, written through the
     created handle.
 
@@ -441,7 +441,16 @@ def _staged_copy(src, staging):
     link even with O_EXCL), and stream the bytes through the fd - the write
     can never go through a link. Metadata is copied after. A live attacker
     replacing staging names inside the tree is out of scope, as documented
-    for shared writable outputs."""
+    for shared writable outputs.
+
+    `stop` is the output-tree root. When given, a symlinked/junction ancestor
+    between it and the staging path is refused before the copy: a link already
+    sitting at a planned folder path (or at `_superseded/`, `_orphans/`)
+    would otherwise write outside the tree while the run reports success.
+    """
+    if stop is not None and _has_linked_ancestor(Path(staging).parent, stop):
+        raise OSError(
+            f"target folder traverses a symlinked/junction ancestor, refusing: {staging}")
     if _islink(staging):
         raise OSError(f"staging path is a symlink, refusing: {staging}")
     try:
@@ -473,18 +482,19 @@ def _staged_copy(src, staging):
     shutil.copystat(_native(src), _native(staging))
 
 
-def _copy_atomic(src, dst):
+def _copy_atomic(src, dst, stop=None):
     """Copy `src` to `dst` via a staging name in the target folder.
 
     shutil.copy2 writes the destination in place, so a failure mid-write
     leaves a truncated PDF at `dst` that later runs treat as placed and never
     retry. Stage next to the target and os.replace, so the target is either
     absent or complete; a failed attempt removes its own staging file. See
-    _staged_copy for the symlink/race handling of the staging path.
+    _staged_copy for the symlink/race handling of the staging path and for
+    `stop` (the output root that bounds the linked-ancestor check).
     """
     tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
     try:
-        _staged_copy(src, tmp)
+        _staged_copy(src, tmp, stop)
         os.replace(_native(tmp), _native(dst))
     except (OSError, ValueError):
         try:
@@ -565,7 +575,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     failed_count += count_copies(stem)
                     continue
                 try:
-                    _copy_atomic(pdf, target)
+                    _copy_atomic(pdf, target, folder)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
@@ -605,6 +615,16 @@ class RunLockedError(Exception):
     """Another run holds the output-tree lock; this run is refused."""
 
 
+class LockUnavailableError(RunLockedError):
+    """The output-tree lock could not be created (ACL denial, EMFILE, a share
+    that rejects O_EXCL).
+
+    Refusing is the only safe answer: the lock is what keeps two runs out of
+    one tree, so a run that cannot take it must not proceed unlocked. Exits 1
+    through the CLI's RunLockedError handler.
+    """
+
+
 class LockLostError(RunLockedError):
     """This run's lock was stolen mid-run; the run must stop mutating.
 
@@ -625,9 +645,10 @@ _heartbeats = {}
 
 
 def acquire_run_lock(output, dry_run, log):
-    """Exclusive per-output-tree lock; returns the lock path, None when the
-    lock could not be created (warned, run continues unlocked), and raises
-    RunLockedError when another run may hold the tree.
+    """Exclusive per-output-tree lock; returns the lock path, or None when the
+    output tree does not exist yet (nothing to protect). Raises
+    RunLockedError when another run may hold the tree and
+    LockUnavailableError when the lock cannot be created at all.
 
     A lock older than RUN_LOCK_STALE_SECS is stolen with a warning (a crashed
     run leaks its lock; the steal message is the audit trail). Anything
@@ -662,9 +683,9 @@ def acquire_run_lock(output, dry_run, log):
         except FileExistsError:
             pass  # held or stale - adjudicated below.
         except OSError as e:
-            log(f"  WARNING: could not create run lock ({lock.name}): {e} - "
-                "continuing unlocked (do not run two processes against one output)")
-            return None
+            raise LockUnavailableError(
+                f"could not create run lock ({lock.name}): {e} - refusing to "
+                "run unlocked (two processes against one output would interleave)") from e
         else:
             try:
                 token = json.dumps({"pid": os.getpid(),
@@ -682,14 +703,14 @@ def acquire_run_lock(output, dry_run, log):
                     pass
                 # The O_EXCL-created file would otherwise linger (no lock path
                 # to clean up) and refuse later runs until stale: remove it
-                # and run unlocked like a creation failure.
+                # and refuse the run like a creation failure.
                 try:
                     os.unlink(_native(lock))
                 except OSError:
                     pass
-                log(f"  WARNING: could not write run lock ({lock.name}): {e} - "
-                    "continuing unlocked (do not run two processes against one output)")
-                return None
+                raise LockUnavailableError(
+                    f"could not write run lock ({lock.name}): {e} - refusing to "
+                    "run unlocked") from e
             try:
                 _heartbeat_start(lock, token)
             except RuntimeError as e:
@@ -700,9 +721,9 @@ def acquire_run_lock(output, dry_run, log):
                     os.unlink(_native(lock))
                 except OSError:
                     pass
-                log(f"  WARNING: could not start run lock heartbeat ({lock.name}): {e} - "
-                    "continuing unlocked (do not run two processes against one output)")
-                return None
+                raise LockUnavailableError(
+                    f"could not start run lock heartbeat ({lock.name}): {e} - "
+                    "refusing to run unlocked") from e
             return lock
         try:
             raw = lock.read_bytes()
@@ -1165,7 +1186,7 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                _copy_atomic(pdf, target)
+                _copy_atomic(pdf, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                 continue
@@ -1205,7 +1226,7 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
         else:
             try:
                 os.makedirs(_native(sf), exist_ok=True)
-                _copy_atomic(p, target)
+                _copy_atomic(p, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {p.name}: copy failed ({target}): {e}")
                 continue
@@ -1235,7 +1256,7 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
         else:
             try:
                 os.makedirs(_native(orphans_dir), exist_ok=True)
-                _copy_atomic(pdf, target)
+                _copy_atomic(pdf, target, folder)
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
@@ -1560,7 +1581,7 @@ def _place_copy(stem, organized, target, output, dry_run, log, lock):
     _ensure_lock(lock, log)
     try:
         target.mkdir(parents=True, exist_ok=True)
-        _copy_atomic(src, dst)
+        _copy_atomic(src, dst, output)
     except (OSError, ValueError) as e:
         log(f"  WARNING: {stem}: copy failed ({dst}): {e}")
         return False

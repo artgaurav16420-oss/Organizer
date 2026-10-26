@@ -2820,3 +2820,22 @@ def test_incremental_walk_bound_uses_post_swap_stems(tmp_path, make_pdf,
     assert not (out / "_superseded").exists()
     assert any(p.name == "F10126106.pdf" for p in out.rglob("*.pdf"))
     assert any("planning bound" in line for line in logged)
+
+
+def test_titleblock_mismatches_accepts_two_letter_revisions():
+    # Review finding: a one-character gate reported every AA..ZZ drawing as
+    # carrying no revision, so each two-letter revision produced a phantom
+    # "revision: - vs AA" row while graph.revision_rank ranks AA as 27.
+    logged = []
+    tb = {
+        "F10187622_AA": ("F10187622_AA", "F10187622", "AA", "MAGNET", False),
+        "F10187622_ZZ": ("F10187622_ZZ", "F10187622", "ZZ", "MAGNET", False),
+        "F10187622_A": ("F10187622_A", "F10187622", "A", "MAGNET", False),
+    }
+    assert _titleblock_mismatches(tb, logged.append) == []
+
+    # The real mismatch is still reported for a two-letter revision.
+    tb["F10187622_AA"] = ("F10187622_AA", "F10187622", "AB", "MAGNET", False)
+    assert _titleblock_mismatches(tb, logged.append) == [
+        ("F10187622_AA", "revision", "AA", "AB"),
+    ]

@@ -4,6 +4,30 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: review batch 1 (revisions, lock, linked ancestors, jobs)
+- **Two-letter revisions (AA..ZZ) are read from the filename again.** The
+  title-block check accepted only a one-character revision, so every AA..ZZ
+  drawing reported a phantom `revision: - vs AA` row and inflated the Dashboard
+  count, while `graph.revision_rank` already ranked AA as 27. `graph.revision_token`
+  is now the single rule, and the workbook's NAME fallback uses
+  `graph.sheet_token`/`revision_token` instead of its own copies.
+- **A run that cannot create the output-tree lock refuses instead of running
+  unlocked.** An `OSError` other than `FileExistsError` (ACL denial, `EMFILE`, a
+  share that rejects `O_EXCL`) used to log a warning and continue, which let two
+  runs interleave placement, supersede swaps and repair deletes in one tree. It
+  now raises `LockUnavailableError` (exit 1).
+- **Every copy path refuses a symlinked/junction ancestor.** `place_files`,
+  `copy_superseded`, `copy_watermarked_duplicates`, `copy_orphans`,
+  `_place_copy` and the supersede swap checked only the leaf, so a link sitting
+  at a planned folder, `_superseded/` or `_orphans/` wrote outside the tree while
+  the run reported success. The guard now lives in `_staged_copy`, and a refused
+  archive aborts the swap before the in-tree old revision is unlinked.
+- **`--jobs` is bounded at 256.** A dropped decimal point asked the spawn pool
+  for a billion workers; values above the ceiling are now a usage error, and 0
+  (auto) and 1 (serial) keep their meanings.
+- **`pymupdf.TOOLS` is guarded** like the other optional pymupdf surface, so a
+  build without it cannot abort a run on the first PDF.
+
 ### Fix: review follow-ups (renames, supersede bound, OCR, junctions, atomic archives)
 - **`normalize_folder_names` renames parent folders before their descendants and
   resolves chained `moved_dirs` entries**, so a child renamed before its ancestor

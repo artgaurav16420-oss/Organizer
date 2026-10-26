@@ -9,6 +9,7 @@ from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (
     RUN_LOCK_NAME,
     LockLostError,
+    LockUnavailableError,
     RunLockedError,
     abandon_run_lock,
     acquire_run_lock,
@@ -302,9 +303,10 @@ def test_move_folder_refuses_a_junction_inside_the_subtree(tmp_path):
         os.rmdir(link)
 
 
-def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatch):
-    # Review finding: a failed lock write must not leak the O_EXCL-created
-    # file (no lock path exists to clean it up) and refuse later runs.
+def test_run_lock_write_failure_cleans_up_and_refuses(tmp_path, monkeypatch):
+    # A failed lock write must not leak the O_EXCL-created file, and it must
+    # refuse the run: a run that cannot take the lock does not proceed
+    # unlocked (two processes against one output interleave placement).
     out = tmp_path / "out"
     out.mkdir()
 
@@ -314,9 +316,10 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     monkeypatch.setattr(fsops.json, "dumps", boom)
     logged = []
 
-    assert acquire_run_lock(out, False, logged.append) is None
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, logged.append)
+    assert "could not write run lock" in str(exc.value)
     assert not (out / RUN_LOCK_NAME).exists()
-    assert any("could not write run lock" in m for m in logged)
     # A later run is not refused by the leaked file.
     monkeypatch.undo()
     lock = acquire_run_lock(out, False, logged.append)
@@ -324,10 +327,25 @@ def test_run_lock_write_failure_cleans_up_and_runs_unlocked(tmp_path, monkeypatc
     release_run_lock(lock)
 
 
+def test_run_lock_create_failure_refuses(tmp_path, monkeypatch):
+    # Any OSError other than FileExistsError (ACL denial, EMFILE, a share that
+    # rejects O_EXCL) refuses the run instead of continuing unlocked.
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def boom(*a, **k):
+        raise PermissionError("ACL denies the lock name")
+
+    monkeypatch.setattr(fsops.os, "open", boom)
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, lambda m: None)
+    assert "could not create run lock" in str(exc.value)
+    assert not (out / RUN_LOCK_NAME).exists()
+
+
 def test_run_lock_heartbeat_start_failure_cleans_up(tmp_path, monkeypatch):
     # Thread.start() failing after creation must not leak a fresh lock that
-    # refuses later runs until stale: same degraded-unlocked path as a write
-    # failure.
+    # refuses later runs until stale, and must refuse this run.
     import threading
 
     def boom(self):
@@ -337,9 +355,10 @@ def test_run_lock_heartbeat_start_failure_cleans_up(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     logged = []
-    assert acquire_run_lock(out, False, logged.append) is None
+    with pytest.raises(LockUnavailableError) as exc:
+        acquire_run_lock(out, False, logged.append)
+    assert "heartbeat" in str(exc.value)
     assert not (out / RUN_LOCK_NAME).exists()
-    assert any("heartbeat" in m for m in logged)
     assert str(out / RUN_LOCK_NAME) not in fsops._heartbeats
     # A later run is not refused by the leaked file.
     monkeypatch.undo()
@@ -1952,3 +1971,62 @@ def test_is_dir_link_is_false_for_a_plain_directory(tmp_path):
     (plain / "nested").mkdir(parents=True)
     assert fsops._is_dir_link(plain) is False
     assert fsops._is_dir_link(plain / "nested") is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_place_files_refuses_a_junction_at_the_planned_folder(tmp_path, make_pdf):
+    # A junction sitting at a planned folder path redirects every copy for that
+    # subtree outside the output tree while the run reports success. The write
+    # must be refused and no byte may land outside.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "1.1.2.0 WIDGET"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = tmp_path / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    index = {"F10126106": src}
+    logged = []
+    try:
+        place_files({"F10126106": set()}, ["F10126106"], index, root, False,
+                    logged.append, folder_names={"F10126106": "1.1.2.0 WIDGET"})
+        assert list(outside.iterdir()) == []
+        assert any("linked/junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_copy_superseded_refuses_a_junction_at_the_archive_dir(tmp_path, make_pdf):
+    # Same guard for the archive paths: a junction at _superseded/ must not let
+    # the archive copy write outside the tree.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "_superseded"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = tmp_path / "F10126106.pdf"
+    make_pdf(src, ["NAME", "WIDGET"])
+    logged = []
+    try:
+        n, archived = copy_superseded({"F10126106": src}, root, False, logged.append)
+        assert n == 0
+        assert archived == set()
+        assert list(outside.iterdir()) == []
+        assert any("linked/junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)

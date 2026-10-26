@@ -28,6 +28,7 @@ from .config import (
     FERMI_RE,
     FERMI_RE_SEARCH,
     ITEM_RE,
+    MAX_JOBS,
     MAX_PDF_BYTES,
     MAX_PDF_PAGES,
     OCR_CORR,
@@ -1031,8 +1032,10 @@ def extract_bom_from_tables(doc, issues=None):
     """
     entries = []
     # Silence MuPDF warnings on stderr; re-setting the global flag once per
-    # document is harmless (this runs for every PDF).
-    pymupdf.TOOLS.mupdf_display_errors(False)
+    # document is harmless (this runs for every PDF). The guard mirrors the
+    # one at import time: a pymupdf build without TOOLS must not abort a run.
+    if hasattr(pymupdf, "TOOLS"):
+        pymupdf.TOOLS.mupdf_display_errors(False)
     for page_num, page in enumerate(doc, 1):
         try:
             tables = page.find_tables().tables
@@ -2251,13 +2254,14 @@ def survey_task(pdf_path):
 
 
 def resolve_jobs(n=None):
-    """Worker count: n > 0 as given; 0/None/invalid = CPU count (4 if unknown)."""
+    """Worker count: n > 0 as given (capped at MAX_JOBS); 0/None/invalid =
+    CPU count (4 if unknown)."""
     try:
         n = int(n or 0)
     except (TypeError, ValueError):
         n = 0
     if n > 0:
-        return n
+        return min(n, MAX_JOBS)
     return os.cpu_count() or 4
 
 

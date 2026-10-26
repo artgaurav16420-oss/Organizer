@@ -96,6 +96,9 @@ MAX_PATH = 250
 MAX_DIR = 240
 # Recursion depth guard for the cycle-search (graph) and placement (fsops) DFS
 TREE_MAX_DEPTH = 500
+# Hard ceiling on --jobs: a typo (a dropped decimal point) must not ask the
+# spawn pool for a million workers. 1 = serial, 0 = auto (CPU count).
+MAX_JOBS = 256
 # Bound for the folder-name shortening loop (naming.build_folder_names)
 NAME_SHORTEN_MAX_PASSES = 200
 # Placement fan-out guard (fsops.place_files): a diamond/DAG BOM graph copies

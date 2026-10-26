@@ -19,20 +19,30 @@ def is_chk_stem(stem):
     return "CHK" in suffix.upper()
 
 
+def revision_token(stem):
+    """The revision token of a stem ('A', 'AA', 'ZZ'), or "" when it carries
+    none. One or two letters only: CHK, DWG2 and any other suffix is not a
+    revision. Upper-cased, so callers compare tokens, not spellings."""
+    parts = stem.split("_")
+    if len(parts) < 2 or not parts[1]:
+        return ""
+    rev = parts[1]
+    if rev.isalpha() and len(rev) <= 2:
+        return rev.upper()
+    return ""
+
+
 def revision_letter_rank(stem):
     """Letter rank of the revision token: ___ (no rev) = 0, A = 1 .. Z = 26,
     AA = 27, AB = 28 (bijective base-26). A token that is not one or two
     letters (CHK, DWG2, ...) counts as no revision."""
-    parts = stem.split("_")
-    if len(parts) < 2 or not parts[1]:
+    rev = revision_token(stem)
+    if not rev:
         return 0
-    rev = parts[1]
-    if rev.isalpha() and len(rev) <= 2:
-        rank = 0
-        for ch in rev.upper():
-            rank = rank * 26 + (ord(ch) - ord("A") + 1)
-        return rank
-    return 0
+    rank = 0
+    for ch in rev:
+        rank = rank * 26 + (ord(ch) - ord("A") + 1)
+    return rank
 
 
 def revision_rank(stem):
@@ -58,6 +68,13 @@ def _sheet_token(stem):
         if _SHEET_TOKEN_RE.match(part):
             return part
     return None
+
+
+def sheet_token(stem):
+    """Public sheet suffix of a stem ('DWG2'), or None. Callers outside the
+    package (the workbook's NAME fallback) must use this instead of their own
+    copy of the rule."""
+    return _sheet_token(stem)
 
 
 def _sheet_winners(tied):

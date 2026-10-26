@@ -15,6 +15,8 @@ from fermi_organizer.graph import (
     planned_paths,
     revision_letter_rank,
     revision_rank,
+    revision_token,
+    sheet_token,
     snap_ref,
     split_superseded,
     used_on_bases,
@@ -561,3 +563,28 @@ def test_collect_reachable_bfs_cycles_and_self():
     assert collect_reachable(children, ["A", "X"]) == {"A", "B", "C", "X", "Y"}
     assert collect_reachable(children, []) == set()
     assert collect_reachable(children, ["MISSING"]) == {"MISSING"}
+
+
+def test_revision_token_accepts_two_letter_revisions():
+    # A..Z and AA..ZZ are revisions; CHK/DWG2/empty are not.
+    assert revision_token("F10126106_A") == "A"
+    assert revision_token("F10126106_AA") == "AA"
+    assert revision_token("F10126106_zz") == "ZZ"
+    assert revision_token("F10126106") == ""
+    assert revision_token("F10126106___") == ""
+    assert revision_token("F10126106_CHK") == ""
+    assert revision_token("F10126106_DWG2") == ""
+    assert revision_token("F10126106_AAA") == ""
+    # The rank and the token agree for every accepted token.
+    for stem in ("F1_A", "F1_Z", "F1_AA", "F1_AZ", "F1_ZZ"):
+        assert revision_letter_rank(stem) > 0
+        assert revision_token(stem) == stem.split("_")[1]
+
+
+def test_sheet_token_is_the_public_rule():
+    assert sheet_token("F10038961_A___DWG2") == "DWG2"
+    assert sheet_token("F10038961___DWG1_XML2347") == "DWG1"
+    assert sheet_token("F10038961_A") is None
+    # The workbook's old copy accepted any 'DWG<digits>' prefix; the shared
+    # rule is anchored, so a longer token is not a sheet.
+    assert sheet_token("F10038961_A_DWG12X") is None

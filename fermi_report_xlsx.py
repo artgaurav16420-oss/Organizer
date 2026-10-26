@@ -58,7 +58,11 @@ except ImportError:
 
 from fermi_organizer.config import canonical_stem  # noqa: E402
 from fermi_organizer.fsops import scan_output_tree  # noqa: E402
-from fermi_organizer.graph import revision_letter_rank  # noqa: E402
+from fermi_organizer.graph import (  # noqa: E402
+    revision_letter_rank,
+    revision_token,
+    sheet_token,
+)
 
 # ---------------------------------------------------------------- design tokens
 FONT = "Arial"
@@ -363,18 +367,12 @@ def _save_history(xlsx_path, rows, log=None):
 
 def _sheet_of(stem):
     """Sheet suffix of a stem ('DWG2' in 'F10126106_A___DWG2'), or None."""
-    for part in stem.split("_")[1:]:
-        if part.startswith("DWG") and part[3:].isdigit():
-            return part
-    return None
+    return sheet_token(stem)
 
 
 def _rev_of(stem):
     """Revision string of a stem ('A' in 'F10126106_A___DWG2'), or ''."""
-    parts = stem.split("_")
-    if len(parts) > 1 and parts[1].isalpha() and len(parts[1]) <= 2:
-        return parts[1]
-    return ""
+    return revision_token(stem)
 
 
 def _fallback_name(resolved, stem, index=None):

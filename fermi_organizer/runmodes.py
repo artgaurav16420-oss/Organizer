@@ -72,6 +72,7 @@ from .graph import (
     match_pdfs,
     planned_paths,
     revision_rank,
+    revision_token,
     snap_ref,
     split_superseded,
 )
@@ -254,7 +255,7 @@ def _titleblock_mismatches(titleblocks, log):
     out = []
     for stem, (fname, number, rev, name, scanned) in sorted(titleblocks.items()):
         parts = stem.split("_")
-        srev = parts[1] if len(parts) > 1 and len(parts[1]) == 1 else ""
+        srev = revision_token(stem)
         number_mismatch = bool(number) and number != parts[0]
         if number_mismatch and scanned and _edit1(number, parts[0]):
             number_mismatch = False
@@ -844,14 +845,14 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
             # then archive the old revision, then replace, then drop the old file.
             try:
                 os.makedirs(_native(sup_dir), exist_ok=True)
-                _staged_copy(new_pdf, staging)
+                _staged_copy(new_pdf, staging, output)
                 if archived:
                     # Atomic archive copy: a raw copy2 leaves a truncated PDF
                     # under a real _superseded/ name if the write dies halfway,
                     # and the next workbook lists that stub as a valid archived
                     # revision (_copy_atomic stages + os.replace, or removes its
                     # own staging file on failure).
-                    _copy_atomic(p, archive_target)
+                    _copy_atomic(p, archive_target, output)
                 os.replace(_native(staging), _native(target_new))
             except OSError as e:
                 if _exists(staging):
