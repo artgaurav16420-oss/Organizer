@@ -226,9 +226,12 @@ def test_swap_consults_islink_for_source_and_archive_destination(tmp_path,
 
     _swap_revision_files([old], new_pdf, sup, out, False, logged.append)
 
-    # The guard's two calls come first; shutil may add its own islink looks.
-    assert recorded[:2] == [fsops._native(old),
-                            fsops._native(sup / "F10126106.pdf")]
+    # The archive-directory guard runs first (it must, or an outside file can
+    # masquerade as the archive); the per-file guard still consults both the
+    # source copy and the archive destination.
+    assert fsops._native(sup) in recorded
+    assert fsops._native(old) in recorded
+    assert fsops._native(sup / "F10126106.pdf") in recorded
 
 
 def test_swap_refuses_dangling_archive_symlink(tmp_path):
@@ -271,3 +274,68 @@ def test_swap_refuses_dangling_archive_symlink(tmp_path):
     assert Path("\\\\?\\" + str(old)).exists()          # old copy untouched
     assert not outside.exists()                        # nothing written outside
     shutil.rmtree("\\\\?\\" + str(tmp_path), ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_swap_refuses_a_linked_archive_directory(tmp_path):
+    # A junction at _superseded/ pointing at an outside dir holding a
+    # byte-identical file makes resolve_archive_target report already=True, so
+    # the guarded copy is skipped and the tree's old revision would be unlinked
+    # with its only remaining copy outside the managed tree.
+    import shutil
+    import subprocess
+
+    out = tmp_path / "out"
+    (out / "1.1.2.0 WIDGET").mkdir(parents=True)
+    old = out / "1.1.2.0 WIDGET" / "F10126106_A.pdf"
+    old.write_bytes(b"old revision bytes")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy2(old, outside / "F10126106_A.pdf")
+    link = out / "_superseded"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    new_pdf = tmp_path / "F10126106_B.pdf"
+    new_pdf.write_bytes(b"new revision bytes")
+    logged = []
+    try:
+        moved, copies = _swap_revision_files([old], new_pdf, link, out, False,
+                                             logged.append)
+        assert moved == [] and copies == 0
+        assert old.read_bytes() == b"old revision bytes", "live revision was removed"
+        assert not (out / "F10126106_B.pdf").exists()
+        assert any("junction ancestor" in m for m in logged)
+    finally:
+        os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_copy_atomic_does_not_unlink_through_a_junction(tmp_path):
+    # A refused copy must not unlink a same-named staging file that already
+    # exists outside the tree: this call never created it.
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    link = root / "1.1.2.0 WIDGET"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+
+    src = tmp_path / "src.pdf"
+    src.write_bytes(b"bytes")
+    planted = outside / f"F10126106.pdf.copy_tmp.{os.getpid()}"
+    planted.write_bytes(b"not ours")
+    try:
+        with pytest.raises(OSError):
+            fsops._copy_atomic(src, link / "F10126106.pdf", root)
+        assert planted.exists(), "cleanup deleted a file outside the tree"
+    finally:
+        os.rmdir(link)

@@ -1947,13 +1947,13 @@ def test_symlink_guard_checks_through_native_prefix(tmp_path, monkeypatch):
     n = copy_watermarked_duplicates([src], tmp_path, False, logged.append)
 
     assert n == 1  # no real link here; the copy proceeds
-    # The guard's two calls come first; shutil.copy2/copystat may add its own
-    # islink(dst) look on top (dst is already prefixed, so that one is blind-
-    # proof too - but it never refuses the write, hence the guard).
-    assert recorded[:2] == [
-        fsops._native(src),
-        fsops._native(tmp_path / "_superseded" / "F10126106.pdf"),
-    ]
+    # The archive-directory guard runs first (a junction at _superseded/ must
+    # be refused before any existing copy is trusted); the per-file guard then
+    # consults the source and the destination. shutil.copy2/copystat may add
+    # its own islink(dst) look on top.
+    assert fsops._native(tmp_path / "_superseded") in recorded
+    assert fsops._native(src) in recorded
+    assert fsops._native(tmp_path / "_superseded" / "F10126106.pdf") in recorded
 
 
 def test_strip_ext_prefix_round_trips_both_forms():

@@ -443,16 +443,24 @@ def _copy_atomic(src, dst, stop=None):
     absent or complete; a failed attempt removes its own staging file. See
     _staged_copy for the symlink/race handling of the staging path and for
     `stop` (the output root that bounds the linked-ancestor check).
+
+    Cleanup only touches a staging file this call actually created (or, for
+    the legacy stop=None path, the pre-existing behaviour). Unlinking the
+    staging name after a refusal would follow a junction and could delete a
+    same-named file outside the tree that this copy never wrote.
     """
     tmp = dst.with_name(f"{dst.name}.copy_tmp.{os.getpid()}")
+    created = False
     try:
         _staged_copy(src, tmp, stop)
+        created = True
         os.replace(_native(tmp), _native(dst))
     except (OSError, ValueError):
-        try:
-            os.unlink(_native(tmp))
-        except OSError:
-            pass
+        if created or stop is None:
+            try:
+                os.unlink(_native(tmp))
+            except OSError:
+                pass
         raise
 
 
@@ -1101,6 +1109,13 @@ def copy_superseded(old, folder, dry_run, log, overwrite=False):
     n = 0
     archived = set()
     sf = folder / "_superseded"
+    if _has_linked_ancestor(sf, folder):
+        # A junction at _superseded/ makes an outside file look like the
+        # archive, so an existing-copy check would retire a source whose only
+        # copy is outside the managed tree. Refuse the whole directory.
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to archive: {sf}")
+        return 0, archived
     for stem, pdf in sorted(old.items()):
         target = sf / pdf.name
         if _islink(pdf) or _islink(target):
@@ -1151,6 +1166,10 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     n = 0
     sf = folder / "_superseded"
     planned = {}
+    if _has_linked_ancestor(sf, folder):
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to archive: {sf}")
+        return 0
     for p in sorted(paths):
         target = sf / p.name
         if _islink(p) or _islink(target):
@@ -1181,6 +1200,10 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
     n = 0
     renames = renames or {}
     orphans_dir = folder / "_orphans"
+    if _has_linked_ancestor(orphans_dir, folder):
+        log(f"  WARNING: _orphans/ traverses a symlinked/junction ancestor, "
+            f"refusing to park orphans: {orphans_dir}")
+        return 0
     for o in orphans:
         pdf = index.get(o)
         if pdf is None:

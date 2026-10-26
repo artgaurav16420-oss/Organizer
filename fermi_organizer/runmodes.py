@@ -34,6 +34,7 @@ from .fsops import (
     _copy_atomic,
     _ensure_lock,
     _exists,
+    _has_linked_ancestor,
     _islink,
     _native,
     _same_bytes,
@@ -804,6 +805,15 @@ def _swap_revision_files(old_paths, new_pdf, sup_dir, output, dry_run, log,
     run's tree."""
     moved = []
     copies = 0
+    if _has_linked_ancestor(sup_dir, output):
+        # A junction at _superseded/ can make an outside file look like the
+        # existing archive; resolve_archive_target would then report
+        # already=True, the guarded copy would be skipped, and the tree's old
+        # revision would be unlinked with its only copy outside the managed
+        # tree. Refuse the archive before touching anything.
+        log(f"  WARNING: _superseded/ traverses a symlinked/junction ancestor, "
+            f"refusing to supersede: {sup_dir}")
+        return moved, copies
     for p in old_paths:
         _ensure_lock(lock, log)
         target_old = sup_dir / p.name
