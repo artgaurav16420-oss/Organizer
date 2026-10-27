@@ -1937,3 +1937,14 @@ def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
         _used, name, _bom = extraction.OCR.analyze_page(opened[0])
     assert name is None
     extraction.OCR.reset(enabled=False)
+
+
+def test_pymupdf_layout_model_is_disabled():
+    # pymupdf 2.0 activates an ONNX layout model at import and find_tables()
+    # runs it per page (~4x the whole extraction cost). extraction.py clears it;
+    # this pins the side effect so a refactor cannot quietly re-enable it.
+    import pymupdf
+
+    import fermi_organizer.extraction  # noqa: F401  (import applies the guard)
+
+    assert not callable(getattr(pymupdf, "_get_layout", None))

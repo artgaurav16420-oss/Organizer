@@ -75,14 +75,16 @@ def test_cve_watch_parses_and_runs_with_stubbed_network():
     watch._open_watch_titles = lambda: []
     watch._track = lambda title, body: tracked.append(title)
     watch._get_json = lambda url: (
-        {"info": {"version": "2.0"}} if "pymupdf" in url
+        # A newer release than whatever is pinned: the drift path must stay
+        # exercised after a pin bump, so do not hard-code the current pin.
+        {"info": {"version": "99.0"}} if "pymupdf" in url
         else {"info": {"version": "3.1.5"}} if "openpyxl" in url
         else {"tag_name": "5.5.3"})
     watch._post_json = lambda url, payload: {"vulns": [
         {"id": "OSV-TEST-1", "summary": "test advisory"}]}
     watch.main()
-    # pymupdf 1.28.2 vs latest 2.0 -> pin-drift issue; openpyxl current; OSV hits.
-    assert any("PyMuPDF 2.0" in t for t in tracked)
+    # pinned pymupdf vs latest 99.0 -> pin-drift issue; openpyxl current; OSV hits.
+    assert any("PyMuPDF 99.0" in t for t in tracked)
     assert any("OSV-TEST-1" in t for t in tracked)
     assert not any("openpyxl 3.1.5 released" in t for t in tracked)
 
