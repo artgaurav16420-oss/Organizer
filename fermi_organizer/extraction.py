@@ -419,6 +419,14 @@ class _OcrContext:
                 # Read the parts-list rows only now: the recovered USED ON
                 # values are what tell a title-block parent number apart from a
                 # real row (see _partslist_from_words).
+                if name_missing and not _name_plausible(name):
+                    # The zoom pass found nothing better, so the 1-2 letter
+                    # read is cell noise rather than a part name. Drop it: an
+                    # empty NAME lets the parent's parts-list description fill
+                    # the gap, whereas publishing 'er' names the folder after
+                    # garbage (F10134685 read 'er' for 'SSR/650 CM LIFTING
+                    # INTERFACE ASSY').
+                    name = None
                 bom = _partslist_from_words(page, words, used)
                 result = (used, name, bom)
                 if not ev["used_on"] and used:
