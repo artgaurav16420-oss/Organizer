@@ -63,7 +63,33 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 
 ## Performance
 - A recent run passes (extracted release) now scans each PDF once per phase. Typical bottlenecks are still OCR and very large BOM fan-out.
-- Use `--jobs 4` (or your CPU count) for thousands of text PDFs; expect `jobs=2` and `jobs=1` to agree on results.
+- **Check logical cores first, then pass an explicit worker count.** Do not rely on `--jobs 0`: auto means *every* logical core, which leaves no headroom for the OCR subprocesses and the parent's report/workbook work.
+
+  ```powershell
+  # Windows
+  (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+  ```
+  ```bash
+  # Linux / macOS
+  nproc 2>/dev/null || sysctl -n hw.ncpu
+  ```
+  ```python
+  # either platform, using the project venv
+  python -c "import os; print(os.cpu_count())"
+  ```
+
+- **Assign about 75% of the logical cores**, rounded down, minimum 1, never above `MAX_JOBS` (256):
+
+  | Logical cores | `--jobs` |
+  |---|---|
+  | 4 | 3 |
+  | 8 | 6 |
+  | 12 | 9 |
+  | 16 | 12 |
+  | 32 | 24 |
+
+  A 16-core box therefore runs `--jobs 12`, not `--jobs 16`: the OCR passes spawn their own Tesseract children, and pinning every core makes the parent's report writing contend with the workers.
+- Expect `jobs=2` and `jobs=1` to agree on results; the worker count changes speed, never the plan.
 - Add `--no-ocr` when drawings are known to have text layers; otherwise OCR runs per scan and dominates runtime.
 - Prefer `--output "<input>/Output"` so later runs do not re-scan an organized tree as input.
 - A dry run with no output folder yet still processes scans and builds the workbook even though no text report is created until the folder exists.
@@ -77,7 +103,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. With nothing new it stops after a zero-count summary and touches nothing. When the batch has new PDFs, existing folders stay but their names are re-applied to this run's plan (a hand-titled folder is renamed back; a folder whose planned parent changed is moved), plus supersede swaps. |
 | `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
-| `--jobs N` | Extraction workers. `0` = auto (CPU count, default), `1` = serial. |
+| `--jobs N` | Extraction workers. Check logical cores first and pass about 75% of them (16 cores -> `12`); see **Performance**. `0` = auto = every logical core (no headroom, and capped at 256), `1` = serial. |
 | `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
 
 ## Exit codes
