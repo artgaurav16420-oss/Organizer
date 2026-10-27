@@ -59,14 +59,24 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    reverted, so say so to the user if the tree was curated by hand. Do not pass
    `--output`, `--incremental` or `--rekey-titleblock` with `--repair`.
 
-   **Skip the real run when the dry run reports nothing to do.** If all eight
-   counts are `0` (renamed, moved, copied, removed, emptied, adopted, promoted,
-   review), the tree is already on plan: the real run would re-extract every
-   drawing to reach the same conclusion and only rewrite the report and
-   workbook. The dry run has already written both artefacts, so quote its
-   numbers and stop. Run `--repair` for real only when at least one count is
-   non-zero, and re-run the dry run first if anything touched the tree in
-   between (another process, a manual rename, a copy in progress).
+   **Skip the real run when the dry run reports no action at all.** Two
+   conditions, both required:
+
+   1. all eight counts are `0` (renamed, moved, copied, removed, emptied,
+      adopted, promoted, review), and
+   2. the log contains no `[DRY-RUN]` action line and no
+      `Retired ... orphan copy(ies)` line.
+
+   The eight counters do not cover orphan retirement: a duplicate `_orphans/`
+   copy whose stem is already live in the tree is deleted by a pass that only
+   logs `[DRY-RUN] retire orphan copy: ...`, so counting alone would skip a
+   real deletion. When both conditions hold the tree is already on plan, the
+   real run would re-extract every drawing for the same conclusion, and the dry
+   run has already written the report and workbook — quote its numbers and stop.
+
+   Run `--repair` for real when anything above is non-empty, and re-run the dry
+   run first if something touched the tree in between (another process, a
+   manual rename, a copy in progress).
 
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
