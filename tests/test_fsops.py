@@ -2210,7 +2210,10 @@ def test_deep_folder_removal_uses_a_prefixed_root(tmp_path):
         fh.write(b"x")
     assert len(str(f)) > 260
 
-    with pytest.raises(OSError):
-        shutil.rmtree(str(deep))
-    shutil.rmtree(fsops._native_tree(deep))
+    # What must hold on any host: recursive removal starts from a prefixed
+    # root, and the tree is actually gone afterwards. (On a runner with long
+    # paths enabled plain rmtree also succeeds, so its failure is not asserted.)
+    prefixed = fsops._native_tree(deep)
+    assert prefixed.startswith("\\\\?\\"), "recursive ops must use a prefixed root"
+    shutil.rmtree(prefixed)
     assert not fsops._exists(deep)
