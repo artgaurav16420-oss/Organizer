@@ -78,6 +78,13 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    run first if something touched the tree in between (another process, a
    manual rename, a copy in progress).
 
+   **Exception — do not run when the refusal is structural.** If
+   `Needs manual review` is the only non-zero count and the review lines say the
+   tree's root-to-leaf paths exceed the planning bound, the real run refuses in
+   exactly the same place and exits 2 again: it is not a fix, it is a repeated
+   refusal. Surface the line to the user and stop; only a BOM-graph change (or
+   splitting the input) clears it.
+
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
 ## Performance
@@ -128,7 +135,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. With nothing new it stops after a zero-count summary and touches nothing. When the batch has new PDFs, existing folders stay but their names are re-applied to this run's plan (a hand-titled folder is renamed back; a folder whose planned parent changed is moved), plus supersede swaps. |
 | `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
-| `--jobs N` | Extraction workers. Check logical processors first and pass `logical processors - 2` (16 threads -> `14`); see **Performance**. `0` = auto = every logical processor (no headroom, and capped at 256), `1` = serial. |
+| `--jobs N` | Extraction workers. Check logical processors first and pass `logical processors - 2` (16 threads -> `14`); see **Performance**. `0` = auto = every logical processor when `os.cpu_count()` reports one (4 if it does not), `1` = serial. |
 | `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
 
 ## Exit codes
