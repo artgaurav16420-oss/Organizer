@@ -54,7 +54,11 @@ def _native_tree(path):
     short paths alone (callers compare them); this variant is for walking.
     """
     text = os.fspath(path)
-    if os.name != "nt" or text.startswith("\\\\?\\"):
+    if os.name != "nt":
+        return text
+    if not os.path.isabs(text):
+        text = os.path.abspath(text)
+    if text.startswith("\\\\?\\"):
         return text
     if text.startswith("\\\\"):
         return "\\\\?\\UNC\\" + text[2:]
@@ -1401,7 +1405,11 @@ def longest_dest_path(target_path, current):
     except OSError:
         return None
     if not entries:
-        return target_path
+        # An existing empty folder maps to the target itself. A folder that is
+        # not there at all (a virtual path after an earlier rename in this
+        # pass) cannot be measured: return None so callers refuse instead of
+        # assuming the shortest possible descendant.
+        return target_path if _exists(current) else None
     return max((target_path / e.relative_to(current) for e in entries),
                key=lambda p: len(str(p)))
 
@@ -1567,6 +1575,28 @@ def _subtree_link_or_unlistable(folder, any_link=True):
     return None
 
 
+def live_source(folder, moved_dirs):
+    """On-disk path holding the subtree that older will have this pass.
+
+    A folder moved earlier in the run exists only at its new name, so a later
+    step that reads the old path gets nothing. Follow moved_dirs back to the
+    key that produced this path: the subtree layout is unchanged by a move, so
+    lengths measured there are the lengths the destination will have.
+    Returns None when no on-disk source can be found (callers then refuse).
+    """
+    folder = Path(folder)
+    if _exists(folder):
+        return folder
+    items = moved_dirs.items() if moved_dirs else ()
+    for old, new in items:
+        new = Path(new)
+        if folder == new or folder.is_relative_to(new):
+            candidate = Path(old).joinpath(*folder.relative_to(new).parts)
+            if _exists(candidate):
+                return candidate
+    return None
+
+
 def refuse_linked_target(target, output, log, label):
     """True (and logged) when a planned destination traverses a link.
 
@@ -1607,7 +1637,8 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")
         return False
-    longest = longest_dest_path(target, folder)
+    source = live_source(folder, moved_dirs)
+    longest = longest_dest_path(target, source) if source is not None else None
     if longest is None:
         # Cannot list the subtree, so its deepest path is unknown; a move would
         # skip the MAX_PATH guard and could fail half-way. Refuse it.

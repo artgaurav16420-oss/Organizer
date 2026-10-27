@@ -36,6 +36,7 @@ from .fsops import (
     _exists,
     _has_linked_ancestor,
     _islink,
+    live_source,
     refuse_linked_target,
     _native,
     _native_tree,
@@ -961,6 +962,9 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                             log(f"  WARNING: copy failed for {c}: {e}")
                             shutil.rmtree(_native_tree(staging), ignore_errors=True)
                             continue
+                        except BaseException:
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+                            raise
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
                     copies += plan_copies
@@ -1064,10 +1068,14 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     # would, so the shared-folder guard is move-only and never blocks a copy:
     # a source folder holding foreign PDFs still lands whole under the target.
     longest = _longest_dest_path(target_path, current)
-    if longest is not None and len(str(longest)) > MAX_PATH:
-        log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
-            f"{longest}")
-        return 0
+    staging_name = f"{target_path.name}.copy_tmp.{os.getpid()}"
+    if longest is not None:
+        # The copy lands at a longer sibling name first, so bound that path too.
+        staged_len = len(str(longest)) + len(staging_name) - len(target_path.name)
+        if staged_len > MAX_PATH or len(str(longest)) > MAX_PATH:
+            log(f"  WARNING: path too long ({max(staged_len, len(str(longest)))} chars), "
+                f"skipping: {longest}")
+            return 0
     # Nested under a live parent: copy the whole subtree so the existing
     # parent keeps its copy. A failed copy is guarded below.
     if dry_run:
@@ -1083,7 +1091,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         # Stage beside the target and rename: the cleanup can then only ever
         # remove this run's own partial copy, never a tree another process
         # created at the target after the existence check.
-        staging = target_path.with_name(f"{target_path.name}.copy_tmp.{os.getpid()}")
+        staging = target_path.with_name(staging_name)
         try:
             shutil.copytree(str(current), str(staging), symlinks=True)
             os.replace(_native(staging), _native(target_path))
@@ -1132,7 +1140,10 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
         # full NAME can push a descendant past MAX_PATH ("WELDM" ->
         # "WELDMENT, FIELD" put a drawing at 260 chars), which then reads as
         # unreadable and makes every later repair refuse to touch it.
-        longest = longest_dest_path(target, folder)
+        # After an ancestor rename in this same pass the resolved folder is
+        # virtual; measure the subtree at the path that is still on disk.
+        source = live_source(folder, moved_dirs)
+        longest = longest_dest_path(target, source) if source is not None else None
         if longest is None:
             # Cannot measure the deepest descendant (the folder is virtual after
             # an earlier rename in this pass, or unlistable): refuse rather than
