@@ -59,11 +59,86 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    reverted, so say so to the user if the tree was curated by hand. Do not pass
    `--output`, `--incremental` or `--rekey-titleblock` with `--repair`.
 
+   **Skip the real run when the dry run reports no action at all.** Two
+   conditions, both required:
+
+   1. all eight counts are `0` (renamed, moved, copied, removed, emptied,
+      adopted, promoted, review), and
+   2. the log contains no `[DRY-RUN]` action line and no
+      `Retired ... orphan copy(ies)` line.
+
+   The eight counters do not cover orphan retirement: a duplicate `_orphans/`
+   copy whose stem is already live in the tree is deleted by a pass that only
+   logs `[DRY-RUN] retire orphan copy: ...`, so counting alone would skip a
+   real deletion. When both conditions hold the tree is already on plan and the
+   real run would re-extract every drawing for the same conclusion. The dry run
+   writes the report and workbook itself — but either write can fail with a
+   warning, so check the tail: if an artefact is missing, run the real pass;
+   otherwise quote the numbers and stop.
+
+   Run `--repair` for real when anything above is non-empty, and re-run the dry
+   run first if something touched the tree in between (another process, a
+   manual rename, a copy in progress).
+
+   **Exception — do not run when the refusal is structural and nothing else is
+   pending.** If `Needs manual review` is the only non-zero count, the review
+   lines say the tree's root-to-leaf paths exceed the planning bound, and the log
+   has no `[DRY-RUN]` action line, then the real run refuses in exactly the same
+   place and exits 2 again: it is not a fix, it is a repeated refusal. Surface
+   the line to the user and stop.
+
+   If the dry run also lists an action — typically `[DRY-RUN] retire orphan
+   copy: ...` — run for real instead: retirement does not depend on the refused
+   reconcile, so that pass completes the deletion and still exits 2 for the
+   review line.
+
+   Repair reads only the tree, so splitting the source input cannot clear this —
+   the tree's own BOM graph has to change (fewer drawings in the tree, or a full
+   run from a narrower input into a separate output).
+
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
 ## Performance
 - A recent run passes (extracted release) now scans each PDF once per phase. Typical bottlenecks are still OCR and very large BOM fan-out.
-- Use `--jobs 4` (or your CPU count) for thousands of text PDFs; expect `jobs=2` and `jobs=1` to agree on results.
+- **Check the logical-processor count first, then pass an explicit worker count.** Do not rely on `--jobs 0`: auto means *every* logical processor, which leaves no headroom for the OCR subprocesses and the parent's report/workbook work.
+
+  ```powershell
+  # Windows
+  (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+  ```
+  ```bash
+  # Linux / macOS
+  nproc 2>/dev/null || sysctl -n hw.ncpu
+  ```
+  ```python
+  # either platform, using the project venv
+  python -c "import os; print(os.cpu_count())"
+  ```
+
+  **Container caveat:** `os.cpu_count()` reports the *host's* processors, not a
+  cgroup quota, and `nproc` respects CPU affinity but not a CFS quota. On a
+  CPU-limited container or a shared CI runner, pass the limit explicitly
+  instead of deriving it (`--jobs 6` under an 8-CPU quota). On Linux with
+  affinity pinning, `len(os.sched_getaffinity(0))` is the honest count.
+
+- **Assign `logical processors - 2` workers** (logical processors = `os.cpu_count()`, i.e. two per physical core on SMT), minimum 1, never above `MAX_JOBS` (256):
+
+  | Logical processors | `--jobs` |
+  |---|---|
+  | 4 | 2 |
+  | 8 | 6 |
+  | 12 | 10 |
+  | 16 | 14 |
+  | 32 | 30 |
+
+  SMT hardware exposes two logical processors per physical core, so `-2` frees
+  one whole core for the parent process (report and workbook writing) and for an
+  OCR pass. It is a floor, not a guarantee: several workers can each hold a
+  Tesseract child at the same time, so a scanned-heavy batch can still
+  oversubscribe. If the machine feels loaded, drop a few more; on hardware
+  without SMT the same formula simply leaves two cores. A 16-thread box
+  (8 cores) therefore runs `--jobs 14`.
+- Expect `jobs=2` and `jobs=1` to agree on results; the worker count changes speed, never the plan.
 - Add `--no-ocr` when drawings are known to have text layers; otherwise OCR runs per scan and dominates runtime.
 - Prefer `--output "<input>/Output"` so later runs do not re-scan an organized tree as input.
 - A dry run with no output folder yet still processes scans and builds the workbook even though no text report is created until the folder exists.
@@ -77,7 +152,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. With nothing new it stops after a zero-count summary and touches nothing. When the batch has new PDFs, existing folders stay but their names are re-applied to this run's plan (a hand-titled folder is renamed back; a folder whose planned parent changed is moved), plus supersede swaps. |
 | `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
-| `--jobs N` | Extraction workers. `0` = auto (CPU count, default), `1` = serial. |
+| `--jobs N` | Extraction workers. Check logical processors first and pass `logical processors - 2` (16 threads -> `14`); see **Performance**. `0` = auto = every logical processor when `os.cpu_count()` reports one (4 if it does not), `1` = serial. |
 | `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
 
 ## Exit codes
