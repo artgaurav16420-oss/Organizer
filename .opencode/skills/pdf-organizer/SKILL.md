@@ -70,9 +70,11 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    The eight counters do not cover orphan retirement: a duplicate `_orphans/`
    copy whose stem is already live in the tree is deleted by a pass that only
    logs `[DRY-RUN] retire orphan copy: ...`, so counting alone would skip a
-   real deletion. When both conditions hold the tree is already on plan, the
-   real run would re-extract every drawing for the same conclusion, and the dry
-   run has already written the report and workbook — quote its numbers and stop.
+   real deletion. When both conditions hold the tree is already on plan and the
+   real run would re-extract every drawing for the same conclusion. The dry run
+   writes the report and workbook itself — but either write can fail with a
+   warning, so check the tail: if an artefact is missing, run the real pass;
+   otherwise quote the numbers and stop.
 
    Run `--repair` for real when anything above is non-empty, and re-run the dry
    run first if something touched the tree in between (another process, a
@@ -120,7 +122,13 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
   | 16 | 14 |
   | 32 | 30 |
 
-  SMT hardware exposes two logical processors per physical core, so `-2` frees **one whole core**: one logical processor for the parent process (report and workbook writing) and one for the Tesseract child an OCR pass spawns. On hardware without SMT the same formula leaves two cores free, which is still safe. A 16-thread box (8 cores) therefore runs `--jobs 14`.
+  SMT hardware exposes two logical processors per physical core, so `-2` frees
+  one whole core for the parent process (report and workbook writing) and for an
+  OCR pass. It is a floor, not a guarantee: several workers can each hold a
+  Tesseract child at the same time, so a scanned-heavy batch can still
+  oversubscribe. If the machine feels loaded, drop a few more; on hardware
+  without SMT the same formula simply leaves two cores. A 16-thread box
+  (8 cores) therefore runs `--jobs 14`.
 - Expect `jobs=2` and `jobs=1` to agree on results; the worker count changes speed, never the plan.
 - Add `--no-ocr` when drawings are known to have text layers; otherwise OCR runs per scan and dominates runtime.
 - Prefer `--output "<input>/Output"` so later runs do not re-scan an organized tree as input.
