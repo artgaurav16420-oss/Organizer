@@ -1906,3 +1906,31 @@ def test_extract_bom_entries_reports_an_unreadable_pdf(tmp_path):
     assert entries == []
     assert method == "skipped"
     assert issues and any("not a pdf" in m.lower() or m for m in issues)
+
+
+def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
+    # The zoom re-read runs when the full-page NAME looks wrong; when it finds
+    # nothing better the bad fragment must be dropped, not published. Real case:
+    # F10134685 read 'er' for 'SSR/650 CM LIFTING INTERFACE ASSY' and the
+    # orphan row carried 'er' as the part name.
+    import pymupdf
+
+    p = tmp_path / "F10134686.pdf"
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(str(p))
+    doc.close()
+
+    monkeypatch.setattr(extraction.OCR, "available", True)
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "words_cached",
+                        lambda page, issues=None, page_label="": [(0, 0, 10, 10, "X", 0, 0, 0)])
+    # Full-page pass reads the fragment; the zoom pass recovers nothing.
+    monkeypatch.setattr(extraction, "_title_fields_from_words",
+                        lambda words: ([], "er", None))
+    monkeypatch.setattr(extraction, "_ocr_words_zoom", lambda *a, **k: [])
+
+    with pymupdf.open(str(p)) as opened:
+        _used, name, _bom = extraction.OCR.analyze_page(opened[0])
+    assert name is None
+    extraction.OCR.reset(enabled=False)
