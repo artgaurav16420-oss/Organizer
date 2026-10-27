@@ -949,3 +949,35 @@ def test_diagnostic_sheets_link_the_file_they_name(tmp_path):
     # Missing exists precisely because there is no file to open.
     assert wb["Missing"]["A2"].hyperlink is None
 
+
+def test_diagnostic_links_prefer_the_active_copy_over_the_archive(tmp_path):
+    # A superseded twin shares the canonical stem, and _superseded/ sorts
+    # before the drawing folder: the link must still open the live revision.
+    out = tmp_path / "out"
+    (out / "F10126106 Assembly").mkdir(parents=True)
+    (out / "F10126106 Assembly" / "F10126106___DWG1.pdf").write_bytes(b"%PDF")
+    (out / "_superseded").mkdir()
+    (out / "_superseded" / "F10126106---DWG1.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [],
+        "chk": [],
+        "orphans": [],
+        "roots": [("F10126106___DWG1", [])],
+        "mismatches": [],
+        "report_txt": "",
+        "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    assert (wb["Roots"]["A2"].hyperlink.target
+            == "F10126106 Assembly/F10126106___DWG1.pdf")
+

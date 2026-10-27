@@ -231,14 +231,17 @@ def _stem_linker(live, output):
     drawing, which is worse than no link.
     """
     targets = {}
-    for pdf in sorted(list(live["tree"]) + list(live["sup"]) + list(live["orph"]),
-                      key=lambda q: str(q).lower()):
-        target = _file_link(pdf, output)
-        if not target:
-            continue
-        for key in (canonical_stem(pdf.stem), pdf.stem):
-            if key:
-                targets.setdefault(key.upper(), target)
+    # Active copies first, then parked orphans, then the archive: a superseded
+    # twin shares the canonical stem, and sorting by path alone puts
+    # `_superseded/` first, so the links would open the old revision.
+    for group in (live["tree"], live["orph"], live["sup"]):
+        for pdf in sorted(group, key=lambda q: str(q).lower()):
+            target = _file_link(pdf, output)
+            if not target:
+                continue
+            for key in (canonical_stem(pdf.stem), pdf.stem):
+                if key:
+                    targets.setdefault(key.upper(), target)
 
     def link(stem):
         return targets.get(str(stem).upper()) if stem else None
