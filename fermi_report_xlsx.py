@@ -221,6 +221,38 @@ def _file_link(path, output):
         return _file_uri(path)
 
 
+def _stem_linker(live, output, enabled=True):
+    """stem -> hyperlink target for every PDF the live tree scan found.
+
+    `enabled` False returns a lookup that never matches: a dry run over a
+    separate input describes PDFs the tree does not hold yet, so the scan only
+    finds the previous run's copy and a link would open the wrong drawing.
+
+    The diagnostic sheets name a drawing, not a path, so they had nothing to
+    point at. Keys are the canonical stem, which unifies the `---` and `___`
+    spellings of the same drawing, plus the raw stem. A stem that matches no
+    file stays plain text: guessing a same-base sheet would link the wrong
+    drawing, which is worse than no link.
+    """
+    targets = {}
+    # Active copies first, then parked orphans, then the archive: a superseded
+    # twin shares the canonical stem, and sorting by path alone puts
+    # `_superseded/` first, so the links would open the old revision.
+    for group in ((live["tree"], live["orph"], live["sup"]) if enabled else ()):
+        for pdf in sorted(group, key=lambda q: str(q).lower()):
+            target = _file_link(pdf, output)
+            if not target:
+                continue
+            for key in (canonical_stem(pdf.stem), pdf.stem):
+                if key:
+                    targets.setdefault(key.upper(), target)
+
+    def link(stem):
+        return targets.get(str(stem).upper()) if stem else None
+
+    return link
+
+
 def _rel(path, output):
     try:
         return str(Path(path).relative_to(Path(output)))
@@ -297,12 +329,13 @@ def _inert_text(cell):
 
 
 def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
-           link_first=None, empty="Nothing to show", note=None, first_bold=True,
-           max_width=MAX_COL_WIDTH):
+           link_first=None, link_cols=None, empty="Nothing to show", note=None,
+           first_bold=True, max_width=MAX_COL_WIDTH):
     """Generic list sheet: header row 1, zebra rows from row 2, optional pills.
 
     rows: list of value lists.  pills: {col_index: palette | callable(row)->palette}
     link_first: optional callable(row_index, row)->target for column 1.
+    link_cols: {column_index: callable(cell_value)->target} for any column.
     """
     aligns = aligns or ["left"] * len(headers)
     _hdr(ws, headers, widths, tab=tab, aligns=aligns)
@@ -332,6 +365,10 @@ def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
             target = link_first(ri - 2, vals)
             if target:
                 _link(ws.cell(row=ri, column=1), target, bold=True)
+        for ci, make in (link_cols or {}).items():
+            target = make(vals[ci - 1])
+            if target:
+                _link(ws.cell(row=ri, column=ci), target, bold=True)
     if rows:
         ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}{len(rows) + 1}"
         _autofit(ws, ncols, len(rows), widths, max_width)
@@ -553,6 +590,12 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
 
     counters = ctx.get("counters", {})
     live = _scan_tree(ctx.get("output", ""))
+    mode = str(ctx.get("run_mode", ""))
+    # Repair reads the tree it reports on, so its dry run can link. A plain or
+    # incremental dry run reads a separate input while the tree is unchanged,
+    # so a diagnostic row describes a PDF that the link would not open.
+    stale_tree = mode.endswith("DRY-RUN") and not mode.startswith("REPAIR")
+    links = _stem_linker(live, ctx.get("output", ""), enabled=not stale_tree)
     missing_pairs = sorted(set(ctx.get("missing", [])))
     extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
     raw_names = _prior_names(path)
@@ -561,14 +604,14 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
 
     _dash_sheet(dash, ctx, counters, live, missing_pairs)
     _missing_sheet(missing, missing_pairs, names)
-    _chk_sheet(chk, ctx, names)
-    _scanned_sheet(scanned_ws, ctx, names)
-    _watermark_sheet(watermark_ws, ctx, names)
+    _chk_sheet(chk, ctx, names, links)
+    _scanned_sheet(scanned_ws, ctx, names, links)
+    _watermark_sheet(watermark_ws, ctx, names, links)
     _orphans_sheet(orph, ctx, names, live)
     _superseded_sheet(superseded, live, ctx.get("output", ""))
-    _roots_sheet(roots_ws, ctx, names)
-    _mismatch_sheet(mism_ws, ctx, names)
-    _titleblock_sheet(tb_ws, ctx, names)
+    _roots_sheet(roots_ws, ctx, names, links)
+    _mismatch_sheet(mism_ws, ctx, names, links)
+    _titleblock_sheet(tb_ws, ctx, names, links)
     _files_sheet(files, ctx, names, live)
     _history_sheet(hist, ctx, counters, missing_pairs, path, log)
 
@@ -812,20 +855,21 @@ def _missing_sheet(missing, missing_pairs, names):
                  "(incremental is enough).", "red"))
 
 
-def _chk_sheet(chk, ctx, names):
+def _chk_sheet(chk, ctx, names, link):
     rows = [[s, names.get(s, "") or "-", "Unapproved",
              "Replace with approved DWG from Teamcenter"]
             for s in sorted(set(ctx.get("chk", [])))]
     _table(chk, ["Stem (current file)", "Name", "Status", "Action"],
            (30, 38, 16, 48), rows, tab="amber", pills={3: "amber"},
            aligns=["left", "left", "center", "left"],
+           link_cols={1: link},
            empty="No unapproved CHK drawings",
            note=("About this sheet",
                  "CHK drawings are unapproved check prints. When the approved DWG arrives "
                  "in an input folder it supersedes the CHK automatically.", "amber"))
 
 
-def _scanned_sheet(scanned_ws, ctx, names):
+def _scanned_sheet(scanned_ws, ctx, names, link):
     data = ctx.get("scanned", [])  # [(stem, [pages]), ...]
     rows = []
     for stem, pages in sorted(data, key=lambda t: t[0]):
@@ -834,18 +878,20 @@ def _scanned_sheet(scanned_ws, ctx, names):
         rows.append([stem, names.get(stem, "") or "-", pages_txt])
     _table(scanned_ws, ["Stem (scanned PDF)", "Name", "OCR page(s)"], (30, 44, 18), rows,
            tab="blue", aligns=["left", "left", "center"], pills={3: "blue"},
+           link_cols={1: link},
            empty="No scanned (image-only) PDFs",
            note=("About this sheet",
                  "Image-only (scanned) PDFs whose text was read via OCR. OCR is "
                  "best-effort: verify the BOM of these drawings by eye.", "blue"))
 
 
-def _watermark_sheet(watermark_ws, ctx, names):
+def _watermark_sheet(watermark_ws, ctx, names, link):
     data = ctx.get("watermarks", [])  # [(stem, evidence), ...]
     rows = [[stem, names.get(stem, "") or "-", evidence or "-"]
             for stem, evidence in sorted(data, key=lambda t: t[0])]
     _table(watermark_ws, ["Stem (watermarked PDF)", "Name", "Evidence"], (30, 40, 52), rows,
-           tab="amber", empty="No watermarked PDFs detected",
+           tab="amber", link_cols={1: link},
+           empty="No watermarked PDFs detected",
            note=("About this sheet",
                  "Best-effort detection: watermark layer, transparent/diagonal/light "
                  "large text, or a watermark keyword.", "amber"))
@@ -886,19 +932,21 @@ def _superseded_sheet(superseded, live, output):
                  "copies are archived here, never deleted. Click a name to open.", "grey"))
 
 
-def _roots_sheet(roots_ws, ctx, names):
+def _roots_sheet(roots_ws, ctx, names, link):
     data = ctx.get("roots", [])  # [(stem, [used_on...]), ...]
     rows = [[stem, names.get(stem, ""), ", ".join(sorted(set(used))) or "-"]
             for stem, used in sorted(data, key=lambda t: t[0])]
     _table(roots_ws, ["Root drawing", "Name", "USED ON (parent drawings if any)"],
-           (26, 40, 60), rows, tab="green", empty="No root assemblies in this run",
+           (26, 40, 60), rows, tab="green",
+           link_cols={1: link},
+           empty="No root assemblies in this run",
            note=("About this sheet",
                  "Top-level assemblies of the tree. USED ON files belong to parent "
                  "assemblies - download them from Teamcenter if not already in the tree "
                  "(check the Files sheet).", "green"))
 
 
-def _mismatch_sheet(mism_ws, ctx, names):
+def _mismatch_sheet(mism_ws, ctx, names, link):
     mism_data = ctx.get("mismatches", [])  # [(parent, child, actual_list|str), ...]
     bug_data = ctx.get("used_on_bugs", [])  # [(parent, child), ...]
     rows = []
@@ -908,7 +956,9 @@ def _mismatch_sheet(mism_ws, ctx, names):
         rows.append([pstem, names.get(pstem, ""), cstem, names.get(cstem, ""), actual or "-"])
     ncols = _table(mism_ws, ["Parent drawing", "Parent name", "Child part", "Child name",
                              "Child USED ON (actual)"], (26, 40, 26, 40, 44), rows,
-                   tab="amber", empty="No BOM / USED ON mismatches",
+                   tab="amber",
+                   link_cols={1: link, 3: link},
+                   empty="No BOM / USED ON mismatches",
                    note=("About this sheet",
                          "Top table: the parent's BOM lists a part but that part's USED ON "
                          "omits the parent - verify the USED ON number.\n\nLower table "
@@ -953,15 +1003,20 @@ def _mismatch_sheet(mism_ws, ctx, names):
             c.border = ROW_BORDER
             c.font = _font(10, ci == 1, INK)
             c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        for ci, stem in ((1, pstem), (3, cstem)):
+            target = link(stem)
+            if target:
+                _link(mism_ws.cell(row=r, column=ci), target, bold=True)
     return ncols
 
 
-def _titleblock_sheet(tb_ws, ctx, names):
+def _titleblock_sheet(tb_ws, ctx, names, link):
     data = ctx.get("titleblock_mismatches", [])  # [(stem, field, filename, tb)]
     rows = [[stem, names.get(stem, "") or "-", field, fval, tval]
             for stem, field, fval, tval in sorted(data, key=lambda t: t[0])]
     _table(tb_ws, ["Stem (current file)", "Name", "Field", "In filename", "In title block"],
            (30, 34, 12, 26, 26), rows, tab="amber", pills={3: "amber"},
+           link_cols={1: link},
            aligns=["left", "left", "center", "left", "left"],
            empty="Every filename agrees with its title block",
            note=("About this sheet",

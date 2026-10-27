@@ -100,7 +100,7 @@ def test_chk_sheet_builder(tmp_path):
     ws = wb.active
     ws.title = "CHK"
     fx._chk_sheet(ws, {"chk": ["F10126107__CHK"]},
-                  {"F10126107__CHK": "Bad part"})
+                  {"F10126107__CHK": "Bad part"}, lambda stem: None)
     assert ws["A2"].value == "F10126107__CHK"
     assert ws["B2"].value == "Bad part"
 
