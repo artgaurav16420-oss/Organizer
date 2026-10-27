@@ -1398,20 +1398,29 @@ def longest_dest_path(target_path, current):
     place_files guards every target against MAX_PATH; the folder-level MAX_DIR
     check alone does not bound descendant files, which fail mid-copy on
     Windows and force partial-tree cleanup. Returns None when `current` cannot
-    be listed (callers treat that as "do not act").
+    be listed in full (callers treat that as "do not act").
+
+    os.walk with onerror, not rglob: rglob swallows a scandir error and reports
+    an unreadable subtree as empty, which reads as "shortest possible path" and
+    lets a rename pass MAX_PATH unnoticed.
     """
-    try:
-        entries = list(current.rglob("*"))
-    except OSError:
+    longest = None
+    errors = []
+    for dirpath, dirnames, filenames in os.walk(current, onerror=errors.append):
+        for name in dirnames + filenames:
+            entry = Path(dirpath) / name
+            candidate = target_path / entry.relative_to(current)
+            if longest is None or len(str(candidate)) > len(str(longest)):
+                longest = candidate
+    if errors:
         return None
-    if not entries:
-        # An existing empty folder maps to the target itself. A folder that is
-        # not there at all (a virtual path after an earlier rename in this
-        # pass) cannot be measured: return None so callers refuse instead of
-        # assuming the shortest possible descendant.
-        return target_path if _exists(current) else None
-    return max((target_path / e.relative_to(current) for e in entries),
-               key=lambda p: len(str(p)))
+    if longest is not None:
+        return longest
+    # An existing empty folder maps to the target itself. A folder that is
+    # not there at all (a virtual path after an earlier rename in this pass)
+    # cannot be measured: return None so callers refuse instead of assuming
+    # the shortest possible descendant.
+    return target_path if _exists(current) else None
 
 
 def _folder_removable(folder, planned_by_stem, output):
@@ -1576,25 +1585,35 @@ def _subtree_link_or_unlistable(folder, any_link=True):
 
 
 def live_source(folder, moved_dirs):
-    """On-disk path holding the subtree that older will have this pass.
+    r"""On-disk path holding the subtree that `folder` will have this pass.
 
     A folder moved earlier in the run exists only at its new name, so a later
-    step that reads the old path gets nothing. Follow moved_dirs back to the
-    key that produced this path: the subtree layout is unchanged by a move, so
-    lengths measured there are the lengths the destination will have.
-    Returns None when no on-disk source can be found (callers then refuse).
+    step that reads the old path gets nothing. Undo the recorded moves
+    newest-first until a path lands on disk: one hop is not enough, because a
+    folder can be relocated twice in a pass (a move, then a rename of its new
+    name), leaving the intermediate path virtual too. The subtree layout is
+    unchanged by a move, so lengths measured there are the lengths the
+    destination will have. Returns None when no on-disk source can be found
+    (callers then refuse rather than guess).
     """
     folder = Path(folder)
     if _exists(folder):
         return folder
-    items = moved_dirs.items() if moved_dirs else ()
-    for old, new in items:
-        new = Path(new)
-        if folder == new or folder.is_relative_to(new):
-            candidate = Path(old).joinpath(*folder.relative_to(new).parts)
-            if _exists(candidate):
-                return candidate
-    return None
+    moves = [(Path(old), Path(new))
+             for old, new in (moved_dirs.items() if moved_dirs else ())]
+    seen = {folder}
+    while True:
+        for old, new in reversed(moves):
+            if folder == new or folder.is_relative_to(new):
+                folder = old.joinpath(*folder.relative_to(new).parts)
+                break
+        else:
+            return None
+        if _exists(folder):
+            return folder
+        if folder in seen:
+            return None
+        seen.add(folder)
 
 
 def refuse_linked_target(target, output, log, label):

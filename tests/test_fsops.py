@@ -2222,3 +2222,62 @@ def test_deep_folder_removal_uses_a_prefixed_root(tmp_path):
     assert prefixed.startswith("\\\\?\\"), "recursive ops must use a prefixed root"
     shutil.rmtree(prefixed)
     assert not fsops._exists(deep)
+
+
+def test_longest_dest_path_refuses_an_unlistable_subtree(tmp_path, monkeypatch):
+    # rglob swallows a scandir error and reports an unreadable folder as empty,
+    # which reads as "shortest possible path" and lets a rename pass MAX_PATH
+    # unnoticed. The walk must report the hole instead of guessing.
+    folder = tmp_path / "SRC"
+    (folder / "deep").mkdir(parents=True)
+    (folder / "deep" / "F10126106.pdf").write_bytes(b"%PDF-1.4\n")
+    real = os.scandir
+
+    def blind(path):
+        if os.path.basename(str(path)) == "deep":
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", blind)
+    assert fsops.longest_dest_path(tmp_path / "DST", folder) is None
+
+
+def test_longest_dest_path_keeps_the_empty_and_missing_folder_answers(tmp_path):
+    # The refusal above must not swallow the two legitimate answers: an empty
+    # folder maps to the target itself, and a folder that is not on disk (a
+    # path a dry run has already renamed away) is unknown.
+    empty = tmp_path / "EMPTY"
+    empty.mkdir()
+    assert fsops.longest_dest_path(tmp_path / "DST", empty) == tmp_path / "DST"
+    assert fsops.longest_dest_path(tmp_path / "DST", tmp_path / "GONE") is None
+
+
+def test_live_source_undoes_a_chain_of_relocations(tmp_path):
+    # A folder relocated twice in one pass (moved, then its new name renamed)
+    # leaves the planned path virtual twice over. Undoing a single hop lands on
+    # an intermediate that is not on disk, so a dry run would refuse a rename
+    # the real run performs.
+    root = tmp_path / "out"
+    (root / "A" / "SUB").mkdir(parents=True)
+    (root / "A" / "SUB" / "F10126106.pdf").write_bytes(b"%PDF-1.4\n")
+    moves = fsops.FolderMoves()
+    moves[root / "A"] = root / "B"
+    moves[root / "B"] = root / "C"
+
+    planned = root / "C" / "SUB"
+    assert not planned.exists()
+    assert fsops.live_source(planned, moves) == root / "A" / "SUB"
+
+
+def test_live_source_returns_none_for_a_move_cycle(tmp_path):
+    # A cycle (or a path that no recorded move explains) must refuse rather
+    # than loop: callers then skip the mutation.
+    root = tmp_path / "out"
+    (root / "A").mkdir(parents=True)
+    moves = fsops.FolderMoves()
+    moves[root / "A"] = root / "B"
+    moves[root / "B"] = root / "A"
+
+    assert fsops.live_source(root / "B" / "X", moves) is None
+    assert fsops.live_source(root / "NOWHERE", moves) is None
+
