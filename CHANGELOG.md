@@ -6,20 +6,17 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ### Breaking: Python 3.11 floor, and PyMuPDF 2.0
 
-- **
-equires-python is now >=3.11.** Python 3.10 reached end of life on
+- **Requires-python is now >=3.11.** Python 3.10 reached end of life on
   2026-10-01, and the fixed PyMuPDF release requires 3.11 anyway. CI runs Ubuntu
   3.11 and 3.12 plus Windows 3.11. Users on 3.10 must upgrade.
 - **pymupdf==2.0** — the first release containing the CVE-2026-82035 fix, so
   the wheel no longer names an affected version and no longer downgrades an
   environment that already has 2.0. The runtime dependency closure grows from
-  three distributions to fifteen (onnxruntime, 
-umpy, 
-etworkx,
-  protobuf, latbuffers, pyyaml, psutil, 	abulate, pymupdf4llm,
+  three distributions to fifteen (onnxruntime, numpy, networkx,
+  protobuf, flatbuffers, pyyaml, psutil, tabulate, pymupdf4llm,
   pymupdf-layout, packaging); THIRD_PARTY_NOTICES.md names every one.
 - **The ONNX layout model is disabled at import.** 2.0 runs it inside every
-  ind_tables() call: measured on 100 real drawings, 245.2 s with the model
+  find_tables() call: measured on 100 real drawings, 245.2 s with the model
   versus 47.1 s without (1.28.2 was 55.1 s). extraction.py clears
   pymupdf._get_layout behind a callable() guard.
 - **Text extraction drifts slightly.** Same 100 drawings against 1.28.2: 98
