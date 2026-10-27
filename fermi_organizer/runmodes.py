@@ -1118,9 +1118,17 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
         if folder.name == wanted:
             continue
         target = folder.parent / wanted
-        if len(str(target)) > MAX_PATH:
+        # Check the deepest file, not just the folder: renaming a folder to its
+        # full NAME can push a descendant past MAX_PATH ("WELDM" ->
+        # "WELDMENT, FIELD" put a drawing at 260 chars), which then reads as
+        # unreadable and makes every later repair refuse to touch it.
+        longest = longest_dest_path(target, folder)
+        too_long = len(str(target)) > MAX_PATH or (
+            longest is not None and len(str(longest)) > MAX_PATH)
+        if too_long:
+            shown = longest if longest is not None else target
             log(f"  WARNING: {stem}: folder name not normalized "
-                f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
+                f"(path too long, {len(str(shown))} chars): {target.relative_to(output)}")
             continue
         if _exists(target):
             log(f"  WARNING: {stem}: folder name not normalized "

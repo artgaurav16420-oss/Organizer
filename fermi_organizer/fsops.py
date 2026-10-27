@@ -45,6 +45,16 @@ def _islink(path):
     return treescan.islink(path)
 
 
+def _isfile(path):
+    """os.path.isfile that sees beyond MAX_PATH (Path.is_file goes blind)."""
+    return os.path.isfile(_native(path))
+
+
+def _isdir(path):
+    """os.path.isdir that sees beyond MAX_PATH (Path.is_dir goes blind)."""
+    return os.path.isdir(_native(path))
+
+
 def _has_linked_ancestor(path, stop):
     """True if any component between (exclusive) stop and path is a link.
 
@@ -1398,9 +1408,9 @@ def _folder_removable(folder, planned_by_stem, output):
         # A symlink (live or broken) or any other non-PDF entry is a manual
         # addition: is_file() is False for a broken or directory symlink, and
         # omitting one would let the folder be removed around it.
-        if not _islink(path) and path.is_dir():
+        if not _islink(path) and _isdir(path):
             continue
-        if _islink(path) or not path.is_file():
+        if _islink(path) or not _isfile(path):
             return False, f"holds non-PDF entry {path.name}"
         if path.suffix.lower() != ".pdf":
             return False, f"holds non-PDF file {path.name}"

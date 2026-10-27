@@ -2161,3 +2161,31 @@ def test_copystat_failure_leaves_no_staging_file(tmp_path, monkeypatch):
         fsops._copy_atomic(src, dst, tmp_path)
     assert not list(dst.parent.glob("*.copy_tmp.*")), "staging file left behind"
     assert not dst.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="long-path behaviour is Windows-specific")
+def test_folder_removable_sees_files_past_max_path(tmp_path):
+    # Path.is_file() is blind past 260 chars, so a real PDF in a deep folder
+    # read as a "non-PDF entry" and repair refused to prune a verified
+    # duplicate (F10010058 sat at 260 chars after a rename).
+    root = tmp_path / "out"
+    root.mkdir()
+    name = "F10126106_A_DWG1.pdf"
+    # Folder just under the 248-char directory limit so rglob can list it; the
+    # file inside then crosses 260.
+    pad = 246 - len(str(root)) - 1
+    deep = root / ("d" * pad)
+    deep.mkdir()
+    f = deep / name
+    assert len(str(f)) > 260, (len(str(f)), str(f))
+    with open(fsops._native(f), "wb") as fh:
+        fh.write(b"same bytes")
+    assert not f.is_file()            # Path is blind here
+    assert fsops._isfile(f)           # the native-aware helper is not
+
+    planned = {"F10126106_A_DWG1": [("PLANNED",)]}
+    (root / "PLANNED").mkdir()
+    (root / "PLANNED" / name).write_bytes(b"same bytes")
+
+    ok, reason = fsops._folder_removable(deep, planned, root)
+    assert ok, reason
