@@ -2255,6 +2255,23 @@ def dup_meta_task(pdf_path):
     return out + (OCR.event_delta(before),)
 
 
+def _drop_parent_refs(entries, used):
+    """Drop BOM rows whose value is the drawing's own USED ON parent.
+
+    A drawing's BOM lists children; USED ON names its parent. A number that
+    appears in both is the parts-list / title-block boundary bleeding (its own
+    parent read as a child row), and keeping it creates a parent<->child cycle:
+    F10119064 carries USED ON F10126007 and, under pymupdf 2.0's text geometry,
+    also emitted F10126007 as a positional BOM row. The OCR path already passes
+    the recovered USED ON into _partslist_from_words for exactly this reason;
+    this is the same rule for the text path.
+    """
+    parents = {v for v in (used or ()) if v}
+    if not parents:
+        return entries
+    return [e for e in entries if e[0] not in parents]
+
+
 def survey_task(pdf_path):
     """Open one PDF and extract BOM, USED ON, title block, name, watermark,
     scanned state, and issues in a single pass.
@@ -2290,6 +2307,7 @@ def survey_task(pdf_path):
                     name = extract_drawing_name(doc)
                     scanned = _doc_is_scanned(doc)
                     used = _strip_self_ref(extract_used_on(doc), pdf_path)
+                    entries = _drop_parent_refs(entries, used)
                     out = ("ok", entries, method, used, issues, watermark,
                            number, rev, name, scanned)
     except (RuntimeError, OSError, ValueError,
