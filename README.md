@@ -136,6 +136,16 @@ read via OCR), Watermark, Orphans, Superseded, Roots (root drawings and their
 `USED ON`), USED ON check (BOM vs `USED ON` mismatches in both directions), Title
 block check (filename vs the drawing's own title block), Files, Run History.
 
+The sheets that list drawings (Files, Orphans, Superseded, CHK, Scanned,
+Watermark, Roots, USED ON check, Title block check) link each row to its PDF, so
+it can be opened straight from the workbook. A drawing stays plain text when no
+file in the tree carries its stem, or when the relative target would exceed
+Excel's 255-character hyperlink limit. Missing, Dashboard and Run History carry
+no drawing links. A link opens what is in the tree now: `--repair`
+and `--repair --dry-run` link every resolvable sheet because they read that
+tree, while a `--dry-run` leaves the review sheets plain since a row can
+describe an input PDF the tree does not hold yet.
+
 ## How placement works
 
 - **BOM only.** A child is placed under a parent because the parent's parts list

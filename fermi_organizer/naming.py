@@ -4,6 +4,7 @@ import os
 import re
 from collections import Counter
 
+from . import treescan
 from .config import (
     MAX_PATH,
     NAME_SHORTEN_MAX_PASSES,
@@ -139,7 +140,7 @@ def _placement_len(comps, base_folder, index, get_name):
     for c in comps:
         parts.append(get_name(c))
     parts.append(index[comps[-1]].name)
-    return len(os.sep.join(parts))
+    return treescan.path_units(os.sep.join(parts))
 
 
 def _shorten_names(placements, names, get_name, total_len):

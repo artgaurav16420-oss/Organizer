@@ -1330,8 +1330,8 @@ def _adopt_org_children_below(starts, new_children, org_children_of,
                 log(f"  WARNING: organized-child adoption truncated at depth {depth} "
                     f"in {folder.name} - manual review")
                 continue
-            if len(str(folder)) > MAX_DIR:
-                log(f"  WARNING: path too long ({len(str(folder))} chars), skipping "
+            if path_units(folder) > MAX_DIR:
+                log(f"  WARNING: path too long ({path_units(folder)} chars), skipping "
                     f"organized-child adoption: {folder}")
                 continue
             if not dry_run and not _exists(folder):

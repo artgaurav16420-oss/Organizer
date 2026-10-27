@@ -9,6 +9,7 @@ import pytest
 import fermi_report_xlsx as fx
 from fermi_organizer import fsops, runmodes
 from fermi_organizer.runmodes import (
+    _adopt_org_children_below,
     _adopt_one_org_child,
     _copy_org_child_tree,
     _detect_supersede_pairs,
@@ -624,4 +625,24 @@ def test_superseding_copy_keeps_the_tuple_contract(tmp_path, make_pdf,
         ["F10126106"], organized, {"F10126106": ["F10126107"]},
         ["F10126106", "F10126107"], out, False, {}, lambda m: None)
     assert (moves, copies) == (0, 0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
+def test_organized_child_adoption_counts_utf16_units(tmp_path, monkeypatch):
+    # MAX_DIR is a Windows limit too, so the folder guard must count UTF-16
+    # units: 20 astral characters are 20 code points and 40 units, and the
+    # limit placed between the two must still refuse the folder.
+    out = tmp_path / "out"
+    folder = out / ("\U0001F600" * 20)
+    folder.mkdir(parents=True)
+    code_points = len(str(folder))
+    units = len(str(folder).encode("utf-16-le")) // 2
+    monkeypatch.setattr("fermi_organizer.runmodes.MAX_DIR", code_points + 5)
+    assert code_points + 5 < units
+
+    logged = []
+    copies, moves = _adopt_org_children_below(
+        {"F10126106": folder}, {}, {}, {}, {}, {}, {}, out, True, logged.append)
+    assert (copies, moves) == (0, 0)
+    assert any("path too long" in m for m in logged)
 
