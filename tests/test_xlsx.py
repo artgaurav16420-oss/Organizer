@@ -918,7 +918,7 @@ def test_diagnostic_sheets_link_the_file_they_name(tmp_path):
     path = tmp_path / "organize_fermi_report.xlsx"
     ctx = {
         "output": str(out),
-        "run_mode": "DRY-RUN",
+        "run_mode": "EXECUTE",
         "run_time": "2026-09-30T12:00:00",
         "counters": {"scanned": 3, "roots": 1, "copies": 0,
                      "cycles": 0, "warnings": 0},
@@ -961,7 +961,7 @@ def test_diagnostic_links_prefer_the_active_copy_over_the_archive(tmp_path):
     path = tmp_path / "organize_fermi_report.xlsx"
     ctx = {
         "output": str(out),
-        "run_mode": "DRY-RUN",
+        "run_mode": "EXECUTE",
         "run_time": "2026-09-30T12:00:00",
         "counters": {"scanned": 1, "roots": 1, "copies": 0,
                      "cycles": 0, "warnings": 0},
@@ -980,4 +980,64 @@ def test_diagnostic_links_prefer_the_active_copy_over_the_archive(tmp_path):
     wb = load_workbook(path)
     assert (wb["Roots"]["A2"].hyperlink.target
             == "F10126106 Assembly/F10126106___DWG1.pdf")
+
+
+def test_dry_run_over_a_separate_input_does_not_link_the_stale_tree(tmp_path):
+    # A plain dry run reads an input folder while the output tree still holds
+    # the previous run's copy: the diagnostic row describes the input PDF, so a
+    # link to the tree copy would open an older drawing.
+    out = tmp_path / "out"
+    (out / "F10126106 Assembly").mkdir(parents=True)
+    (out / "F10126106 Assembly" / "F10126106.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [],
+        "chk": [],
+        "orphans": [],
+        "roots": [("F10126106", [])],
+        "mismatches": [],
+        "report_txt": "",
+        "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    assert wb["Roots"]["A2"].hyperlink is None
+    # The Files sheet still links: it reports the tree itself.
+    assert wb["Files"]["A2"].hyperlink is not None
+
+
+def test_repair_dry_run_links_the_tree_copy(tmp_path):
+    # Repair reads the tree it reports on, so its dry run is not stale.
+    out = tmp_path / "out"
+    (out / "F10126106 Assembly").mkdir(parents=True)
+    (out / "F10126106 Assembly" / "F10126106.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "REPAIR (DRY-RUN)",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 1, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [],
+        "chk": [],
+        "orphans": [],
+        "roots": [("F10126106", [])],
+        "mismatches": [],
+        "report_txt": "",
+        "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    assert wb["Roots"]["A2"].hyperlink is not None
 

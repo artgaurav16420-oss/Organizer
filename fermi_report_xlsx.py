@@ -221,8 +221,12 @@ def _file_link(path, output):
         return _file_uri(path)
 
 
-def _stem_linker(live, output):
+def _stem_linker(live, output, enabled=True):
     """stem -> hyperlink target for every PDF the live tree scan found.
+
+    `enabled` False returns a lookup that never matches: a dry run over a
+    separate input describes PDFs the tree does not hold yet, so the scan only
+    finds the previous run's copy and a link would open the wrong drawing.
 
     The diagnostic sheets name a drawing, not a path, so they had nothing to
     point at. Keys are the canonical stem, which unifies the `---` and `___`
@@ -234,7 +238,7 @@ def _stem_linker(live, output):
     # Active copies first, then parked orphans, then the archive: a superseded
     # twin shares the canonical stem, and sorting by path alone puts
     # `_superseded/` first, so the links would open the old revision.
-    for group in (live["tree"], live["orph"], live["sup"]):
+    for group in ((live["tree"], live["orph"], live["sup"]) if enabled else ()):
         for pdf in sorted(group, key=lambda q: str(q).lower()):
             target = _file_link(pdf, output)
             if not target:
@@ -586,7 +590,12 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
 
     counters = ctx.get("counters", {})
     live = _scan_tree(ctx.get("output", ""))
-    links = _stem_linker(live, ctx.get("output", ""))
+    mode = str(ctx.get("run_mode", ""))
+    # Repair reads the tree it reports on, so its dry run can link. A plain or
+    # incremental dry run reads a separate input while the tree is unchanged,
+    # so a diagnostic row describes a PDF that the link would not open.
+    stale_tree = mode.endswith("DRY-RUN") and not mode.startswith("REPAIR")
+    links = _stem_linker(live, ctx.get("output", ""), enabled=not stale_tree)
     missing_pairs = sorted(set(ctx.get("missing", [])))
     extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
     raw_names = _prior_names(path)
