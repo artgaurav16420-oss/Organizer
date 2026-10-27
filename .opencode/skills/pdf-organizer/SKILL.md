@@ -87,6 +87,12 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
   python -c "import os; print(os.cpu_count())"
   ```
 
+  **Container caveat:** `os.cpu_count()` reports the *host's* processors, not a
+  cgroup quota, and `nproc` respects CPU affinity but not a CFS quota. On a
+  CPU-limited container or a shared CI runner, pass the limit explicitly
+  instead of deriving it (`--jobs 6` under an 8-CPU quota). On Linux with
+  affinity pinning, `len(os.sched_getaffinity(0))` is the honest count.
+
 - **Assign `logical processors - 2` workers** (logical processors = `os.cpu_count()`, i.e. two per physical core on SMT), minimum 1, never above `MAX_JOBS` (256):
 
   | Logical processors | `--jobs` |
