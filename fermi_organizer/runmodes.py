@@ -37,6 +37,7 @@ from .fsops import (
     _has_linked_ancestor,
     _islink,
     live_source,
+    path_units,
     refuse_linked_target,
     _native,
     _native_tree,
@@ -1078,9 +1079,10 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         return 0
     staging_name = f"{target_path.name}.copy_tmp.{os.getpid()}"
     # The copy lands at a longer sibling name first, so bound that path too.
-    staged_len = len(str(longest)) + len(staging_name) - len(target_path.name)
-    if staged_len > MAX_PATH or len(str(longest)) > MAX_PATH:
-        log(f"  WARNING: path too long ({max(staged_len, len(str(longest)))} chars), "
+    staged_len = (path_units(longest) + path_units(staging_name)
+                  - path_units(target_path.name))
+    if staged_len > MAX_PATH or path_units(longest) > MAX_PATH:
+        log(f"  WARNING: path too long ({max(staged_len, path_units(longest))} chars), "
             f"skipping: {longest}")
         return 0
     # Nested under a live parent: copy the whole subtree so the existing
@@ -1138,6 +1140,20 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
     # Parents first: a child renamed before its ancestor leaves `moved_dirs`
     # pointing inside the ancestor's old path (resolved by the chain helper).
     candidates.sort(key=lambda item: (len(item[1].parts), item[0], str(item[1])))
+    # Measuring walks the whole source subtree. A sheet set shares one folder,
+    # so every sheet adds a candidate for it, and a refused rename is retried
+    # for the next sheet: without a cache normalization goes quadratic in the
+    # folder's file count.
+    measured = {}
+
+    def measure(target, source):
+        if source is None:
+            return None
+        key = (str(source), str(target))
+        if key not in measured:
+            measured[key] = longest_dest_path(target, source)
+        return measured[key]
+
     for stem, path, wanted in candidates:
         folder = _resolve_moved_folder(path.parent, moved_dirs)
         if folder.name == wanted:
@@ -1149,8 +1165,7 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
         # unreadable and makes every later repair refuse to touch it.
         # After an ancestor rename in this same pass the resolved folder is
         # virtual; measure the subtree at the path that is still on disk.
-        source = live_source(folder, moved_dirs)
-        longest = longest_dest_path(target, source) if source is not None else None
+        longest = measure(target, live_source(folder, moved_dirs))
         if longest is None:
             # Cannot measure the deepest descendant (the folder is virtual after
             # an earlier rename in this pass, or unlistable): refuse rather than
@@ -1158,9 +1173,9 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
             log(f"  WARNING: {stem}: folder name not normalized "
                 f"(cannot measure the deepest path): {target.relative_to(output)}")
             continue
-        if len(str(target)) > MAX_PATH or len(str(longest)) > MAX_PATH:
+        if path_units(target) > MAX_PATH or path_units(longest) > MAX_PATH:
             log(f"  WARNING: {stem}: folder name not normalized "
-                f"(path too long, {len(str(longest))} chars): {target.relative_to(output)}")
+                f"(path too long, {path_units(longest)} chars): {target.relative_to(output)}")
             continue
         if _exists(target):
             log(f"  WARNING: {stem}: folder name not normalized "
@@ -1235,8 +1250,8 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
             log(f"  WARNING: {c}: cannot measure the source folder, skipping move "
                 f"(manual review): {target_path.relative_to(output)}")
             return 0, 0
-        if len(str(longest)) > MAX_PATH:
-            log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
+        if path_units(longest) > MAX_PATH:
+            log(f"  WARNING: path too long ({path_units(longest)} chars), skipping: "
                 f"{longest}")
             return 0, 0
         if dry_run:

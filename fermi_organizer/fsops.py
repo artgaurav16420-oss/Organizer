@@ -67,6 +67,11 @@ def _native_tree(path):
     return text
 
 
+def path_units(path):
+    """Length in the units MAX_PATH counts (see treescan.path_units)."""
+    return treescan.path_units(path)
+
+
 def _isfile(path):
     """os.path.isfile that sees beyond MAX_PATH (Path.is_file goes blind)."""
     return os.path.isfile(_native(path))
@@ -551,8 +556,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                              for child in reversed(kids))
                 continue
             # Dir path checked against MAX_DIR, full target against MAX_PATH.
-            if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
-                log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
+            if path_units(current_folder) > MAX_DIR or path_units(target) > MAX_PATH:
+                log(f"  WARNING: path too long ({path_units(target)} chars), skipping: {target}")
                 skipped_count += count_copies(stem)
                 continue
             if dry_run:
@@ -1674,8 +1679,8 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: cannot list source folder, skipping move "
             f"(manual review): {target.relative_to(output)}")
         return False
-    if len(str(longest)) > MAX_PATH:
-        log(f"  WARNING: {stem}: path too long ({len(str(longest))} chars), "
+    if path_units(longest) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({path_units(longest)} chars), "
             f"skipping move: {target}")
         return False
     if dry_run:
@@ -1703,8 +1708,8 @@ def _place_copy(stem, organized, target, output, dry_run, log, lock):
     live = [p for p in organized.get(stem, []) if p.exists()]
     src = pick_shallowest(live or organized[stem])
     dst = target / src.name
-    if len(str(target)) > MAX_DIR or len(str(dst)) > MAX_PATH:
-        log(f"  WARNING: {stem}: path too long ({len(str(dst))} chars), "
+    if path_units(target) > MAX_DIR or path_units(dst) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({path_units(dst)} chars), "
             f"skipping: {dst}")
         return False
     if dry_run:

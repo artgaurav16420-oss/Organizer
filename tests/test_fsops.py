@@ -2321,3 +2321,11 @@ def test_folder_removable_refuses_a_junction_when_path_checks_are_blind(
     finally:
         os.rmdir(link)
 
+
+def test_path_units_counts_utf16_code_units_on_windows():
+    # MAX_PATH is a UTF-16 limit: an astral character is one code point but two
+    # units, so a code-point count passes paths the OS then rejects.
+    name = "\U0001F600" * 4
+    assert fsops.path_units(name) == (8 if os.name == "nt" else 4)
+    assert fsops.path_units("F10126106") == 9
+

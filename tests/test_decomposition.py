@@ -1,4 +1,5 @@
 """Characterization suite: cycle e2e, workbook, supersede/move helpers, orphan flow."""
+import os
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from fermi_organizer.runmodes import (
     _detect_supersede_pairs,
     _move_children_under_superseding,
     _place_above_organized_children,
+    normalize_folder_names,
     run_full,
 )
 
@@ -505,4 +507,67 @@ def test_adopt_one_org_child_refuses_an_unmeasurable_move(tmp_path, make_pdf,
     assert (copies, moves) == (0, 0)
     assert any("cannot measure" in m for m in logged)
     assert top.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
+def test_copy_guard_counts_utf16_units(tmp_path, make_pdf, monkeypatch):
+    # A supplementary-plane character is one code point but two UTF-16 units.
+    # The limit is placed between the two counts: a code-point guard copies to
+    # a path the OS rejects, a unit-aware one refuses it.
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+
+    target = out / ("\U0001F600" * 30)
+    target_path = target / "F10126107 Child"
+    deepest = target_path / "F10126107.pdf"
+    # The copy is staged under a longer sibling name first, so a code-point
+    # guard already trips on that suffix. Place the limit above it and below the
+    # UTF-16 count, so only unit-aware accounting can refuse this copy.
+    cp = len(str(deepest))
+    units = len(str(deepest).encode("utf-16-le")) // 2
+    staging_extra = (len(f"{target_path.name}.copy_tmp.{os.getpid()}")
+                     - len(target_path.name))
+    limit = cp + staging_extra + 1
+    monkeypatch.setattr("fermi_organizer.runmodes.MAX_PATH", limit)
+    assert limit < units
+
+    logged = []
+    copies = _copy_org_child_tree("F10126107", target, organized, {}, out,
+                                  False, logged.append)
+    assert copies == 0
+    assert any("path too long" in m for m in logged)
+
+
+def test_normalize_measures_a_shared_folder_once(tmp_path, make_pdf,
+                                                 monkeypatch):
+    # A sheet set shares one folder (one candidate per sheet). A refused rename
+    # is retried for the next sheet, so measuring per candidate walks the same
+    # subtree once per file.
+    out = tmp_path / "out"
+    folder = out / "OLD"
+    folder.mkdir(parents=True)
+    paths = []
+    for sheet in ("", "___DWG1", "___DWG2"):
+        path = folder / f"F10126106{sheet}.pdf"
+        make_pdf(path, ["NAME", "Part"])
+        paths.append(path)
+    organized = {"F10126106": paths}
+
+    calls = []
+    real = runmodes.longest_dest_path
+
+    def spy(target, current):
+        calls.append(str(current))
+        return real(target, current)
+
+    monkeypatch.setattr(runmodes, "longest_dest_path", spy)
+    logged = []
+    renamed = normalize_folder_names(organized, {"F10126106": "X" * 200}, out,
+                                     True, logged.append, {})
+    assert renamed == 0
+    assert any("path too long" in m for m in logged)
+    assert len(calls) == 1, calls
 

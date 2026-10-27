@@ -35,6 +35,21 @@ def islink(path):
     return os.path.islink(native(path))
 
 
+def path_units(path):
+    """Length of `path` in the units MAX_PATH counts.
+
+    MAX_PATH is a UTF-16 limit: a supplementary-plane character is one code
+    point but two units, so len(str(path)) undercounts and a guard built on it
+    can pass a path the OS then rejects. POSIX limits are not code points
+    either, but byte and character counts share the ordering this guard needs,
+    so the measured length there stays the character count.
+    """
+    text = os.fspath(path)
+    if os.name != "nt":
+        return len(text)
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
 def strip_ext_prefix(path):
     r"""Remove the `\\?\` / `\\?\UNC\` prefix `native` adds to long paths.
 
