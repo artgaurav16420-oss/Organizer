@@ -958,7 +958,13 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                         try:
                             shutil.copytree(str(child_folder), str(staging),
                                             symlinks=True)
-                            os.replace(_native(staging), _native(target_path))
+                        except FileExistsError:
+                            # A PID can be reused and a crashed run can leave a
+                            # partial tree at this name: it is not ours to
+                            # delete or merge into.
+                            log(f"  WARNING: {c}: staging path already present, "
+                                f"skipping copy (manual review): {staging.name}")
+                            return 0
                         except OSError as e:
                             log(f"  WARNING: copy failed for {c}: {e}")
                             shutil.rmtree(_native_tree(staging), ignore_errors=True)
@@ -966,6 +972,12 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                         except BaseException:
                             shutil.rmtree(_native_tree(staging), ignore_errors=True)
                             raise
+                        try:
+                            os.replace(_native(staging), _native(target_path))
+                        except OSError as e:
+                            log(f"  WARNING: copy failed for {c}: {e}")
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+                            continue
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
                     copies += plan_copies
@@ -1014,9 +1026,9 @@ def _current_folder_of(stem, organized, output, moved_dirs):
     return _resolve_moved_folder(old_folder, moved_dirs)
 
 
-def _longest_dest_path(target_path, current):
+def _longest_dest_path(target_path, current, cache=None):
     """Longest file path the copy of `current` under `target_path` would create."""
-    return longest_dest_path(target_path, current)
+    return longest_dest_path(target_path, current, cache)
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
@@ -1103,7 +1115,12 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         staging = target_path.with_name(staging_name)
         try:
             shutil.copytree(str(current), str(staging), symlinks=True)
-            os.replace(_native(staging), _native(target_path))
+        except FileExistsError:
+            # Not created by this call (a reused PID, a crashed run): it is
+            # not ours to delete, and merging into it would mix two trees.
+            log(f"  WARNING: {c}: staging path already present, skipping copy "
+                f"(manual review): {staging.name}")
+            return 0
         except OSError as e:
             log(f"  WARNING: copy failed for {c}: {e}")
             shutil.rmtree(_native_tree(staging), ignore_errors=True)
@@ -1111,6 +1128,12 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
         except BaseException:
             shutil.rmtree(_native_tree(staging), ignore_errors=True)
             raise
+        try:
+            os.replace(_native(staging), _native(target_path))
+        except OSError as e:
+            log(f"  WARNING: copy failed for {c}: {e}")
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+            return 0
     return sum(1 for paths in organized.values() for p in paths
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
@@ -1144,15 +1167,15 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
     # so every sheet adds a candidate for it, and a refused rename is retried
     # for the next sheet: without a cache normalization goes quadratic in the
     # folder's file count.
+    # One walk per directory for the whole pass: a sheet set adds a candidate
+    # per sheet and a refused rename is retried for the next one, and nested
+    # folders overlap, so uncached measuring is quadratic in the tree.
     measured = {}
 
     def measure(target, source):
         if source is None:
             return None
-        key = (str(source), str(target))
-        if key not in measured:
-            measured[key] = longest_dest_path(target, source)
-        return measured[key]
+        return longest_dest_path(target, source, measured)
 
     for stem, path, wanted in candidates:
         folder = _resolve_moved_folder(path.parent, moved_dirs)

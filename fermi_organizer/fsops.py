@@ -1397,7 +1397,50 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
     return removed
 
 
-def longest_dest_path(target_path, current):
+def _deepest_relative(folder, cache):
+    """Deepest entry under `folder`, as a path relative to it.
+
+    Path('.') when the folder is empty, None when it cannot be listed in full
+    (callers treat that as "do not act"). Cached per directory, so a pass that
+    measures nested folders lists each one once: measuring a parent fills in
+    every child on the way down.
+    """
+    folder = Path(folder)
+    if folder in cache:
+        return cache[folder]
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except OSError:
+        cache[folder] = None
+        return None
+    best = None
+    for entry in entries:
+        rel = Path(entry.name)
+        try:
+            is_dir = entry.is_dir()
+        except OSError:
+            cache[folder] = None
+            return None
+        if is_dir:
+            sub = _deepest_relative(Path(entry.path), cache)
+            if sub is None:
+                cache[folder] = None
+                return None
+            if sub.parts:
+                rel = rel / sub
+        # Selection is by the unit MAX_PATH counts. Picking the longest by code
+        # points can choose an ASCII path while a sibling of fewer code points
+        # but more UTF-16 units is the one that breaks the limit.
+        if best is None or path_units(rel) > path_units(best):
+            best = rel
+    if best is None:
+        best = Path(".")
+    cache[folder] = best
+    return best
+
+
+def longest_dest_path(target_path, current, cache=None):
     """Longest file path a copy of `current` under `target_path` would create.
 
     place_files guards every target against MAX_PATH; the folder-level MAX_DIR
@@ -1405,27 +1448,14 @@ def longest_dest_path(target_path, current):
     Windows and force partial-tree cleanup. Returns None when `current` cannot
     be listed in full (callers treat that as "do not act").
 
-    os.walk with onerror, not rglob: rglob swallows a scandir error and reports
-    an unreadable subtree as empty, which reads as "shortest possible path" and
-    lets a rename pass MAX_PATH unnoticed.
+    os.scandir with an explicit error check, not rglob: rglob swallows a scandir
+    error and reports an unreadable subtree as empty, which reads as "shortest
+    possible path" and lets a rename pass MAX_PATH unnoticed.
     """
-    longest = None
-    errors = []
-    for dirpath, dirnames, filenames in os.walk(current, onerror=errors.append):
-        for name in dirnames + filenames:
-            entry = Path(dirpath) / name
-            candidate = target_path / entry.relative_to(current)
-            if longest is None or len(str(candidate)) > len(str(longest)):
-                longest = candidate
-    if errors:
+    rel = _deepest_relative(current, {} if cache is None else cache)
+    if rel is None:
         return None
-    if longest is not None:
-        return longest
-    # An existing empty folder maps to the target itself. A folder that is
-    # not there at all (a virtual path after an earlier rename in this pass)
-    # cannot be measured: return None so callers refuse instead of assuming
-    # the shortest possible descendant.
-    return target_path if _exists(current) else None
+    return target_path / rel
 
 
 def _folder_removable(folder, planned_by_stem, output):

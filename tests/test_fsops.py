@@ -2329,3 +2329,19 @@ def test_path_units_counts_utf16_code_units_on_windows():
     assert fsops.path_units(name) == (8 if os.name == "nt" else 4)
     assert fsops.path_units("F10126106") == 9
 
+
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
+def test_longest_dest_path_selects_by_utf16_units(tmp_path):
+    # Fewer code points can still be the longer path in UTF-16 units, and units
+    # are what MAX_PATH counts: selecting by len() picks the wrong entry and
+    # then reports a length no guard will ever compare.
+    folder = tmp_path / "SRC"
+    (folder / "ascii").mkdir(parents=True)
+    (folder / "ascii" / ("a" * 40)).write_bytes(b"x")
+    (folder / "emoji").mkdir()
+    astral = "\U0001F600" * 30
+    (folder / "emoji" / astral).write_bytes(b"x")
+
+    longest = fsops.longest_dest_path(tmp_path / "DST", folder)
+    assert longest.name == astral
+

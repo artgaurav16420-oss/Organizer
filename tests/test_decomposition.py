@@ -452,7 +452,7 @@ def test_copy_org_child_tree_refuses_an_unmeasurable_source(tmp_path, make_pdf,
     make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
     organized = {"F10126107": [child_folder / "F10126107.pdf"]}
     monkeypatch.setattr("fermi_organizer.runmodes.longest_dest_path",
-                        lambda target, current: None)
+                        lambda target, current, cache=None: None)
 
     logged = []
     copies = _copy_org_child_tree("F10126107", out / "NewParent", organized,
@@ -476,9 +476,9 @@ def test_copy_org_child_tree_measures_the_live_source(tmp_path, make_pdf,
     seen = []
     real = runmodes.longest_dest_path
 
-    def spy(target, current):
+    def spy(target, current, cache=None):
         seen.append(current)
-        return real(target, current)
+        return real(target, current, cache)
 
     monkeypatch.setattr(runmodes, "longest_dest_path", spy)
     logged = []
@@ -498,7 +498,7 @@ def test_adopt_one_org_child_refuses_an_unmeasurable_move(tmp_path, make_pdf,
     make_pdf(top / "F10126107.pdf", ["NAME", "Child part"])
     organized = {"F10126107": [top / "F10126107.pdf"]}
     monkeypatch.setattr("fermi_organizer.runmodes.longest_dest_path",
-                        lambda target, current: None)
+                        lambda target, current, cache=None: None)
 
     logged = []
     copies, moves = _adopt_one_org_child(
@@ -541,33 +541,60 @@ def test_copy_guard_counts_utf16_units(tmp_path, make_pdf, monkeypatch):
     assert any("path too long" in m for m in logged)
 
 
-def test_normalize_measures_a_shared_folder_once(tmp_path, make_pdf,
-                                                 monkeypatch):
-    # A sheet set shares one folder (one candidate per sheet). A refused rename
-    # is retried for the next sheet, so measuring per candidate walks the same
-    # subtree once per file.
+def test_normalize_walks_each_directory_once(tmp_path, make_pdf, monkeypatch):
+    # A sheet set adds a candidate per sheet and a refused rename is retried for
+    # the next one; nested folders overlap those subtrees. Each directory must
+    # be listed once for the whole pass, or normalization is quadratic.
     out = tmp_path / "out"
-    folder = out / "OLD"
-    folder.mkdir(parents=True)
+    top = out / "OLD"
+    sub = top / "SUB"
+    sub.mkdir(parents=True)
     paths = []
     for sheet in ("", "___DWG1", "___DWG2"):
-        path = folder / f"F10126106{sheet}.pdf"
+        path = sub / f"F10126106{sheet}.pdf"
         make_pdf(path, ["NAME", "Part"])
         paths.append(path)
-    organized = {"F10126106": paths}
+    make_pdf(top / "F10126107.pdf", ["NAME", "Top part"])
+    organized = {"F10126106": paths, "F10126107": [top / "F10126107.pdf"]}
+    names = {"F10126106": "X" * 200, "F10126107": "Y" * 200}
 
-    calls = []
-    real = runmodes.longest_dest_path
+    seen = []
+    real = os.scandir
 
-    def spy(target, current):
-        calls.append(str(current))
-        return real(target, current)
+    def spy(path):
+        seen.append(str(path))
+        return real(path)
 
-    monkeypatch.setattr(runmodes, "longest_dest_path", spy)
+    monkeypatch.setattr(os, "scandir", spy)
     logged = []
-    renamed = normalize_folder_names(organized, {"F10126106": "X" * 200}, out,
-                                     True, logged.append, {})
+    renamed = normalize_folder_names(organized, names, out, True, logged.append,
+                                     {})
     assert renamed == 0
     assert any("path too long" in m for m in logged)
-    assert len(calls) == 1, calls
+    assert len(seen) == len(set(seen)), seen
+    assert len(set(seen)) == 2, seen
+
+
+def test_copy_org_child_tree_leaves_a_preexisting_staging_tree(tmp_path, make_pdf):
+    # A PID can be reused and a crashed run can leave a partial tree at the
+    # staging name. A failed copytree must not delete it: it is not ours.
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+    target_folder = out / "NewParent"
+    target_folder.mkdir()
+    staging = target_folder / f"F10126107 Child.copy_tmp.{os.getpid()}"
+    staging.mkdir()
+    marker = staging / "from_a_crashed_run.pdf"
+    marker.write_bytes(b"%PDF-1.4\nkeep")
+
+    logged = []
+    copies = _copy_org_child_tree("F10126107", target_folder, organized, {},
+                                  out, False, logged.append)
+    assert copies == 0
+    assert marker.is_file(), "a staging tree this run did not create was deleted"
+    assert any("staging path already present" in m for m in logged)
+    assert not (target_folder / "F10126107 Child").exists()
 
