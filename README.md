@@ -136,6 +136,12 @@ read via OCR), Watermark, Orphans, Superseded, Roots (root drawings and their
 `USED ON`), USED ON check (BOM vs `USED ON` mismatches in both directions), Title
 block check (filename vs the drawing's own title block), Files, Run History.
 
+Every sheet except Missing links each drawing to its PDF, so a row can be opened
+straight from the workbook. A link opens what is in the tree now: a `--dry-run`
+over a separate input folder leaves the review sheets plain, because their rows
+describe input PDFs the tree does not hold yet, while `--repair --dry-run` links
+every sheet since it reads the tree itself.
+
 ## How placement works
 
 - **BOM only.** A child is placed under a parent because the parent's parts list

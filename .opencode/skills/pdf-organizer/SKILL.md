@@ -191,7 +191,7 @@ Skipped roots are usually "bag" drawings such as procurement-kit lists, not real
 
 ## Report to the user
 
-From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles broken, PDF copies written; then the CHK list, missing BOM references, orphans and USED ON bugs; then the two artifact paths (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`).
+From the printed run output, state: PDFs scanned, root assemblies, BOM edges, cycles broken, PDF copies written; then the CHK list, missing BOM references, orphans and USED ON bugs; then the two artifact paths (`organize_fermi_pdfs_report_*.txt` and `organize_fermi_report.xlsx`). The workbook links every sheet except Missing to its drawing, so say whether the links are live: they are on a real run and on `--repair --dry-run`, and they are suppressed on a plain or incremental dry run because those rows describe input PDFs the tree does not hold yet.
 
 Flag these: USED ON bugs, a large orphan count, `WARNING: in-place run`, OCR reading many PDFs, any `copy failed` or `path too long` warning, and any placement refusal.
 
