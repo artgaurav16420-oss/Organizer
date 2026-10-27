@@ -1445,7 +1445,7 @@ def _folder_removable(folder, planned_by_stem, output):
         # correctness over performance on this destructive path.
         ok = False
         for t in targets:
-            if _islink(t) or t == path or not t.exists():
+            if _islink(t) or t == path or not _exists(t):
                 continue
             if _has_linked_ancestor(t, output):
                 continue

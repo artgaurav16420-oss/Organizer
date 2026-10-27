@@ -946,12 +946,20 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     elif refuse_linked_target(target_path, output, log, c):
                         continue
                     else:
+                        # Copy into a PID-named sibling and rename into place:
+                        # a failed copy then cleans up only its own staging, and
+                        # os.replace fails if another process created the target
+                        # after the existence check (deleting theirs would be
+                        # data loss).
+                        staging = target_path.with_name(
+                            f"{target_path.name}.copy_tmp.{os.getpid()}")
                         try:
-                            shutil.copytree(str(child_folder), str(target_path),
+                            shutil.copytree(str(child_folder), str(staging),
                                             symlinks=True)
+                            os.replace(_native(staging), _native(target_path))
                         except OSError as e:
                             log(f"  WARNING: copy failed for {c}: {e}")
-                            shutil.rmtree(_native_tree(target_path), ignore_errors=True)
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
                             continue
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
@@ -1072,19 +1080,20 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
             return 0
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
-        copied = False
+        # Stage beside the target and rename: the cleanup can then only ever
+        # remove this run's own partial copy, never a tree another process
+        # created at the target after the existence check.
+        staging = target_path.with_name(f"{target_path.name}.copy_tmp.{os.getpid()}")
         try:
-            shutil.copytree(str(current), str(target_path), symlinks=True)
-            copied = True
+            shutil.copytree(str(current), str(staging), symlinks=True)
+            os.replace(_native(staging), _native(target_path))
         except OSError as e:
             log(f"  WARNING: copy failed for {c}: {e}")
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
             return 0
-        finally:
-            # The target did not exist before this call, so any failure past
-            # OSError (KeyboardInterrupt, ...) must not leave a partial tree
-            # that later runs mistake for a placed child.
-            if not copied:
-                shutil.rmtree(_native_tree(target_path), ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+            raise
     return sum(1 for paths in organized.values() for p in paths
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
@@ -1124,12 +1133,16 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
         # "WELDMENT, FIELD" put a drawing at 260 chars), which then reads as
         # unreadable and makes every later repair refuse to touch it.
         longest = longest_dest_path(target, folder)
-        too_long = len(str(target)) > MAX_PATH or (
-            longest is not None and len(str(longest)) > MAX_PATH)
-        if too_long:
-            shown = longest if longest is not None else target
+        if longest is None:
+            # Cannot measure the deepest descendant (the folder is virtual after
+            # an earlier rename in this pass, or unlistable): refuse rather than
+            # guess, or the rename can push a file past MAX_PATH unseen.
             log(f"  WARNING: {stem}: folder name not normalized "
-                f"(path too long, {len(str(shown))} chars): {target.relative_to(output)}")
+                f"(cannot measure the deepest path): {target.relative_to(output)}")
+            continue
+        if len(str(target)) > MAX_PATH or len(str(longest)) > MAX_PATH:
+            log(f"  WARNING: {stem}: folder name not normalized "
+                f"(path too long, {len(str(longest))} chars): {target.relative_to(output)}")
             continue
         if _exists(target):
             log(f"  WARNING: {stem}: folder name not normalized "

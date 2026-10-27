@@ -2164,7 +2164,7 @@ def test_copystat_failure_leaves_no_staging_file(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="long-path behaviour is Windows-specific")
-def test_folder_removable_sees_files_past_max_path(tmp_path):
+def test_folder_removable_sees_files_past_max_path(tmp_path, monkeypatch):
     # Path.is_file() is blind past 260 chars, so a real PDF in a deep folder
     # read as a "non-PDF entry" and repair refused to prune a verified
     # duplicate (F10010058 sat at 260 chars after a rename).
@@ -2184,6 +2184,11 @@ def test_folder_removable_sees_files_past_max_path(tmp_path):
     # Path.is_file also succeeds, so blindness itself is not asserted here -
     # GitHub's Windows runner has them enabled.)
     assert fsops._isfile(f)
+
+    # Simulate a host WITHOUT long paths (GitHub's Windows runner has them
+    # enabled, where the old Path.is_file() logic also succeeds). With the Path
+    # view blind, only the native-aware guard can certify this folder.
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
 
     planned = {"F10126106_A_DWG1": [("PLANNED",)]}
     (root / "PLANNED").mkdir()
