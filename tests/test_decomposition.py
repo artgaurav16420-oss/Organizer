@@ -6,8 +6,9 @@ from unittest.mock import patch
 import pytest
 
 import fermi_report_xlsx as fx
-from fermi_organizer import fsops
+from fermi_organizer import fsops, runmodes
 from fermi_organizer.runmodes import (
+    _adopt_one_org_child,
     _copy_org_child_tree,
     _detect_supersede_pairs,
     _move_children_under_superseding,
@@ -437,3 +438,71 @@ def test_copy_org_child_tree_lock_loss_stops_before_copy(tmp_path, make_pdf,
         _copy_org_child_tree("F10126107", out / "NewParent", organized,
                              {}, out, False, logged.append)
     assert not (out / "NewParent").exists()
+
+
+def test_copy_org_child_tree_refuses_an_unmeasurable_source(tmp_path, make_pdf,
+                                                            monkeypatch):
+    # None means "cannot list the subtree", not "short enough". Skipping the
+    # guard would copy past MAX_PATH unguarded and fail half-way.
+    out = tmp_path / "out"
+    child_folder = out / "F10126107 Child"
+    child_folder.mkdir(parents=True)
+    make_pdf(child_folder / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [child_folder / "F10126107.pdf"]}
+    monkeypatch.setattr("fermi_organizer.runmodes.longest_dest_path",
+                        lambda target, current: None)
+
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "NewParent", organized,
+                                  {}, out, False, logged.append)
+    assert copies == 0
+    assert any("cannot measure" in m for m in logged)
+    assert not (out / "NewParent").exists()
+
+
+def test_copy_org_child_tree_measures_the_live_source(tmp_path, make_pdf,
+                                                      monkeypatch):
+    # After a simulated move in a dry run, `current` is virtual. The subtree
+    # must be measured where it still sits on disk, or the copy is planned
+    # against a path no scanner can see (and therefore unbounded).
+    out = tmp_path / "out"
+    live = out / "A"
+    live.mkdir(parents=True)
+    make_pdf(live / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [out / "B" / "F10126107.pdf"]}
+    moved_dirs = {out / "A": out / "B"}
+    seen = []
+    real = runmodes.longest_dest_path
+
+    def spy(target, current):
+        seen.append(current)
+        return real(target, current)
+
+    monkeypatch.setattr(runmodes, "longest_dest_path", spy)
+    logged = []
+    copies = _copy_org_child_tree("F10126107", out / "Target", organized,
+                                  moved_dirs, out, True, logged.append)
+    assert copies == 1
+    assert seen == [out / "A"], seen
+
+
+def test_adopt_one_org_child_refuses_an_unmeasurable_move(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # Same rule on the re-home path: an unknown descendant length must refuse
+    # the move, not skip the guard and move anyway.
+    out = tmp_path / "out"
+    top = out / "F10126107 Child"
+    top.mkdir(parents=True)
+    make_pdf(top / "F10126107.pdf", ["NAME", "Child part"])
+    organized = {"F10126107": [top / "F10126107.pdf"]}
+    monkeypatch.setattr("fermi_organizer.runmodes.longest_dest_path",
+                        lambda target, current: None)
+
+    logged = []
+    copies, moves = _adopt_one_org_child(
+        "F10126107", out / "NewParent", organized, {}, out, True,
+        logged.append)
+    assert (copies, moves) == (0, 0)
+    assert any("cannot measure" in m for m in logged)
+    assert top.is_dir()
+

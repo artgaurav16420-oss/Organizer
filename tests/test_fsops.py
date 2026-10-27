@@ -2281,3 +2281,43 @@ def test_live_source_returns_none_for_a_move_cycle(tmp_path):
     assert fsops.live_source(root / "B" / "X", moves) is None
     assert fsops.live_source(root / "NOWHERE", moves) is None
 
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_folder_removable_refuses_a_junction_when_path_checks_are_blind(
+        tmp_path, monkeypatch):
+    # A host without long paths answers Path.is_dir() False for an entry past
+    # MAX_PATH. The junction must still be refused: skipping it as a plain
+    # directory would delete the folder around a subtree outside the tree.
+    import subprocess
+
+    root = tmp_path / "out"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126106.pdf").write_bytes(b"same")
+    dup = root / "OLD"
+    dup.mkdir()
+    (dup / "F10126106.pdf").write_bytes(b"same")
+    planned = {"F10126106": [("NEW",)]}
+    (root / "NEW").mkdir()
+    (root / "NEW" / "F10126106.pdf").write_bytes(b"same")
+
+    link = dup / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    # Blind the path view for the junction only: rglob reads Path.is_dir() to
+    # decide what to descend, so blinding every path would empty the walk
+    # itself instead of reproducing a long entry the path view cannot stat.
+    real_is_dir = Path.is_dir
+    try:
+        monkeypatch.setattr(
+            Path, "is_dir",
+            lambda self: False if self.name == "linked" else real_is_dir(self))
+        ok, reason = fsops._folder_removable(dup, planned, root)
+        assert ok is False
+        assert "junction" in reason
+    finally:
+        os.rmdir(link)
+

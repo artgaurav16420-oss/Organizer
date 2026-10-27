@@ -1067,15 +1067,22 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     # Copying cannot strand unrelated files the way a move of a shared folder
     # would, so the shared-folder guard is move-only and never blocks a copy:
     # a source folder holding foreign PDFs still lands whole under the target.
-    longest = _longest_dest_path(target_path, current)
+    # `current` is virtual after a simulated move in a dry run, so measure the
+    # subtree at the path that is still on disk. None means it cannot be
+    # measured: refuse the copy rather than write past MAX_PATH unguarded.
+    source = live_source(current, moved_dirs)
+    longest = _longest_dest_path(target_path, source) if source is not None else None
+    if longest is None:
+        log(f"  WARNING: {c}: cannot measure the source folder, skipping copy "
+            f"(manual review): {target_path.relative_to(output)}")
+        return 0
     staging_name = f"{target_path.name}.copy_tmp.{os.getpid()}"
-    if longest is not None:
-        # The copy lands at a longer sibling name first, so bound that path too.
-        staged_len = len(str(longest)) + len(staging_name) - len(target_path.name)
-        if staged_len > MAX_PATH or len(str(longest)) > MAX_PATH:
-            log(f"  WARNING: path too long ({max(staged_len, len(str(longest)))} chars), "
-                f"skipping: {longest}")
-            return 0
+    # The copy lands at a longer sibling name first, so bound that path too.
+    staged_len = len(str(longest)) + len(staging_name) - len(target_path.name)
+    if staged_len > MAX_PATH or len(str(longest)) > MAX_PATH:
+        log(f"  WARNING: path too long ({max(staged_len, len(str(longest)))} chars), "
+            f"skipping: {longest}")
+        return 0
     # Nested under a live parent: copy the whole subtree so the existing
     # parent keeps its copy. A failed copy is guarded below.
     if dry_run:
@@ -1222,8 +1229,13 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         # via the relocation tracking above.
         if _shared_folder_blocks_move(c, current, output, log):
             return 0, 0
-        longest = _longest_dest_path(target_path, current)
-        if longest is not None and len(str(longest)) > MAX_PATH:
+        source = live_source(current, moved_dirs)
+        longest = _longest_dest_path(target_path, source) if source is not None else None
+        if longest is None:
+            log(f"  WARNING: {c}: cannot measure the source folder, skipping move "
+                f"(manual review): {target_path.relative_to(output)}")
+            return 0, 0
+        if len(str(longest)) > MAX_PATH:
             log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
                 f"{longest}")
             return 0, 0

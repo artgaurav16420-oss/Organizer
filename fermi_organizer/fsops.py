@@ -1443,9 +1443,16 @@ def _folder_removable(folder, planned_by_stem, output):
         # A symlink (live or broken) or any other non-PDF entry is a manual
         # addition: is_file() is False for a broken or directory symlink, and
         # omitting one would let the folder be removed around it.
-        if not _islink(path) and _isdir(path):
+        if _islink(path):
+            return False, f"holds non-PDF entry {path.name}"
+        if _isdir(path):
+            # A junction is not a symlink, so the check above misses it, and
+            # rglob descends it. Skipping it as a plain directory would let the
+            # folder be deleted around a subtree that lives outside the tree.
+            if _is_dir_link(path):
+                return False, f"contains a symlink/junction: {path.name}"
             continue
-        if _islink(path) or not _isfile(path):
+        if not _isfile(path):
             return False, f"holds non-PDF entry {path.name}"
         if path.suffix.lower() != ".pdf":
             return False, f"holds non-PDF file {path.name}"
@@ -1575,7 +1582,10 @@ def _subtree_link_or_unlistable(folder, any_link=True):
                                                 onerror=walk_errors.append):
         for name in sorted(dirnames) + sorted(filenames):
             entry = Path(dirpath) / name
-            if entry.is_dir() and _is_dir_link(entry):
+            # _isdir, not Path.is_dir: on a host without long paths the path
+            # view answers False past MAX_PATH, which would skip a junction
+            # sitting there and let its subtree be moved or deleted around.
+            if _isdir(entry) and _is_dir_link(entry):
                 return f"contains a symlink/junction: {entry.name}"
             if any_link and _islink(entry):
                 return f"contains a symlink/junction: {entry.name}"
