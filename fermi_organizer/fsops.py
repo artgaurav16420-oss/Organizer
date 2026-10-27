@@ -1397,13 +1397,17 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
     return removed
 
 
-def _deepest_relative(folder, cache):
+def _deepest_relative(folder, cache, depth=0):
     """Deepest entry under `folder`, as a path relative to it.
 
     Path('.') when the folder is empty, None when it cannot be listed in full
     (callers treat that as "do not act"). Cached per directory, so a pass that
     measures nested folders lists each one once: measuring a parent fills in
     every child on the way down.
+
+    The walk is recursive, so it is bounded by TREE_MAX_DEPTH: a tree deeper
+    than that is not one the planner accepts, and returning None refuses the
+    operation instead of letting the interpreter limit abort the run.
     """
     folder = Path(folder)
     if folder in cache:
@@ -1425,6 +1429,9 @@ def _deepest_relative(folder, cache):
             cache[folder] = None
             return None
         if is_dir:
+            if depth >= TREE_MAX_DEPTH:
+                cache[folder] = None
+                return None
             if _is_dir_link(Path(entry.path)):
                 # A junction is still reported as a directory without following
                 # symlinks, and one pointing back at an ancestor recurses until
@@ -1432,7 +1439,7 @@ def _deepest_relative(folder, cache):
                 # folder, so the subtree cannot be measured.
                 cache[folder] = None
                 return None
-            sub = _deepest_relative(Path(entry.path), cache)
+            sub = _deepest_relative(Path(entry.path), cache, depth + 1)
             if sub is None:
                 cache[folder] = None
                 return None

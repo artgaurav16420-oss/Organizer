@@ -2376,3 +2376,21 @@ def test_longest_dest_path_refuses_a_link_back_to_an_ancestor(tmp_path, monkeypa
     finally:
         os.rmdir(link)
 
+
+def test_longest_dest_path_refuses_a_tree_deeper_than_the_limit(tmp_path,
+                                                               monkeypatch):
+    # The walk is recursive: a tree deeper than the interpreter limit would
+    # abort repair with RecursionError instead of refusing the operation.
+    monkeypatch.setattr('fermi_organizer.fsops.TREE_MAX_DEPTH', 3)
+    folder = tmp_path / 'SRC'
+    deep = folder / 'a' / 'b' / 'c' / 'd'
+    deep.mkdir(parents=True)
+    (deep / 'F10126106.pdf').write_bytes(b'x')
+    assert fsops.longest_dest_path(tmp_path / 'DST', folder) is None
+
+    shallow = tmp_path / 'OK'
+    (shallow / 'a' / 'b').mkdir(parents=True)
+    (shallow / 'a' / 'b' / 'F10126106.pdf').write_bytes(b'x')
+    measured = fsops.longest_dest_path(tmp_path / 'DST', shallow)
+    assert measured is not None and measured.name == 'F10126106.pdf'
+
