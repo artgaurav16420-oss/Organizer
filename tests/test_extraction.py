@@ -1925,9 +1925,12 @@ def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
     monkeypatch.setattr(extraction.OCR, "enabled", True)
     monkeypatch.setattr(extraction.OCR, "words_cached",
                         lambda page, issues=None, page_label="": [(0, 0, 10, 10, "X", 0, 0, 0)])
-    # Full-page pass reads the fragment; the zoom pass recovers nothing.
+    # The full-page pass reads the fragment; the zoom pass hands back no words,
+    # so the name parser gets nothing to work with and the fragment must be
+    # dropped rather than published. The stub has to model that: returning
+    # "er" for the empty zoom call would leave the guard untested.
     monkeypatch.setattr(extraction, "_title_fields_from_words",
-                        lambda words: ([], "er", None))
+                        lambda words: ([], "er", None) if words else ([], None, None))
     monkeypatch.setattr(extraction, "_ocr_words_zoom", lambda *a, **k: [])
 
     with pymupdf.open(str(p)) as opened:
