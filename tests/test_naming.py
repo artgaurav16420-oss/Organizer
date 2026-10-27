@@ -298,3 +298,17 @@ def test_plan_folder_names_returns_none_when_over_cap(tmp_path, monkeypatch):
     assert runmodes.plan_folder_names(children, ["A0"], index, {}, tmp_path,
                                       logged.append) is None
     assert any("root-to-leaf paths exceed" in line for line in logged)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
+def test_placement_len_counts_utf16_units(tmp_path):
+    # Name shortening trims until the path fits, so it must count the unit the
+    # OS enforces: an astral character is one code point and two units.
+    base_folder = tmp_path / ("\U0001F600" * 10)
+    comps = ("F10126106",)
+    index = {"F10126106": Path("F10126106.pdf")}
+    joined = os.sep.join([str(base_folder), "F10126106 NAME", "F10126106.pdf"])
+
+    got = _placement_len(comps, base_folder, index, lambda c: "F10126106 NAME")
+    assert got == len(joined) + 10
+
