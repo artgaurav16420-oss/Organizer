@@ -84,8 +84,11 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    `Needs manual review` is the only non-zero count and the review lines say the
    tree's root-to-leaf paths exceed the planning bound, the real run refuses in
    exactly the same place and exits 2 again: it is not a fix, it is a repeated
-   refusal. Surface the line to the user and stop; only a BOM-graph change (or
-   splitting the input) clears it.
+   refusal. Surface the line to the user and stop.
+
+   Repair reads only the tree, so splitting the source input cannot clear this —
+   the tree's own BOM graph has to change (fewer drawings in the tree, or a full
+   run from a narrower input into a separate output).
 
 Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere). Do not run `fermi_organizer/cli.py` directly; its relative imports fail.
 
