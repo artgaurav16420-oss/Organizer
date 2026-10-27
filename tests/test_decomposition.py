@@ -598,3 +598,30 @@ def test_copy_org_child_tree_leaves_a_preexisting_staging_tree(tmp_path, make_pd
     assert any("staging path already present" in m for m in logged)
     assert not (target_folder / "F10126107 Child").exists()
 
+
+def test_superseding_copy_keeps_the_tuple_contract(tmp_path, make_pdf,
+                                                   monkeypatch):
+    # This branch returns (moves, copies). An early "return 0" made the caller
+    # unpack an int and abort repair with TypeError instead of skipping one
+    # child.
+    out = tmp_path / "out"
+    parent = out / "F10126106 Parent"
+    parent.mkdir(parents=True)
+    make_pdf(parent / "F10126106.pdf", ["NAME", "Parent"])
+    first = out / "F10126107 A"
+    first.mkdir()
+    make_pdf(first / "F10126107.pdf", ["NAME", "Child"])
+    second = out / "F10126107 B"
+    second.mkdir()
+    make_pdf(second / "F10126107.pdf", ["NAME", "Child"])
+    organized = {"F10126106": [parent / "F10126106.pdf"],
+                 "F10126107": [first / "F10126107.pdf",
+                               second / "F10126107.pdf"]}
+    monkeypatch.setattr(shutil, "copytree",
+                        lambda *a, **k: (_ for _ in ()).throw(FileExistsError()))
+
+    moves, copies = _move_children_under_superseding(
+        ["F10126106"], organized, {"F10126106": ["F10126107"]},
+        ["F10126106", "F10126107"], out, False, {}, lambda m: None)
+    assert (moves, copies) == (0, 0)
+

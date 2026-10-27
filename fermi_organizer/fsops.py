@@ -1418,11 +1418,20 @@ def _deepest_relative(folder, cache):
     for entry in entries:
         rel = Path(entry.name)
         try:
-            is_dir = entry.is_dir()
+            # follow_symlinks=False: a symlinked directory is an entry here,
+            # not a subtree to descend, exactly as rglob treats it.
+            is_dir = entry.is_dir(follow_symlinks=False)
         except OSError:
             cache[folder] = None
             return None
         if is_dir:
+            if _is_dir_link(Path(entry.path)):
+                # A junction is still reported as a directory without following
+                # symlinks, and one pointing back at an ancestor recurses until
+                # RecursionError. Its contents are not descendants of this
+                # folder, so the subtree cannot be measured.
+                cache[folder] = None
+                return None
             sub = _deepest_relative(Path(entry.path), cache)
             if sub is None:
                 cache[folder] = None

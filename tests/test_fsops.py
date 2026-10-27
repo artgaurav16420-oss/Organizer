@@ -2345,3 +2345,34 @@ def test_longest_dest_path_selects_by_utf16_units(tmp_path):
     longest = fsops.longest_dest_path(tmp_path / "DST", folder)
     assert longest.name == astral
 
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_longest_dest_path_refuses_a_link_back_to_an_ancestor(tmp_path, monkeypatch):
+    # Descending a directory link that points back up the tree recurses: on a
+    # long-path host until RecursionError, otherwise until the growing path
+    # fails. Either way the link is never part of the subtree, so it is refused
+    # without being listed.
+    import subprocess
+
+    folder = tmp_path / "SRC"
+    (folder / "SUB").mkdir(parents=True)
+    (folder / "SUB" / "F10126106.pdf").write_bytes(b"x")
+    link = folder / "SUB" / "back"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(folder)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    seen = []
+    real = os.scandir
+
+    def spy(path):
+        seen.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", spy)
+    try:
+        assert fsops.longest_dest_path(tmp_path / "DST", folder) is None
+        assert not any(s.lower().endswith("back") for s in seen), seen
+    finally:
+        os.rmdir(link)
+

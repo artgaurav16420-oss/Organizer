@@ -964,7 +964,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                             # delete or merge into.
                             log(f"  WARNING: {c}: staging path already present, "
                                 f"skipping copy (manual review): {staging.name}")
-                            return 0
+                            continue
                         except OSError as e:
                             log(f"  WARNING: copy failed for {c}: {e}")
                             shutil.rmtree(_native_tree(staging), ignore_errors=True)
