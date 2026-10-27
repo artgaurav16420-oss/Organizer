@@ -80,11 +80,17 @@ Operate the Fermi lab PDF drawing organizer safely. Never edit or delete the ori
    run first if something touched the tree in between (another process, a
    manual rename, a copy in progress).
 
-   **Exception — do not run when the refusal is structural.** If
-   `Needs manual review` is the only non-zero count and the review lines say the
-   tree's root-to-leaf paths exceed the planning bound, the real run refuses in
-   exactly the same place and exits 2 again: it is not a fix, it is a repeated
-   refusal. Surface the line to the user and stop.
+   **Exception — do not run when the refusal is structural and nothing else is
+   pending.** If `Needs manual review` is the only non-zero count, the review
+   lines say the tree's root-to-leaf paths exceed the planning bound, and the log
+   has no `[DRY-RUN]` action line, then the real run refuses in exactly the same
+   place and exits 2 again: it is not a fix, it is a repeated refusal. Surface
+   the line to the user and stop.
+
+   If the dry run also lists an action — typically `[DRY-RUN] retire orphan
+   copy: ...` — run for real instead: retirement does not depend on the refused
+   reconcile, so that pass completes the deletion and still exits 2 for the
+   review line.
 
    Repair reads only the tree, so splitting the source input cannot clear this —
    the tree's own BOM graph has to change (fewer drawings in the tree, or a full
