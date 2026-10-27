@@ -2180,8 +2180,10 @@ def test_folder_removable_sees_files_past_max_path(tmp_path):
     assert len(str(f)) > 260, (len(str(f)), str(f))
     with open(fsops._native(f), "wb") as fh:
         fh.write(b"same bytes")
-    assert not f.is_file()            # Path is blind here
-    assert fsops._isfile(f)           # the native-aware helper is not
+    # The native-aware helper must see it. (On a host with long paths enabled
+    # Path.is_file also succeeds, so blindness itself is not asserted here -
+    # GitHub's Windows runner has them enabled.)
+    assert fsops._isfile(f)
 
     planned = {"F10126106_A_DWG1": [("PLANNED",)]}
     (root / "PLANNED").mkdir()
@@ -2189,3 +2191,26 @@ def test_folder_removable_sees_files_past_max_path(tmp_path):
 
     ok, reason = fsops._folder_removable(deep, planned, root)
     assert ok, reason
+
+
+@pytest.mark.skipif(os.name != "nt", reason="long-path behaviour is Windows-specific")
+def test_deep_folder_removal_uses_a_prefixed_root(tmp_path):
+    # A folder below MAX_PATH can still contain a child past it: plain
+    # shutil.rmtree fails with WinError 3, so tree removal goes through
+    # _native_tree. Pinned because the real repair hit exactly this.
+    import shutil
+
+    root = tmp_path / "out"
+    root.mkdir()
+    pad = 246 - len(str(root)) - 1
+    deep = root / ("d" * pad)
+    deep.mkdir()
+    f = deep / "F10126106_A_DWG1.pdf"
+    with open(fsops._native(f), "wb") as fh:
+        fh.write(b"x")
+    assert len(str(f)) > 260
+
+    with pytest.raises(OSError):
+        shutil.rmtree(str(deep))
+    shutil.rmtree(fsops._native_tree(deep))
+    assert not fsops._exists(deep)

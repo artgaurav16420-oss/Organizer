@@ -38,6 +38,7 @@ from .fsops import (
     _islink,
     refuse_linked_target,
     _native,
+    _native_tree,
     _same_bytes,
     _staged_copy,
     abandon_run_lock,
@@ -950,7 +951,7 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                                             symlinks=True)
                         except OSError as e:
                             log(f"  WARNING: copy failed for {c}: {e}")
-                            shutil.rmtree(str(target_path), ignore_errors=True)
+                            shutil.rmtree(_native_tree(target_path), ignore_errors=True)
                             continue
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
@@ -1083,7 +1084,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
             # OSError (KeyboardInterrupt, ...) must not leave a partial tree
             # that later runs mistake for a placed child.
             if not copied:
-                shutil.rmtree(str(target_path), ignore_errors=True)
+                shutil.rmtree(_native_tree(target_path), ignore_errors=True)
     return sum(1 for paths in organized.values() for p in paths
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 

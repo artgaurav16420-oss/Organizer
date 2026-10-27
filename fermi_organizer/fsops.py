@@ -45,6 +45,24 @@ def _islink(path):
     return treescan.islink(path)
 
 
+def _native_tree(path):
+    r"""`native(path)`, always prefixed on Windows, for recursive operations.
+
+    A folder can sit below MAX_PATH and still contain a child past it, so
+    shutil.rmtree(folder) fails with WinError 3 on the child while
+    shutil.rmtree(_native_tree(folder)) succeeds. `_native` deliberately leaves
+    short paths alone (callers compare them); this variant is for walking.
+    """
+    text = os.fspath(path)
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    if os.path.isabs(text) and "/" not in text:
+        return "\\\\?\\" + text
+    return text
+
+
 def _isfile(path):
     """os.path.isfile that sees beyond MAX_PATH (Path.is_file goes blind)."""
     return os.path.isfile(_native(path))
@@ -1360,7 +1378,7 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
         else:
             _ensure_lock(lock, log)
             try:
-                path.rmdir()
+                os.rmdir(_native_tree(path))
             except OSError as e:
                 log(f"  WARNING: could not remove empty folder {rel}: {e}")
                 continue
@@ -1717,7 +1735,7 @@ def reconcile_tree(organized, planned, output, dry_run, log, moved_dirs,
             else:
                 _ensure_lock(lock, log)
                 try:
-                    shutil.rmtree(folder)
+                    shutil.rmtree(_native_tree(folder))
                 except OSError as e:
                     note(stem, f"remove failed: {e}")
                     continue
