@@ -902,3 +902,50 @@ def test_second_run_renders_the_history_trend_chart(tmp_path):
     ws = load_workbook(xlsx)["Run History"]
     assert len(ws._charts) == 1
     assert ws.max_row >= 3
+
+
+def test_diagnostic_sheets_link_the_file_they_name(tmp_path):
+    # Every sheet except Missing names a PDF that exists in the tree, so its
+    # stem must be clickable too - not only the Files / Orphans / Superseded
+    # listings that carry a path.
+    out = tmp_path / "out"
+    (out / "F10126106 Assembly").mkdir(parents=True)
+    (out / "F10126106 Assembly" / "F10126106.pdf").write_bytes(b"%PDF")
+    (out / "_superseded").mkdir()
+    (out / "_superseded" / "F10126107__CHK.pdf").write_bytes(b"%PDF")
+    (out / "_orphans").mkdir()
+    (out / "_orphans" / "F10126108.pdf").write_bytes(b"%PDF")
+    path = tmp_path / "organize_fermi_report.xlsx"
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 3, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [("F10126109", "F10126106")],
+        "chk": ["F10126107__CHK"],
+        "orphans": ["F10126108"],
+        "roots": [("F10126106", ["F10126100"])],
+        "mismatches": [("F10126106", "F10126108", ["F10126100"])],
+        "used_on_bugs": [("F10126106", "F10126108")],
+        "titleblock_mismatches": [("F10126106", "revision", "-", "B")],
+        "scanned": [("F10126106", [1])],
+        "watermarks": [("F10126108", "watermark text: DRAFT")],
+        "report_txt": "",
+        "names": {},
+    }
+
+    fx.build_workbook(path, ctx)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    for sheet in ("CHK", "Scanned", "Watermark", "Roots", "Title block check",
+                  "USED ON check"):
+        assert wb[sheet]["A2"].hyperlink is not None, f"{sheet} did not link its stem"
+    # The target is the file the row names, not just some link.
+    assert wb["CHK"]["A2"].hyperlink.target == "_superseded/F10126107__CHK.pdf"
+    # USED ON check names two drawings; both columns are clickable.
+    assert wb["USED ON check"]["C2"].hyperlink.target == "_orphans/F10126108.pdf"
+    # Missing exists precisely because there is no file to open.
+    assert wb["Missing"]["A2"].hyperlink is None
+

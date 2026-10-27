@@ -27,6 +27,14 @@ verified duplicate because `Path.is_file()` is blind past 260 characters.
   skipped as a plain directory, leaving the folder removable around a subtree
   that lives outside the tree.
 
+### Report: every sheet links to its drawing
+
+- The workbook made only the Files, Orphans and Superseded rows clickable, so
+  the review sheets named drawings you could not open. Roots, USED ON check,
+  Scanned, Watermark, Title block check and CHK now link their stem to the PDF
+  as well, resolved by canonical stem so the --- and ___ spellings of one
+  drawing both match. Missing stays plain text: there is no file to open.
+
 ### Breaking: Python 3.11 floor, and PyMuPDF 2.0
 
 - **Requires-python is now >=3.11.** Python 3.10 reached end of life on
