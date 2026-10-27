@@ -45,6 +45,43 @@ def _islink(path):
     return treescan.islink(path)
 
 
+def _native_tree(path):
+    r"""`native(path)`, always prefixed on Windows, for recursive operations.
+
+    A folder can sit below MAX_PATH and still contain a child past it, so
+    shutil.rmtree(folder) fails with WinError 3 on the child while
+    shutil.rmtree(_native_tree(folder)) succeeds. `_native` deliberately leaves
+    short paths alone (callers compare them); this variant is for walking.
+    """
+    text = os.fspath(path)
+    if os.name != "nt":
+        return text
+    if not os.path.isabs(text):
+        text = os.path.abspath(text)
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    if os.path.isabs(text) and "/" not in text:
+        return "\\\\?\\" + text
+    return text
+
+
+def path_units(path):
+    """Length in the units MAX_PATH counts (see treescan.path_units)."""
+    return treescan.path_units(path)
+
+
+def _isfile(path):
+    """os.path.isfile that sees beyond MAX_PATH (Path.is_file goes blind)."""
+    return os.path.isfile(_native(path))
+
+
+def _isdir(path):
+    """os.path.isdir that sees beyond MAX_PATH (Path.is_dir goes blind)."""
+    return os.path.isdir(_native(path))
+
+
 def _has_linked_ancestor(path, stop):
     """True if any component between (exclusive) stop and path is a link.
 
@@ -519,8 +556,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                              for child in reversed(kids))
                 continue
             # Dir path checked against MAX_DIR, full target against MAX_PATH.
-            if len(str(current_folder)) > MAX_DIR or len(str(target)) > MAX_PATH:
-                log(f"  WARNING: path too long ({len(str(target))} chars), skipping: {target}")
+            if path_units(current_folder) > MAX_DIR or path_units(target) > MAX_PATH:
+                log(f"  WARNING: path too long ({path_units(target)} chars), skipping: {target}")
                 skipped_count += count_copies(stem)
                 continue
             if dry_run:
@@ -1350,7 +1387,7 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
         else:
             _ensure_lock(lock, log)
             try:
-                path.rmdir()
+                os.rmdir(_native_tree(path))
             except OSError as e:
                 log(f"  WARNING: could not remove empty folder {rel}: {e}")
                 continue
@@ -1360,22 +1397,81 @@ def remove_empty_dirs(output, dry_run, log, lock=None):
     return removed
 
 
-def longest_dest_path(target_path, current):
+def _deepest_relative(folder, cache, depth=0):
+    """Deepest entry under `folder`, as a path relative to it.
+
+    Path('.') when the folder is empty, None when it cannot be listed in full
+    (callers treat that as "do not act"). Cached per directory, so a pass that
+    measures nested folders lists each one once: measuring a parent fills in
+    every child on the way down.
+
+    The walk is recursive, so it is bounded by TREE_MAX_DEPTH: a tree deeper
+    than that is not one the planner accepts, and returning None refuses the
+    operation instead of letting the interpreter limit abort the run.
+    """
+    folder = Path(folder)
+    if folder in cache:
+        return cache[folder]
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except OSError:
+        cache[folder] = None
+        return None
+    best = None
+    for entry in entries:
+        rel = Path(entry.name)
+        try:
+            # follow_symlinks=False: a symlinked directory is an entry here,
+            # not a subtree to descend, exactly as rglob treats it.
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            cache[folder] = None
+            return None
+        if is_dir:
+            if depth >= TREE_MAX_DEPTH:
+                cache[folder] = None
+                return None
+            if _is_dir_link(Path(entry.path)):
+                # A junction is still reported as a directory without following
+                # symlinks, and one pointing back at an ancestor recurses until
+                # RecursionError. Its contents are not descendants of this
+                # folder, so the subtree cannot be measured.
+                cache[folder] = None
+                return None
+            sub = _deepest_relative(Path(entry.path), cache, depth + 1)
+            if sub is None:
+                cache[folder] = None
+                return None
+            if sub.parts:
+                rel = rel / sub
+        # Selection is by the unit MAX_PATH counts. Picking the longest by code
+        # points can choose an ASCII path while a sibling of fewer code points
+        # but more UTF-16 units is the one that breaks the limit.
+        if best is None or path_units(rel) > path_units(best):
+            best = rel
+    if best is None:
+        best = Path(".")
+    cache[folder] = best
+    return best
+
+
+def longest_dest_path(target_path, current, cache=None):
     """Longest file path a copy of `current` under `target_path` would create.
 
     place_files guards every target against MAX_PATH; the folder-level MAX_DIR
     check alone does not bound descendant files, which fail mid-copy on
     Windows and force partial-tree cleanup. Returns None when `current` cannot
-    be listed (callers treat that as "do not act").
+    be listed in full (callers treat that as "do not act").
+
+    os.scandir with an explicit error check, not rglob: rglob swallows a scandir
+    error and reports an unreadable subtree as empty, which reads as "shortest
+    possible path" and lets a rename pass MAX_PATH unnoticed.
     """
-    try:
-        entries = list(current.rglob("*"))
-    except OSError:
+    rel = _deepest_relative(current, {} if cache is None else cache)
+    if rel is None:
         return None
-    if not entries:
-        return target_path
-    return max((target_path / e.relative_to(current) for e in entries),
-               key=lambda p: len(str(p)))
+    return target_path / rel
 
 
 def _folder_removable(folder, planned_by_stem, output):
@@ -1398,9 +1494,16 @@ def _folder_removable(folder, planned_by_stem, output):
         # A symlink (live or broken) or any other non-PDF entry is a manual
         # addition: is_file() is False for a broken or directory symlink, and
         # omitting one would let the folder be removed around it.
-        if not _islink(path) and path.is_dir():
+        if _islink(path):
+            return False, f"holds non-PDF entry {path.name}"
+        if _isdir(path):
+            # A junction is not a symlink, so the check above misses it, and
+            # rglob descends it. Skipping it as a plain directory would let the
+            # folder be deleted around a subtree that lives outside the tree.
+            if _is_dir_link(path):
+                return False, f"contains a symlink/junction: {path.name}"
             continue
-        if _islink(path) or not path.is_file():
+        if not _isfile(path):
             return False, f"holds non-PDF entry {path.name}"
         if path.suffix.lower() != ".pdf":
             return False, f"holds non-PDF file {path.name}"
@@ -1417,7 +1520,7 @@ def _folder_removable(folder, planned_by_stem, output):
         # correctness over performance on this destructive path.
         ok = False
         for t in targets:
-            if _islink(t) or t == path or not t.exists():
+            if _islink(t) or t == path or not _exists(t):
                 continue
             if _has_linked_ancestor(t, output):
                 continue
@@ -1530,13 +1633,48 @@ def _subtree_link_or_unlistable(folder, any_link=True):
                                                 onerror=walk_errors.append):
         for name in sorted(dirnames) + sorted(filenames):
             entry = Path(dirpath) / name
-            if entry.is_dir() and _is_dir_link(entry):
+            # _isdir, not Path.is_dir: on a host without long paths the path
+            # view answers False past MAX_PATH, which would skip a junction
+            # sitting there and let its subtree be moved or deleted around.
+            if _isdir(entry) and _is_dir_link(entry):
                 return f"contains a symlink/junction: {entry.name}"
             if any_link and _islink(entry):
                 return f"contains a symlink/junction: {entry.name}"
     if walk_errors:
         return f"cannot list the whole subtree ({walk_errors[0]})"
     return None
+
+
+def live_source(folder, moved_dirs):
+    r"""On-disk path holding the subtree that `folder` will have this pass.
+
+    A folder moved earlier in the run exists only at its new name, so a later
+    step that reads the old path gets nothing. Undo the recorded moves
+    newest-first until a path lands on disk: one hop is not enough, because a
+    folder can be relocated twice in a pass (a move, then a rename of its new
+    name), leaving the intermediate path virtual too. The subtree layout is
+    unchanged by a move, so lengths measured there are the lengths the
+    destination will have. Returns None when no on-disk source can be found
+    (callers then refuse rather than guess).
+    """
+    folder = Path(folder)
+    if _exists(folder):
+        return folder
+    moves = [(Path(old), Path(new))
+             for old, new in (moved_dirs.items() if moved_dirs else ())]
+    seen = {folder}
+    while True:
+        for old, new in reversed(moves):
+            if folder == new or folder.is_relative_to(new):
+                folder = old.joinpath(*folder.relative_to(new).parts)
+                break
+        else:
+            return None
+        if _exists(folder):
+            return folder
+        if folder in seen:
+            return None
+        seen.add(folder)
 
 
 def refuse_linked_target(target, output, log, label):
@@ -1579,15 +1717,16 @@ def _move_folder(stem, folder, target, output, dry_run, log, moved_dirs,
         log(f"  WARNING: {stem}: destination exists, not merging "
             f"(manual review): {target.relative_to(output)}")
         return False
-    longest = longest_dest_path(target, folder)
+    source = live_source(folder, moved_dirs)
+    longest = longest_dest_path(target, source) if source is not None else None
     if longest is None:
         # Cannot list the subtree, so its deepest path is unknown; a move would
         # skip the MAX_PATH guard and could fail half-way. Refuse it.
         log(f"  WARNING: {stem}: cannot list source folder, skipping move "
             f"(manual review): {target.relative_to(output)}")
         return False
-    if len(str(longest)) > MAX_PATH:
-        log(f"  WARNING: {stem}: path too long ({len(str(longest))} chars), "
+    if path_units(longest) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({path_units(longest)} chars), "
             f"skipping move: {target}")
         return False
     if dry_run:
@@ -1615,8 +1754,8 @@ def _place_copy(stem, organized, target, output, dry_run, log, lock):
     live = [p for p in organized.get(stem, []) if p.exists()]
     src = pick_shallowest(live or organized[stem])
     dst = target / src.name
-    if len(str(target)) > MAX_DIR or len(str(dst)) > MAX_PATH:
-        log(f"  WARNING: {stem}: path too long ({len(str(dst))} chars), "
+    if path_units(target) > MAX_DIR or path_units(dst) > MAX_PATH:
+        log(f"  WARNING: {stem}: path too long ({path_units(dst)} chars), "
             f"skipping: {dst}")
         return False
     if dry_run:
@@ -1707,7 +1846,7 @@ def reconcile_tree(organized, planned, output, dry_run, log, moved_dirs,
             else:
                 _ensure_lock(lock, log)
                 try:
-                    shutil.rmtree(folder)
+                    shutil.rmtree(_native_tree(folder))
                 except OSError as e:
                     note(stem, f"remove failed: {e}")
                     continue

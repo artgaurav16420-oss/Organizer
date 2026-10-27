@@ -2161,3 +2161,249 @@ def test_copystat_failure_leaves_no_staging_file(tmp_path, monkeypatch):
         fsops._copy_atomic(src, dst, tmp_path)
     assert not list(dst.parent.glob("*.copy_tmp.*")), "staging file left behind"
     assert not dst.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="long-path behaviour is Windows-specific")
+def test_folder_removable_sees_files_past_max_path(tmp_path, monkeypatch):
+    # Path.is_file() is blind past 260 chars, so a real PDF in a deep folder
+    # read as a "non-PDF entry" and repair refused to prune a verified
+    # duplicate (F10010058 sat at 260 chars after a rename).
+    root = tmp_path / "out"
+    root.mkdir()
+    name = "F10126106_A_DWG1.pdf"
+    # Folder just under the 248-char directory limit so rglob can list it; the
+    # file inside then crosses 260.
+    pad = 246 - len(str(root)) - 1
+    deep = root / ("d" * pad)
+    deep.mkdir()
+    f = deep / name
+    assert len(str(f)) > 260, (len(str(f)), str(f))
+    with open(fsops._native(f), "wb") as fh:
+        fh.write(b"same bytes")
+    # The native-aware helper must see it. (On a host with long paths enabled
+    # Path.is_file also succeeds, so blindness itself is not asserted here -
+    # GitHub's Windows runner has them enabled.)
+    assert fsops._isfile(f)
+
+    # Simulate a host WITHOUT long paths (GitHub's Windows runner has them
+    # enabled, where the old Path.is_file() logic also succeeds). With the Path
+    # view blind, only the native-aware guard can certify this folder.
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+
+    planned = {"F10126106_A_DWG1": [("PLANNED",)]}
+    (root / "PLANNED").mkdir()
+    (root / "PLANNED" / name).write_bytes(b"same bytes")
+
+    ok, reason = fsops._folder_removable(deep, planned, root)
+    assert ok, reason
+
+
+@pytest.mark.skipif(os.name != "nt", reason="long-path behaviour is Windows-specific")
+def test_deep_folder_removal_uses_a_prefixed_root(tmp_path):
+    # A folder below MAX_PATH can still contain a child past it: plain
+    # shutil.rmtree fails with WinError 3, so tree removal goes through
+    # _native_tree. Pinned because the real repair hit exactly this.
+    import shutil
+
+    root = tmp_path / "out"
+    root.mkdir()
+    pad = 246 - len(str(root)) - 1
+    deep = root / ("d" * pad)
+    deep.mkdir()
+    f = deep / "F10126106_A_DWG1.pdf"
+    with open(fsops._native(f), "wb") as fh:
+        fh.write(b"x")
+    assert len(str(f)) > 260
+
+    # What must hold on any host: recursive removal starts from a prefixed
+    # root, and the tree is actually gone afterwards. (On a runner with long
+    # paths enabled plain rmtree also succeeds, so its failure is not asserted.)
+    prefixed = fsops._native_tree(deep)
+    assert prefixed.startswith("\\\\?\\"), "recursive ops must use a prefixed root"
+    shutil.rmtree(prefixed)
+    assert not fsops._exists(deep)
+
+
+def test_longest_dest_path_refuses_an_unlistable_subtree(tmp_path, monkeypatch):
+    # rglob swallows a scandir error and reports an unreadable folder as empty,
+    # which reads as "shortest possible path" and lets a rename pass MAX_PATH
+    # unnoticed. The walk must report the hole instead of guessing.
+    folder = tmp_path / "SRC"
+    (folder / "deep").mkdir(parents=True)
+    (folder / "deep" / "F10126106.pdf").write_bytes(b"%PDF-1.4\n")
+    real = os.scandir
+
+    def blind(path):
+        if os.path.basename(str(path)) == "deep":
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", blind)
+    assert fsops.longest_dest_path(tmp_path / "DST", folder) is None
+
+
+def test_longest_dest_path_keeps_the_empty_and_missing_folder_answers(tmp_path):
+    # The refusal above must not swallow the two legitimate answers: an empty
+    # folder maps to the target itself, and a folder that is not on disk (a
+    # path a dry run has already renamed away) is unknown.
+    empty = tmp_path / "EMPTY"
+    empty.mkdir()
+    assert fsops.longest_dest_path(tmp_path / "DST", empty) == tmp_path / "DST"
+    assert fsops.longest_dest_path(tmp_path / "DST", tmp_path / "GONE") is None
+
+
+def test_live_source_undoes_a_chain_of_relocations(tmp_path):
+    # A folder relocated twice in one pass (moved, then its new name renamed)
+    # leaves the planned path virtual twice over. Undoing a single hop lands on
+    # an intermediate that is not on disk, so a dry run would refuse a rename
+    # the real run performs.
+    root = tmp_path / "out"
+    (root / "A" / "SUB").mkdir(parents=True)
+    (root / "A" / "SUB" / "F10126106.pdf").write_bytes(b"%PDF-1.4\n")
+    moves = fsops.FolderMoves()
+    moves[root / "A"] = root / "B"
+    moves[root / "B"] = root / "C"
+
+    planned = root / "C" / "SUB"
+    assert not planned.exists()
+    assert fsops.live_source(planned, moves) == root / "A" / "SUB"
+
+
+def test_live_source_returns_none_for_a_move_cycle(tmp_path):
+    # A cycle (or a path that no recorded move explains) must refuse rather
+    # than loop: callers then skip the mutation.
+    root = tmp_path / "out"
+    (root / "A").mkdir(parents=True)
+    moves = fsops.FolderMoves()
+    moves[root / "A"] = root / "B"
+    moves[root / "B"] = root / "A"
+
+    assert fsops.live_source(root / "B" / "X", moves) is None
+    assert fsops.live_source(root / "NOWHERE", moves) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_folder_removable_refuses_a_junction_when_path_checks_are_blind(
+        tmp_path, monkeypatch):
+    # A host without long paths answers Path.is_dir() False for an entry past
+    # MAX_PATH. The junction must still be refused: skipping it as a plain
+    # directory would delete the folder around a subtree outside the tree.
+    import subprocess
+
+    root = tmp_path / "out"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "F10126106.pdf").write_bytes(b"same")
+    dup = root / "OLD"
+    dup.mkdir()
+    (dup / "F10126106.pdf").write_bytes(b"same")
+    planned = {"F10126106": [("NEW",)]}
+    (root / "NEW").mkdir()
+    (root / "NEW" / "F10126106.pdf").write_bytes(b"same")
+
+    link = dup / "linked"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    # Blind the path view for the junction only: rglob reads Path.is_dir() to
+    # decide what to descend, so blinding every path would empty the walk
+    # itself instead of reproducing a long entry the path view cannot stat.
+    real_is_dir = Path.is_dir
+    try:
+        monkeypatch.setattr(
+            Path, "is_dir",
+            lambda self: False if self.name == "linked" else real_is_dir(self))
+        ok, reason = fsops._folder_removable(dup, planned, root)
+        assert ok is False
+        assert "junction" in reason
+    finally:
+        os.rmdir(link)
+
+
+def test_path_units_counts_utf16_code_units_on_windows():
+    # MAX_PATH is a UTF-16 limit: an astral character is one code point but two
+    # units, so a code-point count passes paths the OS then rejects.
+    name = "\U0001F600" * 4
+    assert fsops.path_units(name) == (8 if os.name == "nt" else 4)
+    assert fsops.path_units("F10126106") == 9
+
+
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
+def test_longest_dest_path_selects_by_utf16_units(tmp_path):
+    # Fewer code points can still be the longer path in UTF-16 units, and units
+    # are what MAX_PATH counts: selecting by len() picks the wrong entry and
+    # then reports a length no guard will ever compare.
+    folder = tmp_path / "SRC"
+    (folder / "ascii").mkdir(parents=True)
+    (folder / "ascii" / ("a" * 40)).write_bytes(b"x")
+    (folder / "emoji").mkdir()
+    astral = "\U0001F600" * 30
+    (folder / "emoji" / astral).write_bytes(b"x")
+
+    longest = fsops.longest_dest_path(tmp_path / "DST", folder)
+    assert longest.name == astral
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions are Windows-only")
+def test_longest_dest_path_refuses_a_link_back_to_an_ancestor(tmp_path, monkeypatch):
+    # Descending a directory link that points back up the tree recurses: on a
+    # long-path host until RecursionError, otherwise until the growing path
+    # fails. Either way the link is never part of the subtree, so it is refused
+    # without being listed.
+    import subprocess
+
+    folder = tmp_path / "SRC"
+    (folder / "SUB").mkdir(parents=True)
+    (folder / "SUB" / "F10126106.pdf").write_bytes(b"x")
+    link = folder / "SUB" / "back"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(folder)],
+                          capture_output=True)
+    if proc.returncode != 0:
+        pytest.skip("junction creation not permitted")
+    seen = []
+    real = os.scandir
+
+    def spy(path):
+        seen.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", spy)
+    try:
+        assert fsops.longest_dest_path(tmp_path / "DST", folder) is None
+        assert not any(s.lower().endswith("back") for s in seen), seen
+    finally:
+        os.rmdir(link)
+
+
+def test_longest_dest_path_refuses_a_tree_deeper_than_the_limit(tmp_path,
+                                                               monkeypatch):
+    # The walk is recursive: a tree deeper than the interpreter limit would
+    # abort repair with RecursionError instead of refusing the operation.
+    monkeypatch.setattr('fermi_organizer.fsops.TREE_MAX_DEPTH', 3)
+    folder = tmp_path / 'SRC'
+    deep = folder / 'a' / 'b' / 'c' / 'd'
+    deep.mkdir(parents=True)
+    (deep / 'F10126106.pdf').write_bytes(b'x')
+    assert fsops.longest_dest_path(tmp_path / 'DST', folder) is None
+
+    shallow = tmp_path / 'OK'
+    (shallow / 'a' / 'b').mkdir(parents=True)
+    (shallow / 'a' / 'b' / 'F10126106.pdf').write_bytes(b'x')
+    measured = fsops.longest_dest_path(tmp_path / 'DST', shallow)
+    assert measured is not None and measured.name == 'F10126106.pdf'
+
+
+@pytest.mark.skipif(os.name != "nt", reason="prefixing is Windows-specific")
+def test_native_prefixes_by_utf16_units(tmp_path):
+    # 260 is a UTF-16 limit: a path of supplementary characters can be past it
+    # and still count under 260 code points, so a len() threshold leaves it
+    # unprefixed exactly where the prefix is needed.
+    base = str(tmp_path)
+    count = (259 - len(base) - 1) // 2 + 1
+    path = base + "\\" + "\U0001F600" * count
+    assert len(path) < 260
+    assert len(path.encode("utf-16-le")) // 2 >= 260
+    assert fsops._native(path).startswith("\\\\?\\")
+

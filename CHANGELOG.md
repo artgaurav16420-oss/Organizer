@@ -4,22 +4,42 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: see past `MAX_PATH` in repair, and refuse what cannot be measured
+
+The first real repair after the PyMuPDF 2.0 upgrade refused to prune a
+verified duplicate because `Path.is_file()` is blind past 260 characters.
+
+- **Native-aware path checks on destructive paths.** Folder removal, rename,
+  move, copy and their cleanup now use `_isfile`, `_isdir`, `_exists` and
+  `_native_tree`, so a child past `MAX_PATH` is seen instead of being reported
+  as a non-PDF entry.
+- **A rename is measured to its deepest descendant.** `normalize_folder_names`
+  bounded only the folder, so `WELDM` -> `WELDMENT, FIELD` pushed a drawing to
+  260 characters and created the state the guard then tripped over.
+- **Unknown means refuse.** A path that cannot be measured (virtual after an
+  earlier relocation in the same pass, unlistable, or a walk that hit an
+  error) refuses the rename, move or copy instead of assuming the shortest
+  answer.
+- **A failed copy cannot delete another process's tree.** Adoption copies stage
+  into a PID-named sibling and `os.replace` it into place, so cleanup only
+  ever removes the partial tree this run wrote.
+- **A junction is refused even where the path view is blind.** It used to be
+  skipped as a plain directory, leaving the folder removable around a subtree
+  that lives outside the tree.
+
 ### Breaking: Python 3.11 floor, and PyMuPDF 2.0
 
-- **
-equires-python is now >=3.11.** Python 3.10 reached end of life on
+- **Requires-python is now >=3.11.** Python 3.10 reached end of life on
   2026-10-01, and the fixed PyMuPDF release requires 3.11 anyway. CI runs Ubuntu
   3.11 and 3.12 plus Windows 3.11. Users on 3.10 must upgrade.
 - **pymupdf==2.0** — the first release containing the CVE-2026-82035 fix, so
   the wheel no longer names an affected version and no longer downgrades an
   environment that already has 2.0. The runtime dependency closure grows from
-  three distributions to fifteen (onnxruntime, 
-umpy, 
-etworkx,
-  protobuf, latbuffers, pyyaml, psutil, 	abulate, pymupdf4llm,
+  three distributions to fifteen (onnxruntime, numpy, networkx,
+  protobuf, flatbuffers, pyyaml, psutil, tabulate, pymupdf4llm,
   pymupdf-layout, packaging); THIRD_PARTY_NOTICES.md names every one.
 - **The ONNX layout model is disabled at import.** 2.0 runs it inside every
-  ind_tables() call: measured on 100 real drawings, 245.2 s with the model
+  find_tables() call: measured on 100 real drawings, 245.2 s with the model
   versus 47.1 s without (1.28.2 was 55.1 s). extraction.py clears
   pymupdf._get_layout behind a callable() guard.
 - **Text extraction drifts slightly.** Same 100 drawings against 1.28.2: 98

@@ -9,6 +9,21 @@ import os
 from pathlib import Path
 
 
+def path_units(path):
+    """Length of `path` in the units MAX_PATH counts.
+
+    MAX_PATH is a UTF-16 limit: a supplementary-plane character is one code
+    point but two units, so len(str(path)) undercounts and a guard built on it
+    can pass a path the OS then rejects. POSIX limits are not code points
+    either, but byte and character counts share the ordering this guard needs,
+    so the measured length there stays the character count.
+    """
+    text = os.fspath(path)
+    if os.name != "nt":
+        return len(text)
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
 def native(path):
     r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
 
@@ -21,7 +36,10 @@ def native(path):
     Windows always yields backslashes).
     """
     s = os.fspath(path)
-    if os.name != "nt" or len(s) < 260 or s.startswith("\\\\?\\"):
+    # path_units, not len: 260 is a UTF-16 limit, so a path of supplementary
+    # characters can be over it while still counting under 260 code points,
+    # and it would stay unprefixed exactly where the prefix is needed.
+    if os.name != "nt" or path_units(s) < 260 or s.startswith("\\\\?\\"):
         return path
     if s.startswith("\\\\"):
         return "\\\\?\\UNC\\" + s[2:]

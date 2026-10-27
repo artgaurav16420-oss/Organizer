@@ -582,3 +582,37 @@ def test_reconcile_move_refuses_a_linked_destination(tmp_path, make_pdf):
         assert any("refused" in line for line in review)
     finally:
         os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="prefixed paths are Windows-specific")
+def test_reconcile_removal_deletes_through_a_prefixed_root(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # The delete must call shutil.rmtree with a prefixed root, or a folder whose
+    # child sits past MAX_PATH fails with WinError 3 (hit on the real tree).
+    # Driven through reconcile_tree, so a refactor that drops _native_tree fails.
+    import shutil as _shutil
+
+    from fermi_organizer.fsops import FolderMoves, reconcile_tree
+
+    out = tmp_path / "out"
+    (out / "PLANNED").mkdir(parents=True)
+    (out / "OLD").mkdir()
+    make_pdf(out / "PLANNED" / "F10126106.pdf", ["NAME", "WIDGET"])
+    _shutil.copy2(out / "PLANNED" / "F10126106.pdf", out / "OLD" / "F10126106.pdf")
+    organized = {"F10126106": [out / "OLD" / "F10126106.pdf",
+                                out / "PLANNED" / "F10126106.pdf"]}
+    planned = {"F10126106": [("PLANNED",)]}
+    calls = []
+    real = _shutil.rmtree
+
+    def spy(path, *a, **k):
+        calls.append(str(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(_shutil, "rmtree", spy)
+    counts, review = reconcile_tree(organized, planned, out, False,
+                                    lambda m: None, FolderMoves())
+    assert review == [], review
+    assert counts["removed"] == 1
+    assert calls, "the duplicate folder was not removed through rmtree"
+    assert calls[0].startswith("\\\\?\\"), calls[0]

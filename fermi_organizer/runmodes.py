@@ -36,8 +36,11 @@ from .fsops import (
     _exists,
     _has_linked_ancestor,
     _islink,
+    live_source,
+    path_units,
     refuse_linked_target,
     _native,
+    _native_tree,
     _same_bytes,
     _staged_copy,
     abandon_run_lock,
@@ -945,12 +948,35 @@ def _move_children_under_superseding(swapped, organized, org_boms, org_stems,
                     elif refuse_linked_target(target_path, output, log, c):
                         continue
                     else:
+                        # Copy into a PID-named sibling and rename into place:
+                        # a failed copy then cleans up only its own staging, and
+                        # os.replace fails if another process created the target
+                        # after the existence check (deleting theirs would be
+                        # data loss).
+                        staging = target_path.with_name(
+                            f"{target_path.name}.copy_tmp.{os.getpid()}")
                         try:
-                            shutil.copytree(str(child_folder), str(target_path),
+                            shutil.copytree(str(child_folder), str(staging),
                                             symlinks=True)
+                        except FileExistsError:
+                            # A PID can be reused and a crashed run can leave a
+                            # partial tree at this name: it is not ours to
+                            # delete or merge into.
+                            log(f"  WARNING: {c}: staging path already present, "
+                                f"skipping copy (manual review): {staging.name}")
+                            continue
                         except OSError as e:
                             log(f"  WARNING: copy failed for {c}: {e}")
-                            shutil.rmtree(str(target_path), ignore_errors=True)
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+                            continue
+                        except BaseException:
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+                            raise
+                        try:
+                            os.replace(_native(staging), _native(target_path))
+                        except OSError as e:
+                            log(f"  WARNING: copy failed for {c}: {e}")
+                            shutil.rmtree(_native_tree(staging), ignore_errors=True)
                             continue
                         log(f"  copied: {child_folder.relative_to(output)} -> "
                             f"{target_path.relative_to(output)}")
@@ -1000,9 +1026,9 @@ def _current_folder_of(stem, organized, output, moved_dirs):
     return _resolve_moved_folder(old_folder, moved_dirs)
 
 
-def _longest_dest_path(target_path, current):
+def _longest_dest_path(target_path, current, cache=None):
     """Longest file path the copy of `current` under `target_path` would create."""
-    return longest_dest_path(target_path, current)
+    return longest_dest_path(target_path, current, cache)
 
 
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
@@ -1054,10 +1080,22 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     # Copying cannot strand unrelated files the way a move of a shared folder
     # would, so the shared-folder guard is move-only and never blocks a copy:
     # a source folder holding foreign PDFs still lands whole under the target.
-    longest = _longest_dest_path(target_path, current)
-    if longest is not None and len(str(longest)) > MAX_PATH:
-        log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
-            f"{longest}")
+    # `current` is virtual after a simulated move in a dry run, so measure the
+    # subtree at the path that is still on disk. None means it cannot be
+    # measured: refuse the copy rather than write past MAX_PATH unguarded.
+    source = live_source(current, moved_dirs)
+    longest = _longest_dest_path(target_path, source) if source is not None else None
+    if longest is None:
+        log(f"  WARNING: {c}: cannot measure the source folder, skipping copy "
+            f"(manual review): {target_path.relative_to(output)}")
+        return 0
+    staging_name = f"{target_path.name}.copy_tmp.{os.getpid()}"
+    # The copy lands at a longer sibling name first, so bound that path too.
+    staged_len = (path_units(longest) + path_units(staging_name)
+                  - path_units(target_path.name))
+    if staged_len > MAX_PATH or path_units(longest) > MAX_PATH:
+        log(f"  WARNING: path too long ({max(staged_len, path_units(longest))} chars), "
+            f"skipping: {longest}")
         return 0
     # Nested under a live parent: copy the whole subtree so the existing
     # parent keeps its copy. A failed copy is guarded below.
@@ -1071,19 +1109,31 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
             return 0
         # symlinks=True copies links as links; the default would copy the
         # link targets' contents, which may live outside the tree.
-        copied = False
+        # Stage beside the target and rename: the cleanup can then only ever
+        # remove this run's own partial copy, never a tree another process
+        # created at the target after the existence check.
+        staging = target_path.with_name(staging_name)
         try:
-            shutil.copytree(str(current), str(target_path), symlinks=True)
-            copied = True
+            shutil.copytree(str(current), str(staging), symlinks=True)
+        except FileExistsError:
+            # Not created by this call (a reused PID, a crashed run): it is
+            # not ours to delete, and merging into it would mix two trees.
+            log(f"  WARNING: {c}: staging path already present, skipping copy "
+                f"(manual review): {staging.name}")
+            return 0
         except OSError as e:
             log(f"  WARNING: copy failed for {c}: {e}")
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
             return 0
-        finally:
-            # The target did not exist before this call, so any failure past
-            # OSError (KeyboardInterrupt, ...) must not leave a partial tree
-            # that later runs mistake for a placed child.
-            if not copied:
-                shutil.rmtree(str(target_path), ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+            raise
+        try:
+            os.replace(_native(staging), _native(target_path))
+        except OSError as e:
+            log(f"  WARNING: copy failed for {c}: {e}")
+            shutil.rmtree(_native_tree(staging), ignore_errors=True)
+            return 0
     return sum(1 for paths in organized.values() for p in paths
                if p.is_relative_to(current) or p.is_relative_to(child_folder))
 
@@ -1113,14 +1163,42 @@ def normalize_folder_names(organized, folder_names, output, dry_run, log, moved_
     # Parents first: a child renamed before its ancestor leaves `moved_dirs`
     # pointing inside the ancestor's old path (resolved by the chain helper).
     candidates.sort(key=lambda item: (len(item[1].parts), item[0], str(item[1])))
+    # Measuring walks the whole source subtree. A sheet set shares one folder,
+    # so every sheet adds a candidate for it, and a refused rename is retried
+    # for the next sheet: without a cache normalization goes quadratic in the
+    # folder's file count.
+    # One walk per directory for the whole pass: a sheet set adds a candidate
+    # per sheet and a refused rename is retried for the next one, and nested
+    # folders overlap, so uncached measuring is quadratic in the tree.
+    measured = {}
+
+    def measure(target, source):
+        if source is None:
+            return None
+        return longest_dest_path(target, source, measured)
+
     for stem, path, wanted in candidates:
         folder = _resolve_moved_folder(path.parent, moved_dirs)
         if folder.name == wanted:
             continue
         target = folder.parent / wanted
-        if len(str(target)) > MAX_PATH:
+        # Check the deepest file, not just the folder: renaming a folder to its
+        # full NAME can push a descendant past MAX_PATH ("WELDM" ->
+        # "WELDMENT, FIELD" put a drawing at 260 chars), which then reads as
+        # unreadable and makes every later repair refuse to touch it.
+        # After an ancestor rename in this same pass the resolved folder is
+        # virtual; measure the subtree at the path that is still on disk.
+        longest = measure(target, live_source(folder, moved_dirs))
+        if longest is None:
+            # Cannot measure the deepest descendant (the folder is virtual after
+            # an earlier rename in this pass, or unlistable): refuse rather than
+            # guess, or the rename can push a file past MAX_PATH unseen.
             log(f"  WARNING: {stem}: folder name not normalized "
-                f"(path too long, {len(str(target))} chars): {target.relative_to(output)}")
+                f"(cannot measure the deepest path): {target.relative_to(output)}")
+            continue
+        if path_units(target) > MAX_PATH or path_units(longest) > MAX_PATH:
+            log(f"  WARNING: {stem}: folder name not normalized "
+                f"(path too long, {path_units(longest)} chars): {target.relative_to(output)}")
             continue
         if _exists(target):
             log(f"  WARNING: {stem}: folder name not normalized "
@@ -1189,9 +1267,14 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         # via the relocation tracking above.
         if _shared_folder_blocks_move(c, current, output, log):
             return 0, 0
-        longest = _longest_dest_path(target_path, current)
-        if longest is not None and len(str(longest)) > MAX_PATH:
-            log(f"  WARNING: path too long ({len(str(longest))} chars), skipping: "
+        source = live_source(current, moved_dirs)
+        longest = _longest_dest_path(target_path, source) if source is not None else None
+        if longest is None:
+            log(f"  WARNING: {c}: cannot measure the source folder, skipping move "
+                f"(manual review): {target_path.relative_to(output)}")
+            return 0, 0
+        if path_units(longest) > MAX_PATH:
+            log(f"  WARNING: path too long ({path_units(longest)} chars), skipping: "
                 f"{longest}")
             return 0, 0
         if dry_run:
