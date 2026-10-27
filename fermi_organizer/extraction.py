@@ -22,6 +22,14 @@ import pymupdf
 if hasattr(pymupdf, "no_recommend_layout"):
     pymupdf.no_recommend_layout()
 
+# pymupdf 2.0 activates an ONNX layout model at import, and find_tables() then
+# runs it on every page: 1.48 s per call on real drawings, which is ~4x the
+# whole extraction cost (100 drawings: 55 s on 1.28.2 vs 245 s on 2.0). The
+# classic table finder is enough for parts lists, so disable the model. Guarded:
+# the attribute is private and may disappear in a later release.
+if callable(getattr(pymupdf, "_get_layout", None)):
+    pymupdf._get_layout = None
+
 from .config import (
     BAD_DESC_RE,
     FERMI_HEADER_RE,

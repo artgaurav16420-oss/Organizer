@@ -1,7 +1,7 @@
 # PDF Drawing Organizer
 
 [![pytest](https://github.com/artgaurav16420-oss/Organizer/actions/workflows/pytest.yml/badge.svg)](https://github.com/artgaurav16420-oss/Organizer/actions/workflows/pytest.yml)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
 Sorts engineering PDF drawings into a nested folder tree derived from the BOM
 (PARTS LIST) tables inside each drawing, using the title block `NAME` for folder
@@ -33,8 +33,8 @@ batches are all handled.
 
 | Component | Requirement |
 |---|---|
-| Python | 3.10 or newer |
-| PyMuPDF | `==1.28.2` (required) |
+| Python | 3.11 or newer |
+| PyMuPDF | `==2.0` (required) |
 | openpyxl | `==3.1.5` (optional — only the `.xlsx` workbook) |
 | Tesseract OCR | Optional — needed only for scanned (image-only) PDFs; 5.5.3+ recommended |
 
@@ -286,12 +286,14 @@ is not required.
   AGPL/commercial, so redistributing a combined work carries the AGPL obligations
   described there.
 - Security policy: [`SECURITY.md`](SECURITY.md).
-- PyMuPDF: **pin is on the last affected release** (GHSA-434w-92hw-f2m3 / CVE-2026-82035
-  is a path traversal in the PyMuPDF **CLI** font path — `extract_objects()` in
-  `src/__main__.py` — which this project does not use). Upstream fix is commit
-  `b2c8f3a`, first shipped in **pymupdf 2.0** (PyPI, 2026-10-19). Adopting it means
-  dropping the declared Python 3.10 floor: 2.0 requires `>=3.11`. The decision is
-  open and written up in [`docs/adr/0003-pymupdf-cve-pin.md`](docs/adr/0003-pymupdf-cve-pin.md).
+- PyMuPDF: **pinned to the fixed release**, `==2.0`. It carries the fix for
+  GHSA-434w-92hw-f2m3 / CVE-2026-82035 (a path traversal in the PyMuPDF **CLI**
+  font path — `extract_objects()` in `src/__main__.py` — which this project
+  never imported anyway, and still does not). Moving to 2.0 required dropping
+  the Python 3.10 floor, since 3.10 reached end of life on 2026-10-01; see
+  [`docs/adr/0004-python-311-floor.md`](docs/adr/0004-python-311-floor.md).
+  The ONNX layout model 2.0 imports is disabled at import: it makes
+  `find_tables()` ~4x slower for no benefit to parts lists.
 - Tesseract OCR: 5.5.3 or newer recommended; note that eight model-file
   deserialization advisories (CVE-2026-88047..-88054, 2026-09-10) still apply to
   5.5.3 with **no fixed release yet** — they trigger only on a malicious
