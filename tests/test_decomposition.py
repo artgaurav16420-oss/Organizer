@@ -627,6 +627,7 @@ def test_superseding_copy_keeps_the_tuple_contract(tmp_path, make_pdf,
     assert (moves, copies) == (0, 0)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="UTF-16 accounting is Windows-specific")
 def test_organized_child_adoption_counts_utf16_units(tmp_path, monkeypatch):
     # MAX_DIR is a Windows limit too, so the folder guard must count UTF-16
     # units: 20 astral characters are 20 code points and 40 units, and the
