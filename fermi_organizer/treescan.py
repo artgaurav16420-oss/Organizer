@@ -9,32 +9,6 @@ import os
 from pathlib import Path
 
 
-def native(path):
-    r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
-
-    With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
-    fails with ENOENT even though the file exists (input trees nest deep;
-    the output tree is bounded by MAX_PATH, so only input-derived paths hit
-    this - real run: 6 CHK archive copies failed without the prefix).
-    Drive paths get `\\?\`; UNC paths need the `\\?\UNC\server\share` form.
-    Forward-slash paths are left alone (`\\?\` rejects them; pathlib on
-    Windows always yields backslashes).
-    """
-    s = os.fspath(path)
-    if os.name != "nt" or len(s) < 260 or s.startswith("\\\\?\\"):
-        return path
-    if s.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + s[2:]
-    if os.path.isabs(s) and "/" not in s:
-        return "\\\\?\\" + s
-    return path
-
-
-def islink(path):
-    """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
-    return os.path.islink(native(path))
-
-
 def path_units(path):
     """Length of `path` in the units MAX_PATH counts.
 
@@ -48,6 +22,35 @@ def path_units(path):
     if os.name != "nt":
         return len(text)
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def native(path):
+    r"""Filesystem-op view of `path`: add the Windows extended prefix when long.
+
+    With LongPathsEnabled off, open()/copy2 on an absolute path >= 260 chars
+    fails with ENOENT even though the file exists (input trees nest deep;
+    the output tree is bounded by MAX_PATH, so only input-derived paths hit
+    this - real run: 6 CHK archive copies failed without the prefix).
+    Drive paths get `\\?\`; UNC paths need the `\\?\UNC\server\share` form.
+    Forward-slash paths are left alone (`\\?\` rejects them; pathlib on
+    Windows always yields backslashes).
+    """
+    s = os.fspath(path)
+    # path_units, not len: 260 is a UTF-16 limit, so a path of supplementary
+    # characters can be over it while still counting under 260 code points,
+    # and it would stay unprefixed exactly where the prefix is needed.
+    if os.name != "nt" or path_units(s) < 260 or s.startswith("\\\\?\\"):
+        return path
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    if os.path.isabs(s) and "/" not in s:
+        return "\\\\?\\" + s
+    return path
+
+
+def islink(path):
+    """os.path.islink that sees beyond MAX_PATH (Path.is_symlink goes blind)."""
+    return os.path.islink(native(path))
 
 
 def strip_ext_prefix(path):

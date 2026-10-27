@@ -2394,3 +2394,16 @@ def test_longest_dest_path_refuses_a_tree_deeper_than_the_limit(tmp_path,
     measured = fsops.longest_dest_path(tmp_path / 'DST', shallow)
     assert measured is not None and measured.name == 'F10126106.pdf'
 
+
+@pytest.mark.skipif(os.name != "nt", reason="prefixing is Windows-specific")
+def test_native_prefixes_by_utf16_units(tmp_path):
+    # 260 is a UTF-16 limit: a path of supplementary characters can be past it
+    # and still count under 260 code points, so a len() threshold leaves it
+    # unprefixed exactly where the prefix is needed.
+    base = str(tmp_path)
+    count = (259 - len(base) - 1) // 2 + 1
+    path = base + "\\" + "\U0001F600" * count
+    assert len(path) < 260
+    assert len(path.encode("utf-16-le")) // 2 >= 260
+    assert fsops._native(path).startswith("\\\\?\\")
+
