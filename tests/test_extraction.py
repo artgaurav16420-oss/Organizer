@@ -1948,3 +1948,19 @@ def test_pymupdf_layout_model_is_disabled():
     import fermi_organizer.extraction  # noqa: F401  (import applies the guard)
 
     assert not callable(getattr(pymupdf, "_get_layout", None))
+
+
+def test_bom_rows_equal_to_used_on_are_dropped():
+    # A drawing's BOM lists children and USED ON names its parent, so the same
+    # number in both is a parse boundary bug. Real case: F10119064 carries
+    # USED ON F10126007 and pymupdf 2.0's text geometry emitted F10126007 as a
+    # positional BOM row, which manufactures a parent<->child cycle.
+    dropped = extraction._drop_parent_refs(
+        [("F10126007", 1, "text-positional")], ["F10126007"])
+    assert dropped == []
+
+    entries = [("F10126007", 1, "text-positional"), ("F10126107", 1, "table")]
+    assert extraction._drop_parent_refs(entries, ["F10126007"]) == [entries[1]]
+    # No USED ON means nothing to cross-check against: rows are left alone.
+    assert extraction._drop_parent_refs(entries, []) == entries
+    assert extraction._drop_parent_refs(entries, None) == entries
