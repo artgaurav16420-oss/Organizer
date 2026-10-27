@@ -4,6 +4,29 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: see past `MAX_PATH` in repair, and refuse what cannot be measured
+
+The first real repair after the PyMuPDF 2.0 upgrade refused to prune a
+verified duplicate because `Path.is_file()` is blind past 260 characters.
+
+- **Native-aware path checks on destructive paths.** Folder removal, rename,
+  move, copy and their cleanup now use `_isfile`, `_isdir`, `_exists` and
+  `_native_tree`, so a child past `MAX_PATH` is seen instead of being reported
+  as a non-PDF entry.
+- **A rename is measured to its deepest descendant.** `normalize_folder_names`
+  bounded only the folder, so `WELDM` -> `WELDMENT, FIELD` pushed a drawing to
+  260 characters and created the state the guard then tripped over.
+- **Unknown means refuse.** A path that cannot be measured (virtual after an
+  earlier relocation in the same pass, unlistable, or a walk that hit an
+  error) refuses the rename, move or copy instead of assuming the shortest
+  answer.
+- **A failed copy cannot delete another process's tree.** Adoption copies stage
+  into a PID-named sibling and `os.replace` it into place, so cleanup only
+  ever removes the partial tree this run wrote.
+- **A junction is refused even where the path view is blind.** It used to be
+  skipped as a plain directory, leaving the folder removable around a subtree
+  that lives outside the tree.
+
 ### Breaking: Python 3.11 floor, and PyMuPDF 2.0
 
 - **Requires-python is now >=3.11.** Python 3.10 reached end of life on
