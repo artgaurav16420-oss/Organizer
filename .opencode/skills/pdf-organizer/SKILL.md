@@ -78,17 +78,17 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
   python -c "import os; print(os.cpu_count())"
   ```
 
-- **Assign about 75% of the logical cores**, rounded down, minimum 1, never above `MAX_JOBS` (256):
+- **Assign `logical cores - 2` workers**, minimum 1, never above `MAX_JOBS` (256):
 
   | Logical cores | `--jobs` |
   |---|---|
-  | 4 | 3 |
+  | 4 | 2 |
   | 8 | 6 |
-  | 12 | 9 |
-  | 16 | 12 |
-  | 32 | 24 |
+  | 12 | 10 |
+  | 16 | 14 |
+  | 32 | 30 |
 
-  A 16-core box therefore runs `--jobs 12`, not `--jobs 16`: the OCR passes spawn their own Tesseract children, and pinning every core makes the parent's report writing contend with the workers.
+  Keep the last two logical processors free: one for the parent process (report and workbook writing) and one for the Tesseract child an OCR pass spawns. A 16-core box therefore runs `--jobs 14`.
 - Expect `jobs=2` and `jobs=1` to agree on results; the worker count changes speed, never the plan.
 - Add `--no-ocr` when drawings are known to have text layers; otherwise OCR runs per scan and dominates runtime.
 - Prefer `--output "<input>/Output"` so later runs do not re-scan an organized tree as input.
@@ -103,7 +103,7 @@ Use the venv interpreter if the repo has one (`.venv\Scripts\python.exe` on Wind
 | `--incremental` | Process only stems not already in the tree, plus stored `_orphans/`. With nothing new it stops after a zero-count summary and touches nothing. When the batch has new PDFs, existing folders stay but their names are re-applied to this run's plan (a hand-titled folder is renamed back; a folder whose planned parent changed is moved), plus supersede swaps. |
 | `--repair` | Re-apply the current decisions to an existing tree (the positional folder IS the tree; no source scan, no `--output`). Renames folders to the current plan, moves folders onto their planned parent, adopts wrongly parked `_orphans/`, promotes a `_superseded/` copy that out-ranks the live drawing, removes verified duplicates. Places nothing new; a folder is only deleted when every file in it has a byte-identical copy at a planned path. |
 | `--no-ocr` | Disable the OCR fallback for scanned (image-only) PDFs. |
-| `--jobs N` | Extraction workers. Check logical cores first and pass about 75% of them (16 cores -> `12`); see **Performance**. `0` = auto = every logical core (no headroom, and capped at 256), `1` = serial. |
+| `--jobs N` | Extraction workers. Check logical cores first and pass `cores - 2` (16 cores -> `14`); see **Performance**. `0` = auto = every logical core (no headroom, and capped at 256), `1` = serial. |
 | `--rekey-titleblock` | Re-key a misnamed text-layer PDF to its title-block drawing number, only if that drawing number is not already in the run. Scanned PDFs are never renamed. |
 
 ## Exit codes
