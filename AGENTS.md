@@ -6,7 +6,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 
 ## Commands
 
-- Use the repo venv: `.venv\Scripts\python.exe` (Windows) / `.venv/bin/python` (Linux/macOS). Python >=3.11. No pip; install with `uv pip install --python .venv\Scripts\python.exe ...`.
+- Use the repo venv: `.venv\Scripts\python.exe` (Windows) / `.venv/bin/python` (Linux/macOS). Python >=3.11. No pip; install with `uv pip install --python .venv ...` (the venv directory works on both platforms).
 - Run: `python organize_fermi_pdfs.py <folder> [--output DIR] [--dry-run] [--incremental] [--repair] [--no-ocr] [--jobs N] [--rekey-titleblock]` (also `python -m fermi_organizer.cli ...`, or `fermi-organize` after install). Never run `fermi_organizer\cli.py` directly (relative imports fail). The launcher shims `sys.path`, so it works from any cwd; `-m fermi_organizer.cli` needs the repo root as cwd (or an editable install).
 - Repair: `python organize_fermi_pdfs.py <tree> --repair [--dry-run]` re-applies the current decisions to an existing output tree (no source scan; `--output`/`--incremental`/`--rekey-titleblock` are rejected with it).
 - Tests: `.venv\Scripts\python.exe -m pytest -q` (~35-40s; 572 passed, 9 skipped on Windows without developer-mode symlink privilege - 8 symlink cases plus 1 POSIX-only chmod case; Developer Mode lets the 8 run, and only Linux runs the chmod case). Single file/case: `... -m pytest tests/test_graph.py -q` / `... "tests/test_graph.py::test_name" -q`. No Tesseract needed (autouse OCR fixture).
@@ -73,4 +73,4 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 
 - Exclude `.opencode/node_modules/` from globs/greps. `graphify-out/`, `.code-review-cache/` are generated, not source.
 - `build/`, `dist/`, `fermi_pdf_organizer.egg-info/` are gitignored packaging leftovers. `build/lib/` holds a working-tree copy the `--no-isolation` build **reuses** (do not read or edit it as source, and never build without clearing it first — see the package-build command above).
-- Recreate venv: `uv venv --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.lock -r requirements-dev.txt -e .` (the hashed lock plus dev lock is what README documents; the dev lock provides ruff, pytest-cov and coverage. No `pip` in the venv.)
+- Recreate venv: `uv venv --python 3.11 .venv; uv pip install --python .venv -r requirements.lock -r requirements-dev.txt -e .` (the hashed lock plus dev lock is what README documents; the dev lock provides ruff, pytest-cov and coverage. No `pip` in the venv.)
