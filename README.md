@@ -262,6 +262,7 @@ fermi_organizer/
   config.py                constants + regexes + OCR geometry
   extraction.py            BOM/USED ON/NAME extraction + OCR fallback + run-scoped OCR context
   graph.py                 pure algorithms: revision ranking, matching, cycles, planned paths
+  treescan.py              read-only tree layer (stdlib-only; the workbook imports this, never fsops)
   naming.py                folder naming + path-length shortening
   fsops.py                 input indexing, placement, tree scans, supersede/orphan copies, repair reconcile
   runmodes.py              run_full + run_incremental + run_repair (return a structured run context)

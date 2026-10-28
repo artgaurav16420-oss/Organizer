@@ -74,15 +74,6 @@ runtime. Versions match `requirements.txt` / `requirements.lock`.
 - **License:** Apache-2.0 OR BSD-2-Clause. Transitive dependency of PyMuPDF 2.0.
 
 ## openpyxl 3.1.5
-    (`test_no_pymupdf_cli_extract_objects_usage`), which rejects the vulnerable
-    symbols and CLI invocation forms (`"pymupdf"` argv, `python -m pymupdf`).
-  - **Fix status:** the fix shipped in **pymupdf 2.0** and this project now pins
-    it; the advisory no longer applies to the shipped artefact.
-  - **History:** `docs/adr/0003-pymupdf-cve-pin.md` recorded the stay-on-1.28.2
-    decision and its two re-open triggers; `docs/adr/0004-python-311-floor.md`
-    records the floor change that let the pin move.
-
-## openpyxl 3.1.5
 
 - **License:** MIT.
 - Optional dependency: used only to build the `.xlsx` workbook; the tool runs
