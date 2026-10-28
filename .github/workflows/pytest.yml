@@ -46,7 +46,7 @@ jobs:
       # branch 88.0% measured 2026-10-26; pyproject enables branch coverage,
       # so the reported total is the branch-aware one). Raise it when coverage
       # improves, never lower it to absorb a regression.
-      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov-fail-under=87
+      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov=cve_watch --cov-fail-under=87
   test-windows:
     # MAX_PATH, _native(), os.replace and symlink-refusal tests skip off-Windows.
     # No coverage ratchet here by design: the ratchet is enforced once, on the
