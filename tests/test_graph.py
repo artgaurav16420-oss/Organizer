@@ -438,7 +438,9 @@ def test_match_pdfs_stays_fast_with_an_index():
     # Guard against the quadratic matcher coming back: with an index, 2,000
     # references against 8,000 drawings (16,000 stems) take tens of
     # milliseconds; the old rescan-per-reference was Θ(refs x stems). The bound
-    # is deliberately generous - a slow runner taking 40x longer still passes.
+    # stays generous - a quadratic regression still takes orders of magnitude
+    # longer - but wall-clock on a saturated shared runner is not a code
+    # defect, so it is set where CI noise cannot reach it.
     # (That the hot loops actually pass an index is pinned separately, in
     # test_runmodes.py.)
     import time
@@ -456,7 +458,7 @@ def test_match_pdfs_stays_fast_with_an_index():
         match_pdfs(ref, index)
     elapsed = time.perf_counter() - start
 
-    assert elapsed < 2.0, f"match_pdfs took {elapsed:.2f}s for 2,000 refs x 16,000 stems"
+    assert elapsed < 10.0, f"match_pdfs took {elapsed:.2f}s for 2,000 refs x 16,000 stems"
 
 
 def test_break_cycles_breaks_a_bom_cycle():

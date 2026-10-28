@@ -20,7 +20,8 @@ PRODUCTION_MODULES = sorted(
 ALLOWLIST = {}
 
 # NODOC gate: public top-level functions without docstrings in
-# fermi_organizer/*.py. All previously allowlisted helpers now documented;
+# PRODUCTION_MODULES (fermi_organizer/*.py plus the two root files).
+# All previously allowlisted helpers now documented;
 # the gate fails on any NEW undocumented public function.
 NODOC_ALLOWLIST = set()
 
@@ -78,7 +79,7 @@ def _undocumented_public_functions(path):
 
 def test_no_undocumented_public_functions():
     new_undoc = []
-    for path in sorted((ROOT / "fermi_organizer").glob("*.py")):
+    for path in PRODUCTION_MODULES:
         for item in _undocumented_public_functions(path):
             if item not in NODOC_ALLOWLIST:
                 new_undoc.append(item)

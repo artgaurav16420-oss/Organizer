@@ -142,7 +142,7 @@ def _resolve_folders(parser, args):
     contradictory flag combination."""
     folder = Path(args.folder).resolve()
     if not folder.is_dir():
-        print(f"ERROR: not a directory: {folder}")
+        print(f"ERROR: not a directory: {folder}", file=sys.stderr)
         sys.exit(1)
 
     if args.repair:
@@ -160,7 +160,8 @@ def _resolve_folders(parser, args):
         try:
             output.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"ERROR: could not create output folder {output}: {e}")
+            print(f"ERROR: could not create output folder {output}: {e}",
+                  file=sys.stderr)
             sys.exit(1)
     return folder, output
 
@@ -272,10 +273,10 @@ def main(argv=None):
     except LockLostError as e:
         # Stolen mid-run: the tree may hold partial writes, hence exit 2
         # (same as placement-refused) rather than the clean-refusal exit 1.
-        print(f"ERROR: {e}")
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(2)
     except RunLockedError as e:
-        print(f"ERROR: {e}")
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # The lock spans the shared-file post-work too - but re-verify it first:

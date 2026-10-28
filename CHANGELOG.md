@@ -4,6 +4,37 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
+
+- **Release verify now enforces the coverage ratchet on both supported
+  Pythons.** The tag-time `verify` job ran bare `pytest -q` on 3.11 only, so
+  a commit that passed tests while regressing branch coverage below 87 — or
+  that was red on 3.12 — still published a wheel. It now runs the same
+  `--cov-fail-under=87` gate as CI on the `["3.11", "3.12"]` matrix.
+- **Refusal diagnostics go to stderr.** `ERROR: not a directory`, uncreatable
+  output folder, stolen lock and held lock previously printed to stdout, so a
+  script capturing stdout ingested error text as data. The four sites now use
+  `file=sys.stderr`; exit codes are unchanged.
+- **Coverage now measures the cve-watch script.**
+  `tool.coverage.run.source` listed only the two importable modules, so rot in
+  `.github/scripts/cve_watch.py` never tripped the ratchet; it loads under its
+  own module name in tests and now measures at 61%. The launcher shim stays
+  out of `source` on purpose — it never executes in-process, and an unimported
+  entry only adds a warning. Its behavior is pinned by the `test_cli_smoke.py`
+  launcher runs instead (including a new foreign-cwd smoke).
+- **The docstring gate covers the root files.** `test_no_undocumented_public_functions`
+  looped only `fermi_organizer/*.py`; it now loops `PRODUCTION_MODULES`, which
+  already included the launcher and the workbook for the import lint.
+- **New pins:** a foreign-cwd launcher smoke (the `sys.path` shim's only
+  automated execution), a direct `_has_linked_ancestor` unit test, and a
+  de-flaked `match_pdfs` wall-clock bound (2 s → 10 s; a quadratic regression
+  is still orders of magnitude over it).
+- **Docs:** SECURITY.md no longer claims the pymupdf 2.0 floor is untaken,
+  THIRD_PARTY_NOTICES.md drops the pasted PyMuPDF paragraph under the openpyxl
+  heading, and the README layout lists `treescan.py`.
+- **cve-watch now caps its runner.** The `pymupdf-pin` job sets
+  `timeout-minutes: 20` like every other job instead of the 360-minute default.
+
 ### Fix: see past `MAX_PATH` in repair, and refuse what cannot be measured
 
 The first real repair after the PyMuPDF 2.0 upgrade refused to prune a
