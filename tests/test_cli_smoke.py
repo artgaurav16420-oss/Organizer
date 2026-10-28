@@ -80,6 +80,40 @@ def test_cli_dry_run_smoke(tmp_path, make_pdf):
     assert not list(out.rglob("*.pdf"))
 
 
+def test_launcher_runs_from_a_foreign_cwd_without_pythonpath(tmp_path, make_pdf):
+    # The organize_fermi_pdfs.py sys.path shim is the only thing that makes a
+    # foreign-cwd launch resolve the package: run the script file from outside
+    # the repo with PYTHONPATH scrubbed and require the full dry-run.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", [
+        "FERMI PART LIST",
+        "F10126107 CHILD PART",
+        "NAME",
+        "Parent",
+    ])
+    make_pdf(in_dir / "F10126107.pdf", [
+        "NAME",
+        "Child part",
+        "USED ON",
+        "F10126106",
+    ])
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"}
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "organize_fermi_pdfs.py"), str(in_dir),
+         "--output", str(out), "--dry-run", "--no-ocr", "--jobs", "1"],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True,
+        timeout=180,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(list(out.glob("organize_fermi_pdfs_report_*.txt"))) == 1
+    assert (out / "organize_fermi_report.xlsx").is_file()
+
+
 def test_jobs_ceiling_is_a_usage_error():
     # A dropped decimal point must not ask the spawn pool for a billion
     # workers: --jobs is bounded, and 0/1 keep their meanings.

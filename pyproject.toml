@@ -39,7 +39,12 @@ testpaths = ["tests"]
 addopts = ""
 
 [tool.coverage.run]
-source = ["fermi_organizer", "fermi_report_xlsx"]
+# cve_watch loads under its own module name in tests (spec_from_file_location),
+# so it measures like any other module. The launcher shim is deliberately NOT
+# listed: it never executes in-process (tests run it as a subprocess), and an
+# unimported source entry only adds a module-not-imported warning. Its behavior
+# is pinned by the test_cli_smoke.py launcher runs instead.
+source = ["fermi_organizer", "fermi_report_xlsx", "cve_watch"]
 # Branch coverage is the number that matters for this codebase: most defects
 # found in review live in an unexercised branch (a failure recovery, a second
 # revision, a skipped archive), not in an unexecuted line.

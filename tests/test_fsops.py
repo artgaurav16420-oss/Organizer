@@ -27,6 +27,7 @@ from fermi_organizer.fsops import (
     scan_output_tree,
     sweep_stale_claims,
     sweep_supersede_staging,
+    _has_linked_ancestor,
 )
 
 
@@ -2406,4 +2407,35 @@ def test_native_prefixes_by_utf16_units(tmp_path):
     assert len(path) < 260
     assert len(path.encode("utf-16-le")) // 2 >= 260
     assert fsops._native(path).startswith("\\\\?\\")
+
+
+def test_has_linked_ancestor_names_a_link_between_stop_and_path(tmp_path):
+    # Direct pin for the symlink-escape guard: a link on the walk from stop
+    # (exclusive) to path counts; a clean tree and the stop itself do not.
+    import subprocess
+
+    root = tmp_path / "tree"
+    real = root / "a" / "real"
+    real.mkdir(parents=True)
+    link = root / "a" / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            pytest.skip("symlink creation not permitted")
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(real)],
+            capture_output=True)
+        if proc.returncode != 0:
+            pytest.skip("link creation not permitted")
+    try:
+        assert _has_linked_ancestor(link / "F10126106.pdf", root / "a") is True
+        assert _has_linked_ancestor(real / "F10126106.pdf",
+                                    root / "a") is False
+        assert _has_linked_ancestor(link, link) is False
+    finally:
+        if link.is_symlink():
+            link.unlink(missing_ok=True)
+        elif os.name == "nt" and link.exists():
+            os.rmdir(link)
 
