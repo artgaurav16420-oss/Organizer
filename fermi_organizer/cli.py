@@ -28,7 +28,8 @@ from .runmodes import (
 
 
 _LOG_CTRL_RE = re.compile(
-    "[\x00-\x08\x0a-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
+    "[\x00-\x08\x0a-\x1f\x7f-\x9f؜‎‏"
+    "\u2028\u2029\u202a-\u202e\u2066-\u206f]")
 
 
 def _jobs_arg(raw):

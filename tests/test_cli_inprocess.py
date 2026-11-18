@@ -491,6 +491,9 @@ def test_plain_log_text_escapes_carriage_return_and_bidi_overrides():
     assert cli_module._plain_log_text("ok\rforged") == "ok\\x0dforged"
     assert cli_module._plain_log_text("part‮gnp.exe") == "part\\u202egnp.exe"
     assert cli_module._plain_log_text("a⁦b⁩c") == "a\\u2066b\\u2069c"
+    # The marks that reorder without an explicit override count too: RLM and
+    # ALM change what the operator reads next to a part number.
+    assert cli_module._plain_log_text("a‏b؜c") == "a\\u200fb\\u061cc"
 
 
 def test_plain_log_text_escapes_newline_so_a_name_cannot_forge_a_line():

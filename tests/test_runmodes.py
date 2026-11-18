@@ -745,6 +745,32 @@ def test_run_full_refused_name_plan_reports_no_placed_roots(tmp_path, make_pdf,
     assert "Root assemblies:     0" in "\n".join(logged)
 
 
+def test_run_full_root_skipped_by_a_guard_is_not_reported_placed(
+        tmp_path, make_pdf, monkeypatch):
+    # place_files can skip a whole root subtree (a symlinked/junction ancestor
+    # on the planned folder, a failed mkdir). Taking `kept` as the placed set
+    # would list that root as an assembly of the tree and keep its PDFs out of
+    # the unplaced report, although nothing was copied.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    logged = []
+
+    def fake_place(*args, placed_out=None, **kwargs):
+        return 0
+
+    monkeypatch.setattr("fermi_organizer.runmodes.place_files", fake_place)
+
+    ctx = run_full(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["roots"] == []
+    assert ctx["counters"]["roots"] == 0
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (2) ---" in text
+
+
 def test_run_full_skipped_root_exclusive_child_reported_unplaced(
         tmp_path, make_pdf, monkeypatch):
     # Reachability for the unplaced report uses kept roots only: a child

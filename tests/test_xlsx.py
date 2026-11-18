@@ -98,6 +98,14 @@ def test_load_history_marks_pre_v2_pair_counts(tmp_path):
     assert rows[1][4] == 0
     assert legacy[0][4] == 7, "the loaded copy must not mutate the payload"
 
+    # A v2 sidecar is a different shape and must stay numeric: marking it too
+    # would take every post-upgrade point out of the trend.
+    sidecar.write_text(json.dumps(
+        {"version": fx.HISTORY_VERSION,
+         "runs": [["2026-11-03T12:00:00", "EXECUTE", 3, 10, 7, 0, 0, "r.txt"]]}),
+        encoding="utf-8")
+    assert fx._load_history(xlsx)[0][4] == 7
+
     fx._save_history(xlsx, rows)
     assert fx._load_history(xlsx) == rows
 

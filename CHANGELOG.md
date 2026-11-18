@@ -9,7 +9,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - **A newline in a drawing NAME can no longer forge a report line.** The log
   sanitizer escaped control, CR and bidi characters but left LF, and also left
   U+2028/U+2029 (line/paragraph separators that Unicode-aware readers break
-  on). All three are rendered as escapes now.
+  on) and the free-standing marks (U+200E/U+200F/U+061C, the deprecated
+  U+206A-U+206F). All of them are rendered as escapes now.
+- **The Roots sheet lists roots that placed a file.** `place_files` now reports
+  the roots that put at least one copy in the tree, so a root whose whole
+  subtree a guard refused (a symlinked/junction ancestor, a failed mkdir) no
+  longer reads as an assembly of the tree and its PDFs surface under Unplaced.
 - **An Orphans row a full dry run marks "Planned" is no longer a link.** It
   could open a live `_orphans/` copy of the same stem, a file the row does not
   describe. Incremental and repair keep their links: their rows name copies
@@ -29,6 +34,9 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - **The release-gate test pins the Ubuntu `test` job.** The loop covered the
   Windows, packaging and ruff jobs only, so deleting the coverage-ratcheted
   suite would not have failed it.
+- **README installs the hashed locks.** The external-clone note and the test
+  recipe still prescribed `pip install -r requirements.txt`, the unhashed
+  source manifest, contradicting the install section above them.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

@@ -1641,6 +1641,26 @@ def test_place_files_accepts_a_one_shot_iterator_of_roots(tmp_path):
     assert (folder / "F10126106" / "F10126106.pdf").is_file()
 
 
+def test_place_files_reports_only_roots_that_placed_something(tmp_path, monkeypatch):
+    # A root whose whole subtree is refused has no file in the tree, so it
+    # must not be reported as placed (its PDFs belong in the unplaced list).
+    folder = tmp_path / "out"
+    pdfs = {}
+    for stem in ("F10126106", "F10126107"):
+        pdfs[stem] = tmp_path / f"{stem}.pdf"
+        pdfs[stem].write_bytes(b"%PDF")
+    placed = []
+    monkeypatch.setattr(fsops, "_has_linked_ancestor",
+                        lambda path, stop: path.name == "F10126106")
+
+    total = place_files({"F10126106": [], "F10126107": []},
+                        ["F10126106", "F10126107"], pdfs, folder, False,
+                        lambda m: None, placed_out=placed)
+
+    assert total == 1
+    assert placed == ["F10126107"]
+
+
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
     out = tmp_path / "out"
     orphans_dir = out / "_orphans"

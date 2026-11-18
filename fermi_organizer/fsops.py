@@ -504,11 +504,14 @@ def _copy_atomic(src, dst, stop=None):
 
 
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
-                lock=None):
+                lock=None, placed_out=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
     `roots` may be any iterable: it is materialised here because it is read
-    twice (preflight, then traversal).
+    twice (preflight, then traversal). `placed_out`, when given, receives the
+    roots that placed at least one copy: a root whose whole subtree was
+    skipped (length cap, symlinked/junction ancestor, failed mkdir) is left
+    out, so its PDFs can be reported as unplaced.
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
@@ -540,6 +543,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
         return folder_names.get(stem) or folder_name_for(stem, names_of)
 
     for root in sorted(roots):
+        copies_before = total_copies
         stack = [(root, folder / fname(root), 0)]
         while stack:
             stem, current_folder, depth = stack.pop()
@@ -597,6 +601,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     total_copies += 1
             stack.extend((child, current_folder / fname(child), depth + 1)
                          for child in reversed(kids))
+        if placed_out is not None and total_copies > copies_before:
+            placed_out.append(root)
 
     if skipped_count:
         log(f"  Skipped {skipped_count} path(s) due to length limits")

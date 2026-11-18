@@ -177,8 +177,8 @@ file. It encodes the safe workflow (dry-run → review → execute), flag decisi
 to summarize a run, guardrails (originals are never modified) and troubleshooting.
 
 To organize a folder from outside a clone, install the repository's dependencies
-(`pip install -r requirements.txt`, plus `pip install -e .` for the module form) and
-run from the repository root:
+(`pip install --require-hashes -r requirements.lock`, plus `pip install -e .` for the
+module form) and run from the repository root:
 
 ```bash
 python -m fermi_organizer.cli "D:\data\drawings" --output "D:\data\drawings\Output" --dry-run
@@ -278,10 +278,8 @@ contributors and coding agents need.
 ## Tests
 
 ```bash
-# requirements-dev.txt is hash-pinned; installing it in the same invocation as
-# the unhashed requirements.txt makes pip demand hashes for everything. Install
-# the runtime deps and the dev lock separately.
-pip install -r requirements.txt
+# The runtime and dev locks are hash-pinned separately; install both.
+pip install --require-hashes -r requirements.lock
 pip install --require-hashes -r requirements-dev.txt
 python -m pytest -q
 ```

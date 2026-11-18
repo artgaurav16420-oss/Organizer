@@ -1719,10 +1719,10 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     Returns (copies, placement_refused, skipped_roots, placed_roots): an
     over-cap fan-out drops the largest roots (logged with their planned
     counts) and still places the rest; only when nothing fits is folder
-    placement skipped entirely. `placed_roots` is the set this run committed
-    to placing - empty when the name plan refused, which is the only case
-    where a refusal leaves `skipped_roots` empty too. It is not a per-file
-    success report: guarded copy failures warn and continue. The bounded
+    placement skipped entirely. `placed_roots` is what place_files actually
+    placed - empty when the name plan refused (the only case where a refusal
+    leaves `skipped_roots` empty too) and without a root whose whole subtree
+    was skipped, so that root's PDFs surface as unplaced. The bounded
     orphan/archive copies always run so the run still reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
@@ -1741,8 +1741,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         else:
             total_copies = place_files(children, kept, index, output, dry_run,
                                        log, names_of, folder_names, renames=renames,
-                                       lock=lock)
-            placed_roots = list(kept)
+                                       lock=lock, placed_out=placed_roots)
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).
