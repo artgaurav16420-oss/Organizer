@@ -64,6 +64,14 @@ All notable changes to the Fermi PDF organizer are recorded here.
   `_orphans/` parking was refused (a symlinked ancestor) or a copy failed,
   the PDF sat nowhere in the tree and in neither report; only orphans that
   really landed (or would, in a dry run) are subtracted now.
+- **A shared drawing copied under one claimant is not unplaced.** One failed
+  copy attempt used to put the stem in the unplaced set even after another
+  claimant's copy reached the tree; `place_files` now reports only stems with
+  no successful copy anywhere.
+- **A history row with a non-scalar cell costs the trend, not the workbook.**
+  Rows were checked for shape only, and openpyxl refuses a dict or list cell
+  while writing the sheet, aborting the workbook refresh; such a sidecar is
+  handled as corrupt history like a short or null row.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

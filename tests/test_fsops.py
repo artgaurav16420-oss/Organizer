@@ -1690,6 +1690,36 @@ def test_place_files_reports_a_file_it_could_not_copy(tmp_path, monkeypatch):
     assert failed == {"F10126106"}
 
 
+def test_place_files_does_not_report_a_shared_file_copied_under_another_parent(
+        tmp_path, monkeypatch):
+    # A claimed child is copied into every claimant's subtree. One failed
+    # attempt must not put the stem back after reachability marked it placed:
+    # the tree holds a copy, so the Unplaced report would name a file that is
+    # there. The failed root has to carry a real child for this to bite -
+    # with an empty children map the shared copy never runs.
+    folder = tmp_path / "out"
+    pdfs = {}
+    for stem in ("F10126106", "F10126107", "F10126108"):
+        pdfs[stem] = tmp_path / f"{stem}.pdf"
+        pdfs[stem].write_bytes(b"%PDF")
+    real_copy = fsops._copy_atomic
+
+    def flaky(src, dst, root):
+        if Path(dst).name == "F10126108.pdf" and "F10126106" in str(dst):
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", flaky)
+    failed = set()
+    total = place_files({"F10126106": ["F10126108"],
+                         "F10126107": ["F10126108"]},
+                        ["F10126106", "F10126107"], pdfs, folder, False,
+                        lambda m: None, failed_out=failed)
+
+    assert total == 3
+    assert failed == set()
+
+
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
     out = tmp_path / "out"
     orphans_dir = out / "_orphans"

@@ -410,10 +410,10 @@ def _history_payload(data):
 
     Raises ValueError for anything that is not one of the two known shapes, so
     the caller treats it like any other unreadable sidecar. Each row is checked
-    too: `list(r)` on the sheet path would raise on a bare null, and `_table`
-    indexes its eight alignment entries, so a short or oversized row would
-    abort the workbook; corrupt history must cost the trend, never the
-    workbook.
+    too: `list(r)` on the sheet path would raise on a bare null, `_table`
+    indexes its eight alignment entries, and openpyxl refuses a dict or list
+    cell while writing, so a short, oversized or non-scalar row would abort the
+    workbook; corrupt history must cost the trend, never the workbook.
     """
     if isinstance(data, dict):
         rows = data.get("runs")
@@ -427,6 +427,10 @@ def _history_payload(data):
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) != HISTORY_FIELDS:
             raise ValueError(f"run history row is not a list of {HISTORY_FIELDS} fields")
+        for cell in row:
+            if cell is not None and not isinstance(cell, (str, int, float)):
+                raise ValueError(
+                    f"run history row holds a {type(cell).__name__}, not a sheet cell")
     return rows, legacy
 
 

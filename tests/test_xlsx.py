@@ -115,16 +115,18 @@ def test_load_history_rejects_a_row_that_is_not_a_full_list(tmp_path):
     # row. The sheet path does `list(r)`, and `_table` indexes its eight
     # alignment entries, so a null or a ninth field raised and the whole
     # workbook was skipped; history is optional and a corrupt row must cost the
-    # trend only.
+    # trend only. A right-length row with a dict cell fails later still, inside
+    # openpyxl's cell assignment, so the cell types are checked here too.
     xlsx = tmp_path / "organize_fermi_report.xlsx"
     sidecar = Path(str(xlsx) + ".history.json")
     good = ["2026-11-03T12:00:00", "EXECUTE", 3, 10, 7, 0, 0, "r.txt"]
-    for bad in (None, [1, 2], good + ["extra"]):
+    for bad in (None, [1, 2], good + ["extra"], good[:3] + [{"n": 1}] + good[4:]):
         sidecar.write_text(json.dumps({"version": fx.HISTORY_VERSION,
                                        "runs": [bad]}), encoding="utf-8")
         log = []
         assert fx._load_history(xlsx, log.append) == []
-        assert any("row is not a list of 8 fields" in m for m in log)
+        assert any("not a list of 8 fields" in m or "not a sheet cell" in m
+                   for m in log)
         assert Path(str(sidecar) + ".corrupt").exists()
 
 

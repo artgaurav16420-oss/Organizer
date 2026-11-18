@@ -512,10 +512,12 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     roots that placed at least one copy: a root whose whole subtree was
     skipped (length cap, symlinked/junction ancestor, failed mkdir) is left
     out, so its PDFs can be reported as unplaced. `failed_out`, when given,
-    receives every stem not copied, so a file lost inside a root that did
-    place keeps surfacing in the unplaced report; a refusal that drops a
-    whole subtree (length cap, linked ancestor, failed mkdir) adds that
-    subtree, since its files are never attempted.
+    receives every stem with no successful copy anywhere in the tree: a file
+    lost inside a root that did place keeps surfacing in the unplaced report,
+    and a refusal that drops a whole subtree (length cap, linked ancestor,
+    failed mkdir) adds that subtree, since its files are never attempted. A
+    stem a shared claimant copied under one parent stays out even if the same
+    copy failed under another - the tree holds it, so it is placed.
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
@@ -534,6 +536,11 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     total_copies = 0
     skipped_count = 0
     failed_count = 0
+    # `failed_out` is only filled once the traversal ends: a stem is unplaced
+    # only when no attempt copied it, so a shared child that failed under one
+    # claimant and was written under another is not in it.
+    failed_seen = set()
+    copied = set()
     names_of = names_of or {}
     folder_names = folder_names or {}
     renames = renames or {}
@@ -548,15 +555,13 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
 
     def dropped(stem):
         """Record `stem` and every descendant as not placed (cycle-safe)."""
-        if failed_out is None:
-            return
         todo, seen = [stem], set()
         while todo:
             s = todo.pop()
             if s in seen:
                 continue
             seen.add(s)
-            failed_out.add(s)
+            failed_seen.add(s)
             todo.extend(children.get(s, ()))
 
     for root in sorted(roots):
@@ -578,8 +583,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if _islink(pdf) or _islink(target):
                 log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
                 failed_count += 1
-                if failed_out is not None:
-                    failed_out.add(stem)
+                failed_seen.add(stem)
                 stack.extend((child, current_folder / fname(child), depth + 1)
                              for child in reversed(kids))
                 continue
@@ -592,6 +596,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if dry_run:
                 log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
                 total_copies += 1
+                copied.add(stem)
             else:
                 # mkdir failure: the subtree's paths cannot exist - skip it;
                 # copy2 failure: only this file is lost, children are still tried.
@@ -620,14 +625,20 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
-                    if failed_out is not None:
-                        failed_out.add(stem)
+                    failed_seen.add(stem)
                 else:
                     total_copies += 1
+                    copied.add(stem)
             stack.extend((child, current_folder / fname(child), depth + 1)
                          for child in reversed(kids))
         if placed_out is not None and total_copies > copies_before:
             placed_out.append(root)
+
+    if failed_out is not None:
+        # Subtract the stems another claimant did copy: a shared drawing is
+        # written into every claimant's subtree, so one failed attempt does
+        # not make it unplaced while a copy sits in the tree.
+        failed_out.update(failed_seen - copied)
 
     if skipped_count:
         log(f"  Skipped {skipped_count} path(s) due to length limits")
