@@ -51,6 +51,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   It used the absolute `file:///` URI, whose percent-encoding pushed a deep
   output path past Excel's 255-character limit, leaving the note plain on
   exactly the runs where the report is hardest to find.
+- **Run-history rows must be exactly the sheet's eight fields.** The check
+  accepted oversized rows, and the table then indexed past its eight alignment
+  entries, skipping the whole workbook; such a sidecar is now handled as
+  corrupt history like a short or null row.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

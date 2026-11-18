@@ -111,13 +111,15 @@ def test_load_history_marks_pre_v2_pair_counts(tmp_path):
 
 
 def test_load_history_rejects_a_row_that_is_not_a_full_list(tmp_path):
-    # A versioned sidecar can still carry a hand-edited or truncated row. The
-    # sheet path does `list(r)`, so a bare null raised TypeError and the whole
+    # A versioned sidecar can still carry a hand-edited, truncated or oversized
+    # row. The sheet path does `list(r)`, and `_table` indexes its eight
+    # alignment entries, so a null or a ninth field raised and the whole
     # workbook was skipped; history is optional and a corrupt row must cost the
     # trend only.
     xlsx = tmp_path / "organize_fermi_report.xlsx"
     sidecar = Path(str(xlsx) + ".history.json")
-    for bad in (None, [1, 2]):
+    good = ["2026-11-03T12:00:00", "EXECUTE", 3, 10, 7, 0, 0, "r.txt"]
+    for bad in (None, [1, 2], good + ["extra"]):
         sidecar.write_text(json.dumps({"version": fx.HISTORY_VERSION,
                                        "runs": [bad]}), encoding="utf-8")
         log = []
@@ -1212,8 +1214,10 @@ def test_missing_kpi_counts_distinct_parts_and_card_carries_its_label(tmp_path):
     # J6 is the value cell of the MISSING card (third card, span J:L).
     assert dash["J6"].value == 1
     # An unlabelled merged value cell is unreadable to assistive technology;
-    # the card carries the metric name as a cell comment.
-    assert "PDF FILES IN TREE (LIVE)" in (dash["B6"].comment.text or "")
+    # the card carries the metric name as a cell comment. It must be the
+    # Missing card's own cell: B6 belongs to PDF FILES, so asserting there
+    # would pass while the Missing comment was missing.
+    assert "MISSING - DOWNLOAD FROM TEAMCENTER" in (dash["J6"].comment.text or "")
 
 
 def test_dashboard_report_note_links_the_txt_when_it_resolves(tmp_path):

@@ -211,7 +211,10 @@ directory once installed editable).
 - Paths are capped at 250 units of the OS path limit (`MAX_PATH`). On Windows the
   guard counts UTF-16 code units (`treescan.path_units`), so a character outside the
   Basic Multilingual Plane counts twice and a path of 125 such characters is already
-  at the cap. A placement that would exceed it is
+  at the cap. On POSIX it counts characters, while the filesystem enforces byte
+  limits (255 bytes per name component), so a multibyte folder name near the cap can
+  still be refused by the OS — the cap is a margin against the Windows limit, not a
+  POSIX byte guarantee. A placement that would exceed it is
   **skipped with a warning only** and the run still exits 0, so an incomplete tree can
   look like a normal outcome — check the report's `Skipped N path(s) due to length
   limits` line when the output root is deeply nested. At that depth the `.txt` report
