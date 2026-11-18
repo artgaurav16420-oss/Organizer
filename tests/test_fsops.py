@@ -1612,6 +1612,33 @@ def test_place_files_iterative_below_default_recursion_limit(tmp_path, monkeypat
     assert total == TREE_MAX_DEPTH + 1
 
 
+def test_place_files_linked_guard_walks_each_folder_once(tmp_path, monkeypatch):
+    # Re-walking the whole ancestor chain for every folder made a deep plan
+    # quadratic in realpath calls: a 500-deep dry run outlived the Windows CI
+    # job timeout. The traversal is top-down, so one probe per folder answers
+    # the same question for its subtree.
+    depth = 40
+    chain = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(depth)}
+    chain[f"F{10126000 + depth}"] = []
+    index = {stem: tmp_path / (stem + ".pdf") for stem in chain}
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    probed = []
+
+    def probe(path):
+        probed.append(path)
+        return False
+
+    monkeypatch.setattr(fsops, "_is_dir_link", probe)
+
+    total = place_files(chain, ["F10126000"], index, tmp_path / "out",
+                        True, lambda msg: None)
+
+    assert total == depth + 1
+    # One probe per folder; the old full walk probed sum(1..depth+1) of them.
+    assert len(probed) <= depth + 1
+
+
 def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path, monkeypatch):
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"
@@ -1656,8 +1683,8 @@ def test_place_files_reports_only_roots_that_placed_something(tmp_path, monkeypa
         pdfs[stem].write_bytes(b"%PDF")
     placed = []
     failed = set()
-    monkeypatch.setattr(fsops, "_has_linked_ancestor",
-                        lambda path, stop: path.name == "F10126106")
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106")
 
     total = place_files({"F10126106": [], "F10126107": []},
                         ["F10126106", "F10126107"], pdfs, folder, False,
@@ -1698,8 +1725,8 @@ def test_place_files_dry_run_refuses_a_linked_ancestor(tmp_path, monkeypatch):
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"
     pdf.write_bytes(b"%PDF")
-    monkeypatch.setattr(fsops, "_has_linked_ancestor",
-                        lambda path, stop: path.name == "F10126106")
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106")
     placed, failed = [], set()
 
     total = place_files({"F10126106": []}, ["F10126106"],

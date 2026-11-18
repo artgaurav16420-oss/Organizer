@@ -79,6 +79,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - **A run whose every root a guard refused is a placement refusal.** The flag
   tracked only the copy cap, so a run that copied none of its own drawings
   still exited 0 and read as a successful build.
+- **The linked-ancestor guard walks each folder once per plan.** Running it in
+  dry-run too made a 500-deep chain cost O(depth^2) realpath calls, which
+  outlived the Windows CI job timeout; the pre-order traversal now caches the
+  verdict per folder and probes only the new component.
 - **The OCR-unavailable line is accurate about short text layers.** Pages
   under the OCR text threshold still have their text parsed natively, so the
   old wording claimed a readable NAME or parts list could not be read.

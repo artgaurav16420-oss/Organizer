@@ -564,6 +564,27 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             failed_seen.add(s)
             todo.extend(children.get(s, ()))
 
+    # `_has_linked_ancestor` walks every component between the output root and
+    # the folder, resolving each one twice, so re-walking a chain costs
+    # O(depth^2) realpath calls for the plan (a 500-deep dry run outlived the
+    # CI job timeout on Windows). The traversal is pre-order - a child folder
+    # is pushed only after its parent was accepted - so a folder below a
+    # proven-clean parent needs one probe of its own component, not a new walk.
+    clean_folders = set()
+
+    def linked_folder(path):
+        """True when `path` or a folder above it inside the tree is a link."""
+        if path in clean_folders:
+            return False
+        if path.parent != folder and path.parent not in clean_folders:
+            # Not the top-down shape the cache assumes: keep the full walk
+            # rather than trusting a parent this pass never checked.
+            return _has_linked_ancestor(path, folder)
+        if _islink(path) or _is_dir_link(path):
+            return True
+        clean_folders.add(path)
+        return False
+
     for root in sorted(roots):
         copies_before = total_copies
         stack = [(root, folder / fname(root), 0)]
@@ -599,7 +620,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             # folder would otherwise have parents=True create descendant
             # directories outside the output tree, and the copy guard would
             # only refuse the file afterwards.
-            if _has_linked_ancestor(current_folder, folder):
+            if linked_folder(current_folder):
                 log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
                     f"symlinked/junction ancestor, refusing): {current_folder}")
                 failed_count += count_copies(stem)

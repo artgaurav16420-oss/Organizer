@@ -810,8 +810,8 @@ def test_run_full_all_roots_refused_is_a_placement_refusal(
     out = tmp_path / "out"
     _write_parent(make_pdf, in_dir)
     _write_child(make_pdf, in_dir)
-    monkeypatch.setattr(fsops, "_has_linked_ancestor",
-                        lambda path, stop: path.name == "F10126106 Test Parent")
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106 Test Parent")
     logged = []
 
     ctx = run_full(in_dir, out, False, logged.append, jobs=1)
