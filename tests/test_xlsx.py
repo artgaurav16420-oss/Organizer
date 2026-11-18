@@ -82,6 +82,26 @@ def test_save_history_roundtrip_and_cap(tmp_path):
     assert not Path(str(xlsx) + ".history.json.tmp").exists()
 
 
+def test_load_history_marks_pre_v2_pair_counts(tmp_path):
+    # Before v2 the Missing column counted (parent, part) pairs. Loading it as
+    # a number would put two units on one trend line, so the old row keeps its
+    # number but carries the unit; a v2 row stays numeric.
+    xlsx = tmp_path / "organize_fermi_report.xlsx"
+    sidecar = Path(str(xlsx) + ".history.json")
+    legacy = [["2026-11-01T12:00:00", "EXECUTE", 3, 10, 7, 0, 0, "r.txt"],
+              ["2026-11-02T12:00:00", "EXECUTE", 3, 10, 0, 0, 0, "r.txt"]]
+    sidecar.write_text(json.dumps(legacy), encoding="utf-8")
+
+    rows = fx._load_history(xlsx)
+    assert rows[0][4] == "7 (pairs)"
+    # A zero is unambiguous: no pair and no distinct part differ by nothing.
+    assert rows[1][4] == 0
+    assert legacy[0][4] == 7, "the loaded copy must not mutate the payload"
+
+    fx._save_history(xlsx, rows)
+    assert fx._load_history(xlsx) == rows
+
+
 def test_build_workbook_creates_expected_sheets(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
@@ -111,8 +131,9 @@ def test_build_workbook_creates_expected_sheets(tmp_path):
                              "USED ON check", "Title block check", "Files",
                              "Run History"]
     history = json.loads(Path(str(path) + ".history.json").read_text(encoding="utf-8"))
-    assert len(history) == 1
-    assert history[0][0] == "2026-09-30T12:00:00"
+    assert history["version"] == fx.HISTORY_VERSION
+    assert len(history["runs"]) == 1
+    assert history["runs"][0][0] == "2026-09-30T12:00:00"
 
 
 def test_build_workbook_sheet_cells(tmp_path):

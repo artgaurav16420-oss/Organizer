@@ -28,7 +28,7 @@ from .runmodes import (
 
 
 _LOG_CTRL_RE = re.compile(
-    "[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+    "[\x00-\x08\x0a-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
 
 
 def _jobs_arg(raw):
@@ -90,9 +90,9 @@ def _log_ocr_startup(log):
     else:
         reason = OCR.reason or "tesseract not found"
         log("OCR: disabled" if not OCR.enabled else
-            f"OCR: unavailable ({reason}; a scanned sheet's own NAME and parts "
-            "list cannot be read - it is placed only when a readable parent's "
-            "parts list names it)")
+            f"OCR: unavailable ({reason}; text-layer PDFs are read as usual, "
+            "but a scanned sheet's own NAME and parts list cannot be read - "
+            "it is placed only when a readable parent's parts list names it)")
 
 
 def run_mode_label(dry_run, incremental=False, repair=False):

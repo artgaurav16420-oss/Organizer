@@ -4,11 +4,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
-### Fix: review round (log newlines, orphan links, placement iterator)
+### Fix: review rounds (log escaping, orphan links, history units)
 
 - **A newline in a drawing NAME can no longer forge a report line.** The log
-  sanitizer escaped control, CR and bidi characters but left LF, which a POSIX
-  filename may carry; it is now rendered as `\x0a` like the others.
+  sanitizer escaped control, CR and bidi characters but left LF, and also left
+  U+2028/U+2029 (line/paragraph separators that Unicode-aware readers break
+  on). All three are rendered as escapes now.
 - **An Orphans row a full dry run marks "Planned" is no longer a link.** It
   could open a live `_orphans/` copy of the same stem, a file the row does not
   describe. Incremental and repair keep their links: their rows name copies
@@ -16,6 +17,15 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - **`place_files` accepts any iterable of roots.** It reads `roots` twice (the
   fan-out preflight, then the traversal), so a generator was consumed by the
   preflight and the traversal copied nothing; it is materialised once.
+- **The run-history sidecar is versioned (v2).** The Missing column now counts
+  distinct part numbers; rows written before that change are marked
+  "`n (pairs)`" on load, so they stay visible in the sheet while the trend
+  chart does not plot two units as one line.
+- **The OCR-unavailable line says text-layer PDFs are unaffected**, instead of
+  reading as if every drawing lost its NAME and parts list.
+- **The anonymous-document memo is bounded.** The OCR context pinned every
+  in-memory document (PyMuPDF documents take no weak reference); it now pins
+  the last 8, and an evicted document costs a memo miss, never a wrong key.
 - **The release-gate test pins the Ubuntu `test` job.** The loop covered the
   Windows, packaging and ruff jobs only, so deleting the coverage-ratcheted
   suite would not have failed it.

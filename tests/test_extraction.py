@@ -715,6 +715,23 @@ def test_doc_key_is_stable_for_one_anonymous_document():
     assert ocr.doc_key(_Page(_Doc())) != first
 
 
+def test_anon_doc_pins_are_bounded_and_never_collide():
+    # PyMuPDF documents support no weak reference, so the identity map that
+    # makes doc_key stable pins the document object. A long run of in-memory
+    # documents must not retain every wrapper; eviction may cost a memo miss
+    # (a fresh key) but must never hand a live document another one's key.
+    ocr = extraction._OcrContext()
+    pinned = object()
+    first = ocr._anon_key(pinned)
+    assert ocr._anon_key(pinned) == first
+    for _ in range(extraction.OCR_ANON_DOC_PINS * 3):
+        ocr._anon_key(object())
+    assert len(ocr._anon_docs) == extraction.OCR_ANON_DOC_PINS
+    evicted = ocr._anon_key(pinned)
+    assert evicted != first, "an evicted document must never inherit a key"
+    assert len(ocr._anon_docs) == extraction.OCR_ANON_DOC_PINS
+
+
 def test_ocr_tok_pipe_confusion():
     # A pipe *inside* a token is Tesseract's misread 1 (FLO|44633 -> F10144633)
     # and must survive correction; a leading table-border pipe must be

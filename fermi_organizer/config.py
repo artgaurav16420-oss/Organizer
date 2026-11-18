@@ -149,6 +149,11 @@ OCR_MAIN_DPI = 300
 # for A4-A1 and lands the biggest A0 scans near 207 dpi, which OCRs well.
 OCR_MAX_RENDER_MP = 300
 OCR_STRIP_ZOOM = 6   # zoom factor for the parts-list row re-OCR (432 dpi at scale 1)
+# Anonymous (in-memory) documents get a per-run key that must stay identical
+# across calls, so the context pins the document object. PyMuPDF documents do
+# not support weak references, so the pin is bounded instead: eviction costs a
+# memo miss (the pre-identity-fix behaviour), never a wrong key.
+OCR_ANON_DOC_PINS = 8
 OCR_VAL_RE = re.compile(r"^F(C?)\d{5,8}$")
 OCR_CORR = str.maketrans("OLISB|", "011581")
 

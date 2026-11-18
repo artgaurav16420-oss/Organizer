@@ -281,9 +281,10 @@ def test_log_ocr_startup_unavailable_line(monkeypatch):
     monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: None)
     monkeypatch.setattr(extraction.OCR, "reason", "tesseract not found")
     cli_module._log_ocr_startup(logged.append)
-    assert logged == ["OCR: unavailable (tesseract not found; a scanned sheet's "
-                      "own NAME and parts list cannot be read - it is placed only "
-                      "when a readable parent's parts list names it)"]
+    assert logged == ["OCR: unavailable (tesseract not found; text-layer PDFs "
+                      "are read as usual, but a scanned sheet's own NAME and "
+                      "parts list cannot be read - it is placed only when a "
+                      "readable parent's parts list names it)"]
 
 
 def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):
@@ -497,6 +498,9 @@ def test_plain_log_text_escapes_newline_so_a_name_cannot_forge_a_line():
     # line that reads like a finding of its own.
     assert cli_module._plain_log_text("a\nb") == "a\\x0ab"
     assert cli_module._plain_log_text("") == ""
+    # LS/PS are line breaks to a Unicode-aware reader (and to many log
+    # viewers), so they forge lines the same way LF does.
+    assert cli_module._plain_log_text("a b c") == "a\\u2028b\\u2029c"
 
 
 def test_control_char_name_is_escaped_in_report_and_workbook(

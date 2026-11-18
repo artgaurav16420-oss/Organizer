@@ -97,6 +97,11 @@ else:
 # Run-history cap: single source for both the sidecar save and the sheet render
 # (the two must agree or the saved file and the displayed table drift).
 HISTORY_MAX_RUNS = 200
+# 2: the "Missing" column counts distinct part numbers. Rows written by 1 (or
+# by an unversioned sidecar) counted (parent, part) pairs, so they are marked
+# " (pairs)" on load: the number stays visible, and the trend chart does not
+# draw two different units as one line.
+HISTORY_VERSION = 2
 MAX_COL_WIDTH = 64
 ROW_H = 21
 
@@ -396,6 +401,39 @@ def _hist_path(xlsx_path):
     return Path(str(xlsx_path) + ".history.json")
 
 
+def _history_payload(data):
+    """(rows, legacy) from a sidecar payload.
+
+    Raises ValueError for anything that is not one of the two known shapes, so
+    the caller treats it like any other unreadable sidecar.
+    """
+    if isinstance(data, dict):
+        rows = data.get("runs")
+        if not isinstance(rows, list):
+            raise ValueError("run history is not a list")
+        return rows, data.get("version") != HISTORY_VERSION
+    if isinstance(data, list):
+        return data, True
+    raise ValueError("run history is not a list")
+
+
+def _mark_legacy_missing(rows):
+    """Annotate pre-v2 rows: their Missing value counted (parent, part) pairs.
+
+    A string cannot enter the chart's numeric series, so the historical point
+    is left out of the trend instead of being compared with a distinct-part
+    count. The sheet still shows the old number and its unit.
+    """
+    marked = []
+    for row in rows:
+        if (isinstance(row, (list, tuple)) and len(row) > 4
+                and isinstance(row[4], int) and row[4]):
+            row = list(row)
+            row[4] = f"{row[4]} (pairs)"
+        marked.append(row)
+    return marked
+
+
 def _load_history(xlsx_path, log=None):
     hist = _hist_path(xlsx_path)
     if not hist.exists():
@@ -403,9 +441,8 @@ def _load_history(xlsx_path, log=None):
         return []
     try:
         data = json.loads(hist.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            raise ValueError("run history is not a list")
-        return data
+        rows, legacy = _history_payload(data)
+        return _mark_legacy_missing(rows) if legacy else rows
     except Exception as e:
         # Deliberately broad: the sidecar is untrusted input (hand-edited or
         # truncated JSON can raise beyond ValueError, e.g. RecursionError on
@@ -426,7 +463,9 @@ def _save_history(xlsx_path, rows, log=None):
     hist = _hist_path(xlsx_path)
     tmp = hist.with_name(hist.name + ".tmp")
     try:
-        tmp.write_text(json.dumps(rows[-HISTORY_MAX_RUNS:]), encoding="utf-8")
+        tmp.write_text(json.dumps({"version": HISTORY_VERSION,
+                                   "runs": rows[-HISTORY_MAX_RUNS:]}),
+                       encoding="utf-8")
         os.replace(tmp, hist)
     except OSError as e:
         (log or print)(f"WARNING: run history not saved: {e}")

@@ -44,6 +44,7 @@ from .config import (
     MAX_JOBS,
     MAX_PDF_BYTES,
     MAX_PDF_PAGES,
+    OCR_ANON_DOC_PINS,
     OCR_CORR,
     OCR_FERMI_COL_DX_LEFT,
     OCR_FERMI_COL_DX_RIGHT,
@@ -172,10 +173,12 @@ class _OcrContext:
         self.page_scale = OrderedDict()
         self._abandoned_docs = []
         self._doc_seq = 0
-        # id(parent) -> (parent, key). Holding the parent keeps its id unique
-        # for the life of the memo, so repeated calls on one in-memory
-        # document hit the same memo entry instead of minting a fresh key.
-        self._anon_docs = {}
+        # id(parent) -> (parent, key), most recently used last. Holding the
+        # parent keeps its id unique while pinned, so repeated calls on one
+        # in-memory document hit the same memo entry instead of minting a
+        # fresh key. PyMuPDF documents support no weak reference, so the pin
+        # is bounded: an evicted document only costs a memo miss.
+        self._anon_docs = OrderedDict()
 
     def reset(self, enabled=True):
         """Start a fresh run: clear events/memos/availability and set enabled."""
@@ -194,7 +197,7 @@ class _OcrContext:
         self._abandoned_docs = [(doc, thread) for doc, thread
                                 in self._abandoned_docs if thread.is_alive()]
         self._doc_seq = 0
-        self._anon_docs = {}
+        self._anon_docs = OrderedDict()
 
     def _export_for_pymupdf(self, install_dir):
         """Export a common-dir Tesseract install to the process environment.
@@ -301,10 +304,13 @@ class _OcrContext:
         """
         entry = self._anon_docs.get(id(parent))
         if entry is not None and entry[0] is parent:
+            self._anon_docs.move_to_end(id(parent))
             return entry[1]
         self._doc_seq += 1
         key = f"doc-{self._doc_seq}"
         self._anon_docs[id(parent)] = (parent, key)
+        while len(self._anon_docs) > OCR_ANON_DOC_PINS:
+            self._anon_docs.popitem(last=False)
         return key
 
     def doc_key(self, page):
