@@ -1,4 +1,6 @@
 """Multiprocess path: jobs=2 parity + OCR event merge round-trip."""
+import pytest
+
 from fermi_organizer import extraction
 from fermi_organizer.runmodes import run_full
 
@@ -63,6 +65,37 @@ def test_run_parallel_uses_spawn_context(monkeypatch):
     out = extraction.run_parallel(lambda p: (p.upper(), None), ["a", "b"], jobs=2)
     assert out == [("A",), ("B",)]  # trailing OCR delta stripped
     assert captured["mp_context"].get_start_method() == "spawn"
+
+
+def test_run_parallel_merges_deltas_as_each_result_arrives(monkeypatch):
+    # Consuming map() lazily is the point: a batch that fails midway keeps the
+    # OCR events of the PDFs it did finish. list(ex.map(...)) merged nothing
+    # before the batch raised.
+    import concurrent.futures as cf
+
+    delta = {"F10126106.pdf": {"pages": [0], "used_on": [], "name": None,
+                               "bom": [], "secs": 1.0}}
+
+    class FailingExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def map(self, task, paths):
+            def results():
+                yield task(paths[0])
+                raise RuntimeError("worker died")
+            return results()
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", FailingExecutor)
+    with pytest.raises(RuntimeError):
+        extraction.run_parallel(lambda p: (p, delta), ["a", "b"], jobs=2)
+    assert extraction.OCR.events["F10126106.pdf"]["pages"] == {0}
 
 
 def test_ocr_event_delta_merge_roundtrip():

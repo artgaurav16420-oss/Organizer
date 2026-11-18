@@ -37,6 +37,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
 - **README installs the hashed locks.** The external-clone note and the test
   recipe still prescribed `pip install -r requirements.txt`, the unhashed
   source manifest, contradicting the install section above them.
+- **Parallel extraction folds each worker's OCR events as its result
+  arrives.** `run_parallel` collected the whole batch before merging, so a
+  large scanned run held every PDF's event delta alongside its payload until
+  the last worker finished.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

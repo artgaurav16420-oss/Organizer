@@ -2382,10 +2382,12 @@ def run_parallel(task, paths, jobs=0, ocr_enabled=True):
                              mp_context=multiprocessing.get_context("spawn"),
                              initializer=_ocr_worker_init,
                              initargs=(ocr_enabled,)) as ex:
-        results = list(ex.map(task, paths))
-    # Trim in place: building a second full list would double peak memory while
-    # every worker's extraction payload is still resident.
-    for i, r in enumerate(results):
-        OCR.merge_events(r[-1])
-        results[i] = r[:-1]
+        # Merge and trim as each result arrives. list(ex.map(...)) would hold
+        # every worker's OCR delta alongside its payload until the whole batch
+        # finished, which is the peak on a large scanned run; consumed this
+        # way each delta is dropped as soon as it is folded in.
+        results = []
+        for r in ex.map(task, paths):
+            OCR.merge_events(r[-1])
+            results.append(r[:-1])
     return results
