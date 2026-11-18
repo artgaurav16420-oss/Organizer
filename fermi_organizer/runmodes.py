@@ -470,9 +470,9 @@ def _log_roots_and_orphans(roots, orphans, used_on_of, names_of, log):
         log("")
 
 
-def _log_unplaced(roots, children, index, orphans, log):
+def _log_unplaced(roots, children, index, orphans, log, failed=()):
     reachable = collect_reachable(children, roots)
-    unplaced = set(index) - reachable - set(orphans)
+    unplaced = set(index) - reachable - set(orphans) | set(failed)
     if unplaced:
         log(f"--- Unplaced PDFs ({len(unplaced)}) ---")
         for s in sorted(unplaced):
@@ -1716,14 +1716,16 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
                 names_of, output, dry_run, log, rekeyed, lock=None):
     """Folder creation + orphan/superseded/duplicate copies.
 
-    Returns (copies, placement_refused, skipped_roots, placed_roots): an
-    over-cap fan-out drops the largest roots (logged with their planned
-    counts) and still places the rest; only when nothing fits is folder
-    placement skipped entirely. `placed_roots` is what place_files actually
-    placed - empty when the name plan refused (the only case where a refusal
-    leaves `skipped_roots` empty too) and without a root whose whole subtree
-    was skipped, so that root's PDFs surface as unplaced. The bounded
-    orphan/archive copies always run so the run still reports."""
+    Returns (copies, placement_refused, skipped_roots, placed_roots,
+    unplaced_stems): an over-cap fan-out drops the largest roots (logged with
+    their planned counts) and still places the rest; only when nothing fits is
+    folder placement skipped entirely. `placed_roots` is what place_files
+    actually placed - empty when the name plan refused (the only case where a
+    refusal leaves `skipped_roots` empty too) and without a root whose whole
+    subtree was skipped. `unplaced_stems` is every file a guard or a failed
+    copy left out of the tree, so the Unplaced report does not stop at root
+    granularity. The bounded orphan/archive copies always run so the run still
+    reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
     # Cap check first: a pathological DAG must be trimmed before
@@ -1732,6 +1734,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     refused = bool(skipped)
     total_copies = 0
     placed_roots = []
+    unplaced_stems = set()
     if kept:
         folder_names = plan_folder_names(children, kept, index, names_of, output, log)
         if folder_names is None:
@@ -1741,7 +1744,8 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         else:
             total_copies = place_files(children, kept, index, output, dry_run,
                                        log, names_of, folder_names, renames=renames,
-                                       lock=lock, placed_out=placed_roots)
+                                       lock=lock, placed_out=placed_roots,
+                                       failed_out=unplaced_stems)
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).
@@ -1755,7 +1759,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
     log("")
-    return total_copies, refused, skipped, placed_roots
+    return total_copies, refused, skipped, placed_roots, unplaced_stems
 
 
 def _build_run_context(*, counters, missing, chk, orphans, roots,
@@ -1790,7 +1794,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     warning_count, unmatched, chk_stems, used_on_of, used_mism,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
                     bom_names, log, refused=False, skipped=(),
-                    placed_roots=None) -> RunContext:
+                    placed_roots=None, unplaced_stems=()) -> RunContext:
     """Unplaced log + summary + structured RunContext for the workbook."""
     if placed_roots is None:
         skipped_set = {r for r, _ in skipped}
@@ -1806,7 +1810,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     # tree". It is reported by the "Roots skipped (oversized)" summary line
     # and the Dashboard's Placement-refused row instead.
     _log_unplaced(placed_roots, children,
-                  index, orphans, log)
+                  index, orphans, log, failed=unplaced_stems)
     summary = [
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",
@@ -1908,7 +1912,7 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
     _ensure_lock(lock, log)
-    total_copies, refused, skipped, placed = _full_place(
+    total_copies, refused, skipped, placed, unplaced = _full_place(
         children, roots, orphans, old,
         watermarked_dupes, index, names_of,
         output, dry_run, log, rekeyed,
@@ -1918,7 +1922,7 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
                           used_on_of, used_mism, used_on_bugs, tb_mismatches,
                           watermarks, names_of, bom_names, log,
                           refused=refused, skipped=skipped,
-                          placed_roots=placed)
+                          placed_roots=placed, unplaced_stems=unplaced)
 
 
 def _incremental_prepare(folder, output, dry_run, log):

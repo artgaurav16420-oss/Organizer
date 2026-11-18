@@ -771,6 +771,32 @@ def test_run_full_root_skipped_by_a_guard_is_not_reported_placed(
     assert "--- Unplaced PDFs (2) ---" in text
 
 
+def test_run_full_copy_failure_surfaces_in_the_unplaced_report(
+        tmp_path, make_pdf, monkeypatch):
+    # Reachability alone says the child belongs to a placed root, so a copy
+    # that failed used to vanish from the Unplaced report although no file of
+    # it reached the tree.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    real_copy = fsops._copy_atomic
+
+    def flaky(src, dst, root):
+        if Path(src).name == "F10126107.pdf":
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", flaky)
+    logged = []
+    run_full(in_dir, out, False, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (1) ---" in text
+    assert "  F10126107" in text
+
+
 def test_run_full_skipped_root_exclusive_child_reported_unplaced(
         tmp_path, make_pdf, monkeypatch):
     # Reachability for the unplaced report uses kept roots only: a child

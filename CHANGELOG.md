@@ -55,6 +55,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   accepted oversized rows, and the table then indexed past its eight alignment
   entries, skipping the whole workbook; such a sidecar is now handled as
   corrupt history like a short or null row.
+- **The Unplaced PDFs report is per file, not per root.** A file whose own
+  copy failed (or a subtree a guard dropped) inside a root that otherwise
+  placed was reachable from that root and disappeared from the report; the
+  placement step now hands back every stem it did not copy.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

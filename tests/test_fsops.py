@@ -1650,15 +1650,39 @@ def test_place_files_reports_only_roots_that_placed_something(tmp_path, monkeypa
         pdfs[stem] = tmp_path / f"{stem}.pdf"
         pdfs[stem].write_bytes(b"%PDF")
     placed = []
+    failed = set()
     monkeypatch.setattr(fsops, "_has_linked_ancestor",
                         lambda path, stop: path.name == "F10126106")
 
     total = place_files({"F10126106": [], "F10126107": []},
                         ["F10126106", "F10126107"], pdfs, folder, False,
-                        lambda m: None, placed_out=placed)
+                        lambda m: None, placed_out=placed, failed_out=failed)
 
     assert total == 1
     assert placed == ["F10126107"]
+    # The refused subtree is reported per file too: its copy is never attempted,
+    # so nothing else would surface it in the unplaced list.
+    assert failed == {"F10126106"}
+
+
+def test_place_files_reports_a_file_it_could_not_copy(tmp_path, monkeypatch):
+    # A root that placed most of its subtree must still hand back the one file
+    # that failed: per-root reporting would mark the whole subtree placed.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    def boom(src, dst, root):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fsops, "_copy_atomic", boom)
+    failed = set()
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, False,
+                        lambda m: None, failed_out=failed)
+
+    assert total == 0
+    assert failed == {"F10126106"}
 
 
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):

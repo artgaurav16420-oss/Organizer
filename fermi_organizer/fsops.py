@@ -504,14 +504,18 @@ def _copy_atomic(src, dst, stop=None):
 
 
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
-                lock=None, placed_out=None):
+                lock=None, placed_out=None, failed_out=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
     `roots` may be any iterable: it is materialised here because it is read
     twice (preflight, then traversal). `placed_out`, when given, receives the
     roots that placed at least one copy: a root whose whole subtree was
     skipped (length cap, symlinked/junction ancestor, failed mkdir) is left
-    out, so its PDFs can be reported as unplaced.
+    out, so its PDFs can be reported as unplaced. `failed_out`, when given,
+    receives every stem not copied, so a file lost inside a root that did
+    place keeps surfacing in the unplaced report; a refusal that drops a
+    whole subtree (length cap, linked ancestor, failed mkdir) adds that
+    subtree, since its files are never attempted.
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
@@ -542,6 +546,19 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)
 
+    def dropped(stem):
+        """Record `stem` and every descendant as not placed (cycle-safe)."""
+        if failed_out is None:
+            return
+        todo, seen = [stem], set()
+        while todo:
+            s = todo.pop()
+            if s in seen:
+                continue
+            seen.add(s)
+            failed_out.add(s)
+            todo.extend(children.get(s, ()))
+
     for root in sorted(roots):
         copies_before = total_copies
         stack = [(root, folder / fname(root), 0)]
@@ -552,6 +569,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 log(f"  WARNING: placement truncated at depth {depth} in "
                     f"{current_folder.name} (deeper than any healthy tree) - manual review")
                 skipped_count += count_copies(stem)
+                dropped(stem)
                 continue
             kids = sorted(children.get(stem, ()))
             pdf = index[stem]
@@ -560,6 +578,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if _islink(pdf) or _islink(target):
                 log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
                 failed_count += 1
+                if failed_out is not None:
+                    failed_out.add(stem)
                 stack.extend((child, current_folder / fname(child), depth + 1)
                              for child in reversed(kids))
                 continue
@@ -567,6 +587,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if path_units(current_folder) > MAX_DIR or path_units(target) > MAX_PATH:
                 log(f"  WARNING: path too long ({path_units(target)} chars), skipping: {target}")
                 skipped_count += count_copies(stem)
+                dropped(stem)
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
@@ -585,18 +606,22 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                     log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
                         f"symlinked/junction ancestor, refusing): {current_folder}")
                     failed_count += count_copies(stem)
+                    dropped(stem)
                     continue
                 try:
                     current_folder.mkdir(parents=True, exist_ok=True)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += count_copies(stem)
+                    dropped(stem)
                     continue
                 try:
                     _copy_atomic(pdf, target, folder)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
+                    if failed_out is not None:
+                        failed_out.add(stem)
                 else:
                     total_copies += 1
             stack.extend((child, current_folder / fname(child), depth + 1)
