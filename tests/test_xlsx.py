@@ -1238,4 +1238,7 @@ def test_dashboard_report_note_links_the_txt_when_it_resolves(tmp_path):
     note = next(c for row in dash.iter_rows() for c in row
                 if isinstance(c.value, str) and "Report: organize_fermi_report.txt" in c.value)
     assert note.hyperlink is not None
-    assert note.hyperlink.target.endswith("organize_fermi_report.txt")
+    # Relative, resolved against the workbook's own folder: the absolute
+    # file:/// URI percent-encodes spaces and crosses Excel's 255-char limit on
+    # a deep output path, which is where the note is most needed.
+    assert note.hyperlink.target == "organize_fermi_report.txt"

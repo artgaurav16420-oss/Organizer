@@ -917,7 +917,11 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs, missing_count):
     if rep:
         try:
             target = Path(out) / rep
-            uri = _file_uri(target) if target.is_file() else None
+            # Relative, like every other drawing link: it resolves against the
+            # workbook's own folder and stays short, while the absolute
+            # file:/// URI percent-encodes spaces and crosses the 255-char
+            # limit on a deep output path - exactly where the note matters.
+            uri = _file_link(target, out) if target.is_file() else None
         except (ValueError, OSError):
             uri = None
         if uri and len(uri) <= 255:

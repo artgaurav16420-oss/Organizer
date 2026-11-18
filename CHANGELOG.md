@@ -47,6 +47,10 @@ All notable changes to the Fermi PDF organizer are recorded here.
   workbook. Every row is validated against the sheet's eight fields now, so
   such a sidecar is kept as `.corrupt` and loaded as empty history, like any
   other unreadable one.
+- **The Dashboard's report link is relative**, like every other drawing link.
+  It used the absolute `file:///` URI, whose percent-encoding pushed a deep
+  output path past Excel's 255-character limit, leaving the note plain on
+  exactly the runs where the report is hardest to find.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 
