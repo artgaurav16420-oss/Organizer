@@ -1713,7 +1713,8 @@ def _full_analyze(bom_of, index, children, parents, used_on_of, names_of, log):
 
 
 def _full_place(children, roots, orphans, old, watermarked_dupes, index,
-                names_of, output, dry_run, log, rekeyed, lock=None):
+                names_of, output, dry_run, log, rekeyed, lock=None,
+                orphans_parked=None):
     """Folder creation + orphan/superseded/duplicate copies.
 
     Returns (copies, placement_refused, skipped_roots, placed_roots,
@@ -1724,8 +1725,9 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     refusal leaves `skipped_roots` empty too) and without a root whose whole
     subtree was skipped. `unplaced_stems` is every file a guard or a failed
     copy left out of the tree, so the Unplaced report does not stop at root
-    granularity. The bounded orphan/archive copies always run so the run still
-    reports."""
+    granularity. `orphans_parked`, when given, receives the orphans that
+    really landed in _orphans/ (a refused or failed park is not one). The
+    bounded orphan/archive copies always run so the run still reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
     # Cap check first: a pathological DAG must be trimmed before
@@ -1751,7 +1753,8 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     # (they are scanned there like any other PDF and then placed properly).
     if orphans:
         total_copies += copy_orphans(orphans, index, output, dry_run, log,
-                                     renames=renames)
+                                     renames=renames,
+                                     parked_out=orphans_parked)
     if old:
         n, _archived = copy_superseded(old, output, dry_run, log, overwrite=True)
         total_copies += n
@@ -1794,8 +1797,13 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     warning_count, unmatched, chk_stems, used_on_of, used_mism,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
                     bom_names, log, refused=False, skipped=(),
-                    placed_roots=None, unplaced_stems=()) -> RunContext:
+                    placed_roots=None, unplaced_stems=(),
+                    orphans_parked=None) -> RunContext:
     """Unplaced log + summary + structured RunContext for the workbook."""
+    # An orphan counts as placed only once it has a parked copy. Subtracting
+    # every classified orphan hid the ones a refused or failed park left
+    # nowhere in the tree: absent from _orphans/ and absent from this report.
+    parked = orphans if orphans_parked is None else orphans_parked
     if placed_roots is None:
         skipped_set = {r for r, _ in skipped}
         placed_roots = [r for r in roots if r not in skipped_set]
@@ -1810,7 +1818,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     # tree". It is reported by the "Roots skipped (oversized)" summary line
     # and the Dashboard's Placement-refused row instead.
     _log_unplaced(placed_roots, children,
-                  index, orphans, log, failed=unplaced_stems)
+                  index, parked, log, failed=unplaced_stems)
     summary = [
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",
@@ -1912,17 +1920,19 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
     _ensure_lock(lock, log)
+    orphans_parked = set()
     total_copies, refused, skipped, placed, unplaced = _full_place(
         children, roots, orphans, old,
         watermarked_dupes, index, names_of,
         output, dry_run, log, rekeyed,
-        lock=lock)
+        lock=lock, orphans_parked=orphans_parked)
     return _full_finalize(roots, children, index, orphans, removed,
                           total_copies, warning_count, unmatched, chk_stems,
                           used_on_of, used_mism, used_on_bugs, tb_mismatches,
                           watermarks, names_of, bom_names, log,
                           refused=refused, skipped=skipped,
-                          placed_roots=placed, unplaced_stems=unplaced)
+                          placed_roots=placed, unplaced_stems=unplaced,
+                          orphans_parked=orphans_parked)
 
 
 def _incremental_prepare(folder, output, dry_run, log):

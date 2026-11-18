@@ -1269,9 +1269,15 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     return n
 
 
-def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
+def copy_orphans(orphans, index, folder, dry_run, log, renames=None,
+                 parked_out=None):
     """Copy orphan PDFs into _orphans/ so later runs can adopt them.
-    Returns count copied."""
+
+    Returns count copied. `parked_out`, when given, receives the stems that
+    now have a parked copy (or would have one in dry-run): a refusal or a
+    failed copy leaves its stem out, so a caller reporting them as stored
+    does not hide a PDF that exists nowhere in the tree.
+    """
     n = 0
     renames = renames or {}
     orphans_dir = folder / "_orphans"
@@ -1297,6 +1303,8 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
+        if parked_out is not None:
+            parked_out.add(o)
         n += 1
     if dry_run:
         log(f"Would store {len(orphans)} orphan(s) in _orphans/ "

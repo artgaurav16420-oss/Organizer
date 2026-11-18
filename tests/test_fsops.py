@@ -1317,9 +1317,14 @@ def test_copy_orphans_failure_warns_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
     index = {"F10126106": bad_pdf, "F10126107": good_pdf}
-    n = copy_orphans(["F10126106", "F10126107"], index, out, False, logged.append)
+    parked = set()
+    n = copy_orphans(["F10126106", "F10126107"], index, out, False,
+                     logged.append, parked_out=parked)
 
     assert n == 1
+    # Only the copy that landed counts as parked: a caller that subtracts
+    # every orphan from its unplaced report would hide the failed one.
+    assert parked == {"F10126107"}
     assert (out / "_orphans" / "F10126107.pdf").is_file()
     assert not (out / "_orphans" / "F10126106.pdf").exists()
     text = "\n".join(logged)

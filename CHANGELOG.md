@@ -59,6 +59,11 @@ All notable changes to the Fermi PDF organizer are recorded here.
   copy failed (or a subtree a guard dropped) inside a root that otherwise
   placed was reachable from that root and disappeared from the report; the
   placement step now hands back every stem it did not copy.
+- **An orphan with no parked copy is reported as unplaced.** A full run
+  subtracted every classified orphan from the Unplaced report, so when
+  `_orphans/` parking was refused (a symlinked ancestor) or a copy failed,
+  the PDF sat nowhere in the tree and in neither report; only orphans that
+  really landed (or would, in a dry run) are subtracted now.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

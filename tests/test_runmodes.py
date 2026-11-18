@@ -249,6 +249,35 @@ def test_run_full_execute_builds_tree_and_orphans(tmp_path, make_pdf):
     assert "Stored 1 orphan(s) in _orphans/" in text
 
 
+def test_run_full_unparked_orphan_is_reported_as_unplaced(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # copy_orphans warns and continues when a park fails, so the orphan then
+    # exists nowhere in the tree; it used to disappear from the Unplaced report
+    # as well, because every classified orphan was subtracted unconditionally.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+
+    real_copy = fsops._copy_atomic
+
+    def refuse_park(src, dst, root):
+        if Path(dst).parent.name == "_orphans":
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", refuse_park)
+    logged = []
+    run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert not (out / "_orphans" / "F10126108.pdf").exists()
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (1) ---" in text
+    assert "  F10126108" in text
+
+
 def test_run_full_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
     # A scanned child's NAME is OCR output, so a misread still reads as a
     # plausible part name. The parent's parts list carries the same name as a
