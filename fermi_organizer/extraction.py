@@ -2368,7 +2368,10 @@ def run_parallel(task, paths, jobs=0, ocr_enabled=True):
 
     jobs <= 1 runs serially in-process; otherwise a process pool. Worker OCR
     events are merged back into the parent OCR context so the OCR report
-    stays complete.
+    stays complete. A pool caller must keep its call under the
+    `if __name__ == "__main__":` guard: spawn re-imports the caller in every
+    worker (this is Python's spawn contract, not a choice made here - the
+    package CLI and its launcher already do it).
     """
     jobs = resolve_jobs(jobs)
     if jobs <= 1:
