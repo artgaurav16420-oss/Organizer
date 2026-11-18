@@ -1748,6 +1748,12 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
                                        log, names_of, folder_names, renames=renames,
                                        lock=lock, placed_out=placed_roots,
                                        failed_out=unplaced_stems)
+            if not placed_roots:
+                # Every root met a placement guard (linked ancestor, failed
+                # mkdir, failed copy), so nothing this run had to place reached
+                # the tree: a placement refusal, not a normal run whose
+                # leftovers are parked. Without this the CLI exits 0.
+                refused = True
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).

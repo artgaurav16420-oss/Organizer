@@ -91,9 +91,11 @@ def _log_ocr_startup(log):
     else:
         reason = OCR.reason or "tesseract not found"
         log("OCR: disabled" if not OCR.enabled else
-            f"OCR: unavailable ({reason}; text-layer PDFs are read as usual, "
-            "but a scanned sheet's own NAME and parts list cannot be read - "
-            "it is placed only when a readable parent's parts list names it)")
+            f"OCR: unavailable ({reason}; text layers are still parsed, even on "
+            "a page short enough to be routed to OCR, but content that exists "
+            "only as an image cannot be read - such a sheet's NAME and parts "
+            "list are missed, and it is placed only when a readable parent's "
+            "parts list names it)")
 
 
 def run_mode_label(dry_run, incremental=False, repair=False):

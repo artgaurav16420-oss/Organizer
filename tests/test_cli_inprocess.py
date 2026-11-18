@@ -281,10 +281,12 @@ def test_log_ocr_startup_unavailable_line(monkeypatch):
     monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: None)
     monkeypatch.setattr(extraction.OCR, "reason", "tesseract not found")
     cli_module._log_ocr_startup(logged.append)
-    assert logged == ["OCR: unavailable (tesseract not found; text-layer PDFs "
-                      "are read as usual, but a scanned sheet's own NAME and "
-                      "parts list cannot be read - it is placed only when a "
-                      "readable parent's parts list names it)"]
+    assert logged == ["OCR: unavailable (tesseract not found; text layers are "
+                      "still parsed, even on a page short enough to be routed "
+                      "to OCR, but content that exists only as an image cannot "
+                      "be read - such a sheet's NAME and parts list are missed, "
+                      "and it is placed only when a readable parent's parts "
+                      "list names it)"]
 
 
 def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):

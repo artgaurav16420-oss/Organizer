@@ -72,6 +72,16 @@ All notable changes to the Fermi PDF organizer are recorded here.
   Rows were checked for shape only, and openpyxl refuses a dict or list cell
   while writing the sheet, aborting the workbook refresh; such a sidecar is
   handled as corrupt history like a short or null row.
+- **A dry run refuses what execution refuses.** The linked-ancestor guard sat
+  in the execute branch, so a plan reported a root as placed although a real
+  run would skip its whole subtree, and its PDFs never appeared under
+  Unplaced. The guard only stats the path, so both modes run it.
+- **A run whose every root a guard refused is a placement refusal.** The flag
+  tracked only the copy cap, so a run that copied none of its own drawings
+  still exited 0 and read as a successful build.
+- **The OCR-unavailable line is accurate about short text layers.** Pages
+  under the OCR text threshold still have their text parsed natively, so the
+  old wording claimed a readable NAME or parts list could not be read.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

@@ -1690,6 +1690,27 @@ def test_place_files_reports_a_file_it_could_not_copy(tmp_path, monkeypatch):
     assert failed == {"F10126106"}
 
 
+def test_place_files_dry_run_refuses_a_linked_ancestor(tmp_path, monkeypatch):
+    # The guard only stats the path, so a dry run can run it. Before that it
+    # was in the execute branch alone: the plan reported the root as placed
+    # and its PDFs never appeared under Unplaced, although a real run refuses
+    # the whole subtree.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr(fsops, "_has_linked_ancestor",
+                        lambda path, stop: path.name == "F10126106")
+    placed, failed = [], set()
+
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True,
+                        lambda m: None, placed_out=placed, failed_out=failed)
+
+    assert total == 0
+    assert placed == []
+    assert failed == {"F10126106"}
+
+
 def test_place_files_does_not_report_a_shared_file_copied_under_another_parent(
         tmp_path, monkeypatch):
     # A claimed child is copied into every claimant's subtree. One failed

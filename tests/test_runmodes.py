@@ -800,6 +800,29 @@ def test_run_full_root_skipped_by_a_guard_is_not_reported_placed(
     assert "--- Unplaced PDFs (2) ---" in text
 
 
+def test_run_full_all_roots_refused_is_a_placement_refusal(
+        tmp_path, make_pdf, monkeypatch):
+    # When a guard refuses every root, the run copied none of its own PDFs.
+    # placement_refused stayed False because it only tracked the cap, so the
+    # CLI exited 0 as if the tree had been built.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    monkeypatch.setattr(fsops, "_has_linked_ancestor",
+                        lambda path, stop: path.name == "F10126106 Test Parent")
+    logged = []
+
+    ctx = run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["roots"] == []
+    assert not (out / "F10126106 Test Parent").exists()
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (2) ---" in text
+
+
 def test_run_full_copy_failure_surfaces_in_the_unplaced_report(
         tmp_path, make_pdf, monkeypatch):
     # Reachability alone says the child belongs to a placed root, so a copy
