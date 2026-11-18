@@ -19,8 +19,8 @@ from fermi_organizer.runmodes import (
     run_full,
 )
 
-pytestmark = pytest.mark.skipif(not fx._OPENPYXL_OK,
-                                reason="openpyxl not installed")
+_needs_openpyxl = pytest.mark.skipif(not fx._OPENPYXL_OK,
+                                     reason="openpyxl not installed")
 
 
 def test_run_full_cycle_broken_both_placed(tmp_path, make_pdf):
@@ -62,6 +62,7 @@ def _minimal_ctx(out):
     }
 
 
+@_needs_openpyxl
 def test_refresh_from_run_writes_all_sheets(tmp_path):
     out = tmp_path / "out"
     ctx = _minimal_ctx(out)
@@ -83,6 +84,7 @@ def test_refresh_from_run_writes_all_sheets(tmp_path):
     assert Path(str(xlsx) + ".history.json").is_file()
 
 
+@_needs_openpyxl
 def test_missing_sheet_builder(tmp_path):
     from openpyxl import Workbook
     wb = Workbook()
@@ -95,6 +97,7 @@ def test_missing_sheet_builder(tmp_path):
     assert ws["C2"].value == "F10126106"
 
 
+@_needs_openpyxl
 def test_chk_sheet_builder(tmp_path):
     from openpyxl import Workbook
     wb = Workbook()

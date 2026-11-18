@@ -3,7 +3,8 @@
 Split out of ``fsops`` so the presentation layer can ask "what is in this
 tree?" without importing the module that performs every destructive tree
 operation (and, through it, PyMuPDF and the OCR stack). This module imports
-`config` only, and nothing here mutates the filesystem.
+only `os` and `pathlib` from the standard library, and nothing here
+mutates the filesystem.
 """
 import os
 from pathlib import Path

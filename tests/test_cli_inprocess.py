@@ -281,8 +281,9 @@ def test_log_ocr_startup_unavailable_line(monkeypatch):
     monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: None)
     monkeypatch.setattr(extraction.OCR, "reason", "tesseract not found")
     cli_module._log_ocr_startup(logged.append)
-    assert logged == ["OCR: unavailable (tesseract not found; "
-                      "scanned PDFs stay orphans)"]
+    assert logged == ["OCR: unavailable (tesseract not found; a scanned sheet's "
+                      "own NAME and parts list cannot be read - it is placed only "
+                      "when a readable parent's parts list names it)"]
 
 
 def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):
@@ -471,3 +472,45 @@ def test_cli_main_guard(monkeypatch, tmp_path):
     ns["__package__"] = "fermi_organizer"
     with pytest.raises(SystemExit):
         exec(compile(src_path.read_text(encoding="utf-8"), str(src_path), "exec"), ns)
+
+
+def test_plain_log_text_escapes_control_characters():
+    # A drawing NAME is untrusted PDF text: ESC/OSC sequences retitle or clear
+    # the operator's terminal, and the same bytes land in the .txt report.
+    assert cli_module._plain_log_text("PWN\x1b[2Jowned\x07 x") == "PWN\\x1b[2Jowned\\x07 x"
+    assert cli_module._plain_log_text("plain line") == "plain line"
+    # Structural whitespace is not touched: log("") writes a blank line.
+    assert cli_module._plain_log_text("a\tb\nc") == "a\tb\nc"
+
+
+def test_plain_log_text_escapes_carriage_return_and_bidi_overrides():
+    # A bare CR returns the cursor to column 0 and lets the next NAME overwrite
+    # the line just reported; a bidi override reverses everything after it.
+    # Both are rendered, and a non-Latin-1 character keeps its four-digit form.
+    assert cli_module._plain_log_text("ok\rforged") == "ok\\x0dforged"
+    assert cli_module._plain_log_text("part‮gnp.exe") == "part\\u202egnp.exe"
+    assert cli_module._plain_log_text("a⁦b⁩c") == "a\\u2066b\\u2069c"
+
+
+def test_control_char_name_is_escaped_in_report_and_workbook(
+        monkeypatch, tmp_path, make_pdf, capsys):
+    # end to end: the NAME reaches the console, the .txt and the workbook.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    make_pdf(in_dir / "F10126106.pdf", ["NAME", "Bracket assembly"])
+    evil = "PWN\x1b[2J\x1b]0;owned\x07 ASSY"
+    monkeypatch.setattr(extraction, "extract_drawing_name", lambda doc: evil)
+    monkeypatch.setattr(sys, "argv",
+                        ["organize_fermi_pdfs.py", str(in_dir),
+                         "--output", str(out), "--no-ocr", "--jobs", "1"])
+    assert cli_module.main() is None
+
+    report = next(out.glob("organize_fermi_pdfs_report_*.txt"))
+    text = report.read_text(encoding="utf-8")
+    assert "\x1b" not in text and "\x07" not in text
+    assert "\\x1b[2J" in text
+    assert "\x1b" not in capsys.readouterr().out
+    # The workbook still gets built (a raw C0 byte would abort openpyxl).
+    assert (out / "organize_fermi_report.xlsx").is_file()

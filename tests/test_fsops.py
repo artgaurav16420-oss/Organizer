@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fermi_organizer import fsops
+from fermi_organizer import fsops, treescan
 from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (
     RUN_LOCK_NAME,
@@ -1607,16 +1607,22 @@ def test_place_files_iterative_below_default_recursion_limit(tmp_path, monkeypat
     assert total == TREE_MAX_DEPTH + 1
 
 
-def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
+def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path, monkeypatch):
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"
     pdf.write_bytes(b"%PDF")
     logged = []
+    # Lift the path guards: with them in place a self-cycle stops at whichever
+    # depth first exceeds MAX_PATH, which depends on the tmpdir length. The
+    # bound under test is the depth cap, so it has to be what fires.
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
 
     total = place_files({"F10126106": ["F10126106"]}, ["F10126106"],
                         {"F10126106": pdf}, folder, True, logged.append)
 
-    assert total >= 1
+    assert total == fsops.TREE_MAX_DEPTH + 1
+    assert any("truncated at depth" in line for line in logged)
 
 
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
@@ -1961,10 +1967,10 @@ def test_strip_ext_prefix_round_trips_both_forms():
     # _native prefixes only the side of a comparison that crosses 260 chars, so
     # the link check strips it from both: an unprefixed pair reported the first
     # long directory in a tree as a link and pruned its PDFs.
-    assert fsops._strip_ext_prefix(r"\\?\C:\tree\a") == r"C:\tree\a"
-    assert fsops._strip_ext_prefix(r"\\?\UNC\srv\share\a") == r"\\srv\share\a"
-    assert fsops._strip_ext_prefix(r"C:\tree\a") == r"C:\tree\a"
-    assert fsops._strip_ext_prefix(r"\\srv\share\a") == r"\\srv\share\a"
+    assert treescan.strip_ext_prefix(r"\\?\C:\tree\a") == r"C:\tree\a"
+    assert treescan.strip_ext_prefix(r"\\?\UNC\srv\share\a") == r"\\srv\share\a"
+    assert treescan.strip_ext_prefix(r"C:\tree\a") == r"C:\tree\a"
+    assert treescan.strip_ext_prefix(r"\\srv\share\a") == r"\\srv\share\a"
 
 
 def test_is_dir_link_is_false_for_a_plain_directory(tmp_path):
@@ -2439,3 +2445,24 @@ def test_has_linked_ancestor_names_a_link_between_stop_and_path(tmp_path):
         elif os.name == "nt" and link.exists():
             os.rmdir(link)
 
+
+
+def test_place_files_builds_one_copy_counter(tmp_path, monkeypatch):
+    # place_files used to build its own counter and then call
+    # ensure_placement_allowed, which built a second one: every depth-capped
+    # subtree was walked twice and the first memo was thrown away.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    calls = []
+    real = fsops._copy_counter
+
+    def counting(children):
+        calls.append(children)
+        return real(children)
+
+    monkeypatch.setattr(fsops, "_copy_counter", counting)
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True, lambda m: None)
+    assert total == 1
+    assert len(calls) == 1, f"copy counter built {len(calls)} times"

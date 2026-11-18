@@ -6,7 +6,7 @@ organize_fermi_pdfs.py so tests import the same modules without installation.
 import sys
 from pathlib import Path
 
-import pymupdf as fitz
+import pymupdf
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,7 +18,7 @@ from fermi_organizer import extraction  # noqa: E402
 
 def make_pdf(path, lines):
     """One-page PDF, one insert_text per line: (72,72), fontsize 11, step 16."""
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     y = 72
     for line in lines:
@@ -31,7 +31,7 @@ def make_pdf(path, lines):
 
 def make_pdf_pages(path, pages_lines):
     """Multi-page variant of make_pdf: one page per entry, same geometry."""
-    doc = fitz.open()
+    doc = pymupdf.open()
     for lines in pages_lines:
         page = doc.new_page()
         y = 72

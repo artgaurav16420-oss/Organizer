@@ -16,6 +16,7 @@ openpyxl is optional; when it is missing the workbook is skipped gracefully.
 """
 import json
 import os
+import re
 import shutil
 import traceback
 from pathlib import Path
@@ -47,6 +48,7 @@ try:
     from openpyxl.chart import BarChart, LineChart, Reference
     from openpyxl.chart.label import DataLabelList
     from openpyxl.chart.series import DataPoint
+    from openpyxl.comments import Comment
     from openpyxl.formatting.rule import DataBarRule, FormulaRule
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -84,13 +86,6 @@ PAL = {
     "green":  {"fill": "DCFCE7", "text": "166534", "accent": "16A34A"},   # ok / active
     "blue":   {"fill": "DBEAFE", "text": "1E40AF", "accent": "2563EB"},   # info
 }
-
-# Back-compat color aliases (fill, text) for any external reader of the module.
-RED_F, RED_D = PAL["red"]["fill"], PAL["red"]["text"]
-AMB_F, AMB_D = PAL["amber"]["fill"], PAL["amber"]["text"]
-ORG_F, ORG_D = PAL["orange"]["fill"], PAL["orange"]["text"]
-GREY_F, GREY_D = PAL["grey"]["fill"], PAL["grey"]["text"]
-GRN_F, GRN_D = PAL["green"]["fill"], PAL["green"]["text"]
 
 if _OPENPYXL_OK:
     HAIR = Side(style="thin", color=LINE)
@@ -317,6 +312,21 @@ def _empty_state(ws, ncols, message):
 _FORMULA_PREFIXES = ("=", "@", "+", "-", "\t", "\r")
 
 
+_ILLEGAL_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean(v):
+    """Strip characters openpyxl rejects on assignment.
+
+    PDF-derived NAMEs can carry C0 control bytes (a text-layer NAME with a
+    literal \\x01 is enough). openpyxl raises IllegalCharacterError - an
+    Exception subclass, not ValueError - from ws.cell, so without this the
+    whole workbook aborts and the run exits 0 with no .xlsx at all. Tab,
+    newline and CR are legal and kept.
+    """
+    return _ILLEGAL_XLSX.sub("", v) if isinstance(v, str) else v
+
+
 def _inert_text(cell):
     """Force a leading formula-trigger string to text.
 
@@ -346,7 +356,7 @@ def _table(ws, headers, widths, rows, *, tab, aligns=None, pills=None,
         ws.row_dimensions[ri].height = ROW_H
         stripe = STRIPE if ri % 2 == 1 else WHITE
         for ci, v in enumerate(vals, start=1):
-            c = ws.cell(row=ri, column=ci, value=v)
+            c = ws.cell(row=ri, column=ci, value=_clean(v))
             _inert_text(c)
             c.fill = _solid(stripe)
             c.border = ROW_BORDER
@@ -558,17 +568,21 @@ def _resolve_names(names_raw, live, extra=()):
 def build_workbook(path, ctx: WorkbookContext, log=None):
     """Build/refresh the live workbook at `path`; returns it (None without openpyxl).
 
-    Context keys read (15): output, run_mode, run_time,
+    Context keys read (17): output, run_mode, run_time,
     counters{scanned,roots,copies,cycles,warnings}, missing[(stem,val)...],
     chk[stem...], orphans[stem...], roots[(stem,[used_on])...],
     mismatches[(parent,child,actual)...], used_on_bugs[(parent,child)...],
     titleblock_mismatches[(stem,field,filename,tb)...],
     scanned[(stem,[pages])...], watermarks[(stem,evidence)...],
-    report_txt, names{stem/val: NAME}.
+    report_txt, names{stem/val: NAME}, placement_refused,
+    skipped_roots[(stem,n_children)...].
     cli.py maps the run-context key used_on_mismatches -> mismatches and
     used_on_bugs -> used_on_bugs when it calls refresh_from_run.
     """
     if not _OPENPYXL_OK:
+        if log:
+            log("  WARNING: Excel report skipped (openpyxl is not installed - "
+                "install the [excel] extra to get the workbook)")
         return None
     path = Path(path)
     wb = Workbook()
@@ -597,12 +611,15 @@ def build_workbook(path, ctx: WorkbookContext, log=None):
     stale_tree = mode.endswith("DRY-RUN") and not mode.startswith("REPAIR")
     links = _stem_linker(live, ctx.get("output", ""), enabled=not stale_tree)
     missing_pairs = sorted(set(ctx.get("missing", [])))
+    # Distinct part numbers, not (parent, ref) pairs: one missing drawing named
+    # by three parents is one download, which is the workload the KPI implies.
+    missing_count = len({val for _, val in missing_pairs})
     extra = set(ctx.get("chk", [])) | {v for _, v in missing_pairs}
     raw_names = _prior_names(path)
     raw_names.update(ctx.get("names", {}) or {})
     names = _resolve_names(raw_names, live, extra)
 
-    _dash_sheet(dash, ctx, counters, live, missing_pairs)
+    _dash_sheet(dash, ctx, counters, live, missing_pairs, missing_count)
     _missing_sheet(missing, missing_pairs, names)
     _chk_sheet(chk, ctx, names, links)
     _scanned_sheet(scanned_ws, ctx, names, links)
@@ -635,7 +652,7 @@ def _box(ws, row, c1, c2, value=None, font=None, fill=None, align=None,
             cell.border = border
     ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
     a = ws.cell(row=row, column=c1)
-    a.value = value
+    a.value = _clean(value)
     _inert_text(a)
     if font:
         a.font = font
@@ -652,8 +669,11 @@ def _card(ws, row, span, label, value, palette, caption, target):
     left = Border(left=edge)
     _box(ws, row, c1, c2, label, _font(8, True, MUTED), fill,
          Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1), left)
-    _box(ws, row + 1, c1, c2, value, _font(24, True, p["text"]), fill,
-         Alignment(horizontal="left", vertical="center", indent=1), left)
+    value_cell = _box(ws, row + 1, c1, c2, value, _font(24, True, p["text"]), fill,
+                      Alignment(horizontal="left", vertical="center", indent=1), left)
+    # A merged card puts the number alone in its cell row; give assistive
+    # technology (and the formula bar) the metric name alongside it.
+    value_cell.comment = Comment(f"{label}  ({caption})", "fermi-organize")
     cap = _box(ws, row + 2, c1, c2, caption, _font(9, False, MUTED), fill,
                Alignment(horizontal="left", vertical="center", indent=1), left)
     if target:
@@ -663,7 +683,7 @@ def _card(ws, row, span, label, value, palette, caption, target):
     ws.row_dimensions[row + 2].height = 20
 
 
-def _dash_sheet(dash, ctx, counters, live, missing_pairs):
+def _dash_sheet(dash, ctx, counters, live, missing_pairs, missing_count):
     dash.sheet_view.showGridLines = False
     dash.sheet_properties.tabColor = DARK
     dash.sheet_view.zoomScale = 100
@@ -694,10 +714,13 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     cards = [
         ("PDF FILES IN TREE (LIVE)", len(live["tree"]), "green", "Open Files \u2192", "Files"),
         ("ROOTS (LAST RUN)", counters.get("roots", "-"), "green", "Open Roots \u2192", "Roots"),
-        ("MISSING - DOWNLOAD FROM TEAMCENTER", len(missing_pairs),
+        ("MISSING - DOWNLOAD FROM TEAMCENTER", missing_count,
          "red" if missing_pairs else "green", "Open Missing \u2192", "Missing"),
         ("CHK UNAPPROVED", chk_n, "amber" if chk_n else "green", "Open CHK \u2192", "CHK"),
-        ("ORPHANS (PARKED ON FULL RUN)", orph_n, "orange" if orph_n else "green",
+        # Live disk count, like the Files and Superseded cards: the sheet lists
+        # this run's orphans, so the label says LIVE rather than claiming the
+        # two numbers describe the same set.
+        ("ORPHANS PARKED (LIVE)", orph_n, "orange" if orph_n else "green",
          "Open Orphans \u2192", "Orphans"),
         ("SUPERSEDED REVISIONS (LIVE)", sup_n, "grey", "Open Superseded \u2192", "Superseded"),
         ("EXTRACTION WARNINGS (LAST RUN)", warn,
@@ -725,9 +748,9 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     refused_n = len(skipped) if skipped else (1 if ctx.get("placement_refused") else 0)
     items = [
         ("Placement refused", refused_n, "red", None, True),
-        ("Missing parts", len(missing_pairs), "red", "Missing", True),
+        ("Missing parts", missing_count, "red", "Missing", True),
         ("CHK unapproved", chk_n, "amber", "CHK", True),
-        ("Orphans (parent not seen)", orph_n, "orange", "Orphans", False),
+        ("Orphans parked (live)", orph_n, "orange", "Orphans", False),
         ("Watermarked PDFs", len(ctx.get("watermarks", [])), "amber", "Watermark", False),
         ("Scanned PDFs (OCR)", len(ctx.get("scanned", [])), "blue", "Scanned", False),
         ("USED ON check", len(ctx.get("mismatches", [])) + len(ctx.get("used_on_bugs", [])),
@@ -769,7 +792,7 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
              Alignment(horizontal=horiz, vertical="center", indent=1 if horiz == "left" else 0))
     dash.row_dimensions[h].height = 24
     first = h + 1
-    for k, (label, n, pal, sheet, action) in enumerate(items):
+    for k, (label, n, _pal, sheet, action) in enumerate(items):
         rr = first + k
         stripe = _solid(STRIPE if k % 2 else WHITE)
         dash.row_dimensions[rr].height = 22
@@ -779,7 +802,10 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
                    Alignment(horizontal="center", vertical="center"), ROW_BORDER)
         cnt.number_format = "#,##0"
         is_action = bool(n) and action
-        st_pal = "red" if is_action else (pal if n else "green")
+        # Colour by the status WORD, not the category palette: "Review" is
+        # amber in the COLOR GUIDE, so an Orphans row must not render orange
+        # and a Scanned row must not render blue under the same word.
+        st_pal = "red" if is_action else ("amber" if n else "green")
         st = _box(dash, rr, 10, 12,
                   "Action" if is_action else ("Review" if n else "OK"),
                   None, None, None, None)
@@ -832,8 +858,20 @@ def _dash_sheet(dash, ctx, counters, live, missing_pairs):
     out = ctx.get("output", "")
     rep = ctx.get("report_txt", "")
     note = f"Output: {out}" + (f"   \u00b7   Report: {rep}" if rep else "")
-    _box(dash, f + 3, 2, 16, note, _font(9, False, MUTED, italic=True), None,
-         Alignment(horizontal="left", vertical="center", wrap_text=True))
+    note_cell = _box(dash, f + 3, 2, 16, note, _font(9, False, MUTED, italic=True), None,
+                     Alignment(horizontal="left", vertical="center", wrap_text=True))
+    # The report sits in the workbook's own folder and every remediation line
+    # defers to it, so link it whenever it resolves. Display text stays the
+    # basename, so the note reads the same as before.
+    if rep:
+        try:
+            target = Path(out) / rep
+            uri = _file_uri(target) if target.is_file() else None
+        except (ValueError, OSError):
+            uri = None
+        if uri and len(uri) <= 255:
+            note_cell.hyperlink = uri
+            note_cell.font = _font(9, False, NAVY, italic=True, underline="single")
     _box(dash, f + 4, 2, 16,
          "Rebuilt after every run. Counts for Files / Orphans / Superseded come from a "
          "live disk scan at that moment; all other figures are from the last run.",
@@ -902,17 +940,30 @@ def _orphans_sheet(orph, ctx, names, live=None):
     for p in (live or {}).get("orph", []):
         paths[canonical_stem(p.stem) or p.stem.upper()] = p
     stems = sorted(ctx.get("orphans", []))
-    rows = [[s, names.get(s, "") or "-", "Parked",
-             "Parent drawing not seen so far - adopted into tree once it arrives"]
-            for s in stems]
+    # A full dry run copies nothing, so claiming these are "Parked" under
+    # _orphans/ describes files that do not exist. Say what would happen
+    # instead. Incremental and repair feed _live_orphan_stems() - copies that
+    # are already in the tree - so only the bare "DRY-RUN" label is a plan;
+    # their labels end in ")", which an endswith("DRY-RUN") test would miss
+    # just as this equality does, so the intent is stated instead of inferred.
+    dry = str(ctx.get("run_mode", "")) == "DRY-RUN"
+    status = "Planned" if dry else "Parked"
+    row_note = ("Dry run: nothing copied - would be parked in _orphans/"
+                if dry else
+                "Parent drawing not seen so far - adopted into tree once it arrives")
+    rows = [[s, names.get(s, "") or "-", status, row_note] for s in stems]
     _table(orph, ["Stem (current file)", "Name", "Status", "Note"], (30, 38, 14, 60), rows,
-           tab="orange", pills={3: "orange"}, aligns=["left", "left", "center", "left"],
+           tab="orange", pills={3: "blue" if dry else "orange"},
+           aligns=["left", "left", "center", "left"],
            link_first=lambda i, row: _file_link(paths[row[0]], ctx.get("output", ""))
            if row[0] in paths else None,
            empty="No orphans - every part has a parent",
            note=("About this sheet",
-                 "Orphans are stored under _orphans/ so a future incremental run can "
-                 "adopt them when their parent appears. Click a stem to open its PDF.",
+                 ("A dry run copies nothing: these are the PDFs that would be parked "
+                  "under _orphans/ for a later incremental run to adopt."
+                  if dry else
+                  "Orphans are stored under _orphans/ so a future incremental run can "
+                  "adopt them when their parent appears. Click a stem to open its PDF."),
                  "orange"))
 
 
@@ -997,7 +1048,7 @@ def _mismatch_sheet(mism_ws, ctx, names, link):
         vals = (pstem, names.get(pstem, ""), cstem, names.get(cstem, ""))
         mism_ws.row_dimensions[r].height = ROW_H
         for ci, v in enumerate(vals, start=1):
-            c = mism_ws.cell(row=r, column=ci, value=v)
+            c = mism_ws.cell(row=r, column=ci, value=_clean(v))
             _inert_text(c)
             c.fill = _solid(STRIPE if i % 2 else WHITE)
             c.border = ROW_BORDER
@@ -1055,7 +1106,7 @@ def _files_sheet(files, ctx, names, live):
 def _history_sheet(hist, ctx, counters, missing_pairs, path, log):
     entry = [str(ctx.get("run_time", "")), str(ctx.get("run_mode", "")),
              counters.get("scanned", 0), counters.get("copies", 0),
-             len(missing_pairs), len(set(ctx.get("chk", []))),
+             len({val for _, val in missing_pairs}), len(set(ctx.get("chk", []))),
              len(ctx.get("orphans", [])), ctx.get("report_txt", "")]
     hist_rows = _load_history(path, log) + [entry]
     _save_history(path, hist_rows, log)

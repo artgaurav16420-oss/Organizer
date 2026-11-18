@@ -27,8 +27,13 @@ if hasattr(pymupdf, "no_recommend_layout"):
 # whole extraction cost (100 drawings: 55 s on 1.28.2 vs 245 s on 2.0). The
 # classic table finder is enough for parts lists, so disable the model. Guarded:
 # the attribute is private and may disappear in a later release.
-if callable(getattr(pymupdf, "_get_layout", None)):
-    pymupdf._get_layout = None
+def _disable_layout_model():
+    """Clear pymupdf's ONNX layout hook when the private attribute exists."""
+    if callable(getattr(pymupdf, "_get_layout", None)):
+        pymupdf._get_layout = None
+
+
+_disable_layout_model()
 
 from .config import (
     BAD_DESC_RE,
@@ -62,7 +67,7 @@ from .config import (
     OCR_ROW_STRIP_DY_BOTTOM,
     OCR_ROW_STRIP_DY_TOP,
     OCR_ROW_TOL,
-    OCR_STRIP_DPI,
+    OCR_STRIP_ZOOM,
     OCR_USED_ON_DX_LEFT,
     OCR_USED_ON_DX_RIGHT,
     OCR_USED_ON_DY_BOTTOM,
@@ -98,6 +103,7 @@ from .config import (
     WATERMARK_TRANSPARENT_OPACITY,
     canonical_stem,
 )
+from . import treescan
 
 # Resource-exhaustion guards + OCR memo bound.
 # OCR_MIN_CHARS itself lives in config.py; these thresholds sit here so
@@ -166,6 +172,10 @@ class _OcrContext:
         self.page_scale = OrderedDict()
         self._abandoned_docs = []
         self._doc_seq = 0
+        # id(parent) -> (parent, key). Holding the parent keeps its id unique
+        # for the life of the memo, so repeated calls on one in-memory
+        # document hit the same memo entry instead of minting a fresh key.
+        self._anon_docs = {}
 
     def reset(self, enabled=True):
         """Start a fresh run: clear events/memos/availability and set enabled."""
@@ -184,6 +194,7 @@ class _OcrContext:
         self._abandoned_docs = [(doc, thread) for doc, thread
                                 in self._abandoned_docs if thread.is_alive()]
         self._doc_seq = 0
+        self._anon_docs = {}
 
     def _export_for_pymupdf(self, install_dir):
         """Export a common-dir Tesseract install to the process environment.
@@ -281,20 +292,33 @@ class _OcrContext:
         self.version = m.group(0).decode() if m else None
         return exe
 
+    def _anon_key(self, parent):
+        """Stable fallback key for a document that carries no name.
+
+        Keyed on object identity while holding a reference, so a second call
+        for the same in-memory document reuses its key (memo hits) and a
+        garbage-collected document cannot have its id reused under the memo.
+        """
+        entry = self._anon_docs.get(id(parent))
+        if entry is not None and entry[0] is parent:
+            return entry[1]
+        self._doc_seq += 1
+        key = f"doc-{self._doc_seq}"
+        self._anon_docs[id(parent)] = (parent, key)
+        return key
+
     def doc_key(self, page):
         """Cache key for one page: (document name, page number).
 
-        In-memory documents share the empty-name fallback, so each one gets a
-        per-run sequence number; without it two anonymous docs would memoize
-        each other's words.
+        In-memory documents share the empty-name fallback, so each distinct
+        document object gets one per-run sequence number; without it two
+        anonymous docs would memoize each other's words, and minting a fresh
+        number per call (the old behaviour) made every lookup miss.
         """
         parent = getattr(page, "parent", None)
         name = str(getattr(parent, "name", "") or getattr(parent, "metadata", {}).get("name", "") or "")
         if not name:
-            # In-memory docs can share the empty-name fallback; give each a
-            # per-run sequence number so memos never collide across documents.
-            self._doc_seq += 1
-            name = f"doc-{self._doc_seq}"
+            name = self._anon_key(parent)
         return os.path.normcase(name), page.number
 
     def doc_scale(self, page):
@@ -532,8 +556,10 @@ OCR = _OcrContext()
 
 # Test seam: monkeypatch to intercept PDF opening in the worker tasks.
 def _native(path):
-    from . import fsops
-    return fsops._native(path)
+    # treescan, not fsops: fsops imports extraction at module level, so taking
+    # the helper from there creates an import cycle and pulls the whole
+    # destructive-tree layer (and its PyMuPDF/OCR imports) into every PDF open.
+    return treescan.native(path)
 
 
 @contextmanager
@@ -833,7 +859,7 @@ def _ocr_strip_tokens(page, rect, psm="7"):
     # strip zoom over-magnifies and Tesseract garbles the value. The USED ON
     # strip reads best at the lower zooms on these sheets, the parts-list rows
     # at the higher one.
-    zoom_hi = OCR_STRIP_DPI / min(scale, 3.0)
+    zoom_hi = OCR_STRIP_ZOOM / min(scale, 3.0)
     zoom_lo = max(1.0, zoom_hi / 1.9)
     if psm == "6":
         zoom_t = 36.0 / med_h if med_h else zoom_lo
@@ -2342,16 +2368,18 @@ def run_parallel(task, paths, jobs=0, ocr_enabled=True):
     if jobs <= 1:
         return [r[:-1] for r in (task(p) for p in paths)]
     from concurrent.futures import ProcessPoolExecutor
-    # Explicit spawn context: fork is unsafe in a multi-threaded parent
-    # (DeprecationWarning since 3.10, default changed on newer Python) and the
-    # start method would otherwise differ across the 3.10/3.11 CI matrix.
-    # Spawn matches the long-standing Windows behavior; worker startup cost is
-    # negligible next to OCR.
+    # Explicit spawn context: fork is unsafe in a multi-threaded parent, and
+    # pinning spawn keeps the start method identical across the 3.11/3.12
+    # Ubuntu legs and the Windows leg (the platform default differs). Worker
+    # startup cost is negligible next to OCR.
     with ProcessPoolExecutor(max_workers=jobs,
                              mp_context=multiprocessing.get_context("spawn"),
                              initializer=_ocr_worker_init,
                              initargs=(ocr_enabled,)) as ex:
-        raw = list(ex.map(task, paths))
-    for r in raw:
+        results = list(ex.map(task, paths))
+    # Trim in place: building a second full list would double peak memory while
+    # every worker's extraction payload is still resident.
+    for i, r in enumerate(results):
         OCR.merge_events(r[-1])
-    return [r[:-1] for r in raw]
+        results[i] = r[:-1]
+    return results

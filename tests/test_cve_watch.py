@@ -98,3 +98,61 @@ def test_advisory_query_is_best_effort():
 
     watch._post_json = boom
     assert watch.advisories_for("pymupdf", "1.28.2") == []
+
+
+def test_advisory_check_covers_every_locked_distribution():
+    # CI installs requirements.lock, so an advisory against a transitive pin
+    # (numpy, onnxruntime, ...) must reach the watcher. Only the two manifest
+    # pins were queried before, so those advisories were reported by no gate.
+    watch = _load_watch()
+    pins = watch.locked_pins()
+    assert {"pymupdf", "openpyxl", "numpy", "onnxruntime"} <= set(pins)
+    queried = []
+    watch.advisories_for = lambda pkg, ver: queried.append((pkg, ver)) or []
+    watch._track = lambda title, body: None
+    watch.check_advisories([])
+    assert set(queried) == set(pins.items())
+
+
+def test_tesseract_release_detection_files_then_dedupes():
+    # The detection branch no test reached before: a newer tag must file one
+    # issue, and the same open title must suppress a duplicate.
+    watch = _load_watch()
+    tracked = []
+    watch._get_json = lambda url: {"tag_name": "v5.5.4"}
+    watch._track = lambda title, body: tracked.append(title)
+    watch.check_tesseract([])
+    assert len(tracked) == 1
+    assert "Tesseract 5.5.4" in tracked[0]
+
+    watch.check_tesseract(tracked)
+    assert len(tracked) == 1, "an open tracking issue must dedupe the next run"
+
+
+def test_tesseract_floor_current_files_nothing():
+    watch = _load_watch()
+    tracked = []
+    watch._track = lambda title, body: tracked.append(title)
+    for tag in ("v5.5.3", "v5.5.2", ""):
+        watch._get_json = lambda url, tag=tag: {"tag_name": tag}
+        watch.check_tesseract([])
+    assert tracked == []
+
+
+def test_gh_failure_aborts_instead_of_merging_blind():
+    # A failed `gh issue list` must exit nonzero: continuing would create a
+    # duplicate issue on every weekly run (the dedupe read never happened).
+    watch = _load_watch()
+
+    class _Res:
+        returncode = 1
+        stdout = ""
+        stderr = "gh: not authenticated"
+
+    watch._gh = lambda *args: _Res()
+    try:
+        watch._open_watch_titles()
+    except SystemExit as e:
+        assert e.code == 1
+    else:
+        raise AssertionError("a failed issue search must abort the watcher")

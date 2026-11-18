@@ -16,6 +16,7 @@ from .config import (
     PLAN_PLACEMENT_FACTOR,
     TB_NUM_VAL_RE,
     TREE_MAX_DEPTH,
+    PlacementPlanTooLarge,
     canonical_stem,
     filename_title,
     is_processable_ref,
@@ -82,7 +83,6 @@ from .graph import (
     split_superseded,
 )
 from .naming import (
-    PlacementPlanTooLarge,
     add_bom_name,
     bom_name_winners,
     build_folder_names,
@@ -1026,11 +1026,6 @@ def _current_folder_of(stem, organized, output, moved_dirs):
     return _resolve_moved_folder(old_folder, moved_dirs)
 
 
-def _longest_dest_path(target_path, current, cache=None):
-    """Longest file path the copy of `current` under `target_path` would create."""
-    return longest_dest_path(target_path, current, cache)
-
-
 def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
                          dry_run, log, lock=None, folder_names=None):
     """Copy organized child c's folder under target_folder; returns PDF copies.
@@ -1084,7 +1079,7 @@ def _copy_org_child_tree(c, target_folder, organized, moved_dirs, output,
     # subtree at the path that is still on disk. None means it cannot be
     # measured: refuse the copy rather than write past MAX_PATH unguarded.
     source = live_source(current, moved_dirs)
-    longest = _longest_dest_path(target_path, source) if source is not None else None
+    longest = longest_dest_path(target_path, source) if source is not None else None
     if longest is None:
         log(f"  WARNING: {c}: cannot measure the source folder, skipping copy "
             f"(manual review): {target_path.relative_to(output)}")
@@ -1268,7 +1263,7 @@ def _adopt_one_org_child(c, target_folder, organized, moved_dirs, output,
         if _shared_folder_blocks_move(c, current, output, log):
             return 0, 0
         source = live_source(current, moved_dirs)
-        longest = _longest_dest_path(target_path, source) if source is not None else None
+        longest = longest_dest_path(target_path, source) if source is not None else None
         if longest is None:
             log(f"  WARNING: {c}: cannot measure the source folder, skipping move "
                 f"(manual review): {target_path.relative_to(output)}")
@@ -1721,11 +1716,13 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
                 names_of, output, dry_run, log, rekeyed, lock=None):
     """Folder creation + orphan/superseded/duplicate copies.
 
-    Returns (copies, placement_refused, skipped_roots): an over-cap fan-out
-    drops the largest roots (logged with their planned counts) and still
-    places the rest; only when nothing fits is folder placement skipped
-    entirely. The bounded orphan/archive copies always run so the run still
-    reports."""
+    Returns (copies, placement_refused, skipped_roots, placed_roots): an
+    over-cap fan-out drops the largest roots (logged with their planned
+    counts) and still places the rest; only when nothing fits is folder
+    placement skipped entirely. `placed_roots` is what actually reached the
+    tree - empty when the name plan refused, which is the only case where a
+    refusal leaves `skipped_roots` empty too. The bounded orphan/archive
+    copies always run so the run still reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
     # Cap check first: a pathological DAG must be trimmed before
@@ -1733,6 +1730,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     kept, skipped = fit_roots_within_cap(children, roots, log)
     refused = bool(skipped)
     total_copies = 0
+    placed_roots = []
     if kept:
         folder_names = plan_folder_names(children, kept, index, names_of, output, log)
         if folder_names is None:
@@ -1743,6 +1741,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
             total_copies = place_files(children, kept, index, output, dry_run,
                                        log, names_of, folder_names, renames=renames,
                                        lock=lock)
+            placed_roots = list(kept)
     # Orphans -> _orphans/ so they are stored, not just logged: when a future
     # input batch supplies their parent, incremental can still match them
     # (they are scanned there like any other PDF and then placed properly).
@@ -1756,7 +1755,7 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
         total_copies += copy_watermarked_duplicates(watermarked_dupes, output,
                                                     dry_run, log)
     log("")
-    return total_copies, refused, skipped
+    return total_copies, refused, skipped, placed_roots
 
 
 def _build_run_context(*, counters, missing, chk, orphans, roots,
@@ -1790,15 +1789,28 @@ def _build_run_context(*, counters, missing, chk, orphans, roots,
 def _full_finalize(roots, children, index, orphans, removed, total_copies,
                     warning_count, unmatched, chk_stems, used_on_of, used_mism,
                     used_on_bugs, tb_mismatches, watermarks, names_of,
-                    bom_names, log, refused=False, skipped=()) -> RunContext:
+                    bom_names, log, refused=False, skipped=(),
+                    placed_roots=None) -> RunContext:
     """Unplaced log + summary + structured RunContext for the workbook."""
-    skipped_set = {r for r, _ in skipped}
-    _log_unplaced([r for r in roots if r not in skipped_set], children,
+    if placed_roots is None:
+        skipped_set = {r for r, _ in skipped}
+        placed_roots = [r for r in roots if r not in skipped_set]
+    else:
+        # The placement step knows what it actually built; a name-plan refusal
+        # places nothing, so an empty list here means "no roots in the tree"
+        # even though no individual root was skipped as oversized.
+        placed_set = set(placed_roots)
+        placed_roots = [r for r in roots if r in placed_set]
+    # A root that was never placed must not appear in the Roots sheet or the
+    # ROOTS KPI under a note that calls those "top-level assemblies of the
+    # tree". It is reported by the "Roots skipped (oversized)" summary line
+    # and the Dashboard's Placement-refused row instead.
+    _log_unplaced(placed_roots, children,
                   index, orphans, log)
     summary = [
         "--- Summary ---",
         f"  PDFs scanned:        {len(index)}",
-        f"  Root assemblies:     {len(roots)}",
+        f"  Root assemblies:     {len(placed_roots)}",
         f"  BOM edges kept:      {sum(len(v) for v in children.values())}",
         f"  Cycles broken:       {len(removed)}",
         f"  PDF copies written:  {total_copies}",
@@ -1809,7 +1821,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
     return _build_run_context(
         counters={
             "scanned": len(index),
-            "roots": len(roots),
+            "roots": len(placed_roots),
             "copies": total_copies,
             "cycles": len(removed),
             "warnings": warning_count,
@@ -1817,7 +1829,7 @@ def _full_finalize(roots, children, index, orphans, removed, total_copies,
         missing=unmatched,
         chk=chk_stems,
         orphans=orphans,
-        roots=[(r, sorted(set(used_on_of.get(r, [])))) for r in roots],
+        roots=[(r, sorted(set(used_on_of.get(r, [])))) for r in placed_roots],
         used_on_mismatches=used_mism,
         used_on_bugs=used_on_bugs,
         titleblock_mismatches=tb_mismatches,
@@ -1896,15 +1908,17 @@ def _run_full_inner(folder, output, dry_run, log, jobs=0, rekey=False,
     used_on_bugs, used_mism, removed, roots, orphans = _full_analyze(
         bom_of, index, children, parents, used_on_of, names_of, log)
     _ensure_lock(lock, log)
-    total_copies, refused, skipped = _full_place(children, roots, orphans, old,
-                                                 watermarked_dupes, index, names_of,
-                                                 output, dry_run, log, rekeyed,
-                                                 lock=lock)
+    total_copies, refused, skipped, placed = _full_place(
+        children, roots, orphans, old,
+        watermarked_dupes, index, names_of,
+        output, dry_run, log, rekeyed,
+        lock=lock)
     return _full_finalize(roots, children, index, orphans, removed,
                           total_copies, warning_count, unmatched, chk_stems,
                           used_on_of, used_mism, used_on_bugs, tb_mismatches,
                           watermarks, names_of, bom_names, log,
-                          refused=refused, skipped=skipped)
+                          refused=refused, skipped=skipped,
+                          placed_roots=placed)
 
 
 def _incremental_prepare(folder, output, dry_run, log):
@@ -3016,7 +3030,10 @@ def _run_delta_inner(folder, output, dry_run, log, jobs=0, rekey=False,
             live_index = organized
         repair_counts["adopted"] = len(planned)
         repair_counts["renamed"] = renamed_folders
-        promoted_stems = {s for s, o in supersede_pairs if o in set(swapped_old)}
+        # Hoisted: rebuilding the set inside the comprehension was one set
+        # construction per supersede pair (quadratic on a repair with many swaps).
+        swapped_old_set = set(swapped_old)
+        promoted_stems = {s for s, o in supersede_pairs if o in swapped_old_set}
         repair_counts["promoted"] = len(promoted_stems)
         if repair_meta is not None:
             repair_counts["promoted_archive_cleaned"] = _finish_repair_promotions(

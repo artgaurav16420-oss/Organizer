@@ -148,7 +148,7 @@ OCR_MAIN_DPI = 300
 # "Overly large image" (silently yielding zero words). 300 MP keeps 300 dpi
 # for A4-A1 and lands the biggest A0 scans near 207 dpi, which OCRs well.
 OCR_MAX_RENDER_MP = 300
-OCR_STRIP_DPI = 6   # zoom factor for the parts-list row re-OCR (432 dpi)
+OCR_STRIP_ZOOM = 6   # zoom factor for the parts-list row re-OCR (432 dpi at scale 1)
 OCR_VAL_RE = re.compile(r"^F(C?)\d{5,8}$")
 OCR_CORR = str.maketrans("OLISB|", "011581")
 

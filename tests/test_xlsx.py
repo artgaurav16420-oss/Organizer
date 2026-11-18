@@ -1041,3 +1041,144 @@ def test_repair_dry_run_links_the_tree_copy(tmp_path):
     wb = load_workbook(path)
     assert wb["Roots"]["A2"].hyperlink is not None
 
+
+
+def test_review_rows_are_amber_whatever_the_category(tmp_path):
+    # The COLOR GUIDE defines "Review" as amber. Colouring the pill from the
+    # category palette made an Orphans row orange and a Scanned row blue under
+    # the same word, so a colour-scanning operator read them as other severities.
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-11-18T12:00:00",
+        "counters": {"scanned": 3, "roots": 0, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "", "names": {},
+        "scanned": [("F10126108", [1])],
+        "watermarks": [("F10126109", "layer")],
+    }
+    path = tmp_path / "review.xlsx"
+    fx.build_workbook(path, ctx)
+    dash = load_workbook(path)["Dashboard"]
+    amber = fx.PAL["amber"]["fill"][-6:].upper()
+    seen = 0
+    # Status pills live in column J (merged J:L) of the Needs-attention table.
+    for cell in dash["J"]:
+        if cell.value == "Review":
+            seen += 1
+            assert cell.fill.fgColor.rgb[-6:].upper() == amber, (
+                f"Review at {cell.coordinate} is {cell.fill.fgColor.rgb}")
+    assert seen >= 2
+
+
+def test_orphans_sheet_dry_run_says_planned(tmp_path):
+    # A dry run copies nothing: rows must not claim the PDFs are stored under
+    # _orphans/ when no file exists.
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = {
+        "output": str(out),
+        "run_mode": "DRY-RUN",
+        "run_time": "2026-11-18T12:00:00",
+        "counters": {"scanned": 1, "roots": 0, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": ["F10126108"], "roots": [],
+        "mismatches": [], "report_txt": "", "names": {},
+    }
+    path = tmp_path / "orphans.xlsx"
+    fx.build_workbook(path, ctx)
+    rows = [r for r in load_workbook(path)["Orphans"].iter_rows(
+        min_row=2, values_only=True) if r and r[0]]
+    assert rows[0][0] == "F10126108"
+    assert rows[0][2] == "Planned"
+    assert "Dry run" in rows[0][3]
+
+
+def test_orphans_sheet_calls_incremental_dry_run_rows_parked(tmp_path):
+    from openpyxl import load_workbook
+
+    # Incremental and repair feed _live_orphan_stems(), so their dry-run rows
+    # describe copies already under _orphans/. Labelling them "Planned" would
+    # disown a file that exists. Their labels end in ")", so the previous
+    # endswith("DRY-RUN") test already returned False here: this pins the
+    # invariant against a future label form that would flip it.
+    out = tmp_path / "out"
+    orphans_dir = out / "_orphans"
+    orphans_dir.mkdir(parents=True)
+    (orphans_dir / "F10126108.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    ctx = {
+        "output": str(out),
+        "run_mode": "INCREMENTAL (DRY-RUN)",
+        "run_time": "2026-11-18T12:00:00",
+        "counters": {"scanned": 1, "roots": 0, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": ["F10126108"], "roots": [],
+        "mismatches": [], "report_txt": "", "names": {},
+    }
+    path = tmp_path / "orphans-incr.xlsx"
+    fx.build_workbook(path, ctx)
+    rows = [r for r in load_workbook(path)["Orphans"].iter_rows(
+        min_row=2, values_only=True) if r and r[0]]
+
+    assert rows[0][0] == "F10126108"
+    assert rows[0][2] == "Parked"
+    assert "Dry run" not in rows[0][3]
+
+
+def test_missing_kpi_counts_distinct_parts_and_card_carries_its_label(tmp_path):
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = {
+        "output": str(out),
+        "run_mode": "EXECUTE",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 3, "roots": 1, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        # One part named by two parents is one download, not two.
+        "missing": [("F10126106", "F10126109"), ("F10126107", "F10126109")],
+        "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "", "names": {},
+    }
+    path = tmp_path / "missing.xlsx"
+    fx.build_workbook(path, ctx)
+    dash = load_workbook(path)["Dashboard"]
+
+    # J6 is the value cell of the MISSING card (third card, span J:L).
+    assert dash["J6"].value == 1
+    # An unlabelled merged value cell is unreadable to assistive technology;
+    # the card carries the metric name as a cell comment.
+    assert "PDF FILES IN TREE (LIVE)" in (dash["B6"].comment.text or "")
+
+
+def test_dashboard_report_note_links_the_txt_when_it_resolves(tmp_path):
+    from openpyxl import load_workbook
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "organize_fermi_report.txt").write_text("report", encoding="utf-8")
+    ctx = {
+        "output": str(out),
+        "run_mode": "EXECUTE",
+        "run_time": "2026-09-30T12:00:00",
+        "counters": {"scanned": 0, "roots": 0, "copies": 0,
+                     "cycles": 0, "warnings": 0},
+        "missing": [], "chk": [], "orphans": [], "roots": [], "mismatches": [],
+        "report_txt": "organize_fermi_report.txt", "names": {},
+    }
+    path = tmp_path / "link.xlsx"
+    fx.build_workbook(path, ctx)
+
+    dash = load_workbook(path)["Dashboard"]
+    note = next(c for row in dash.iter_rows() for c in row
+                if isinstance(c.value, str) and "Report: organize_fermi_report.txt" in c.value)
+    assert note.hyperlink is not None
+    assert note.hyperlink.target.endswith("organize_fermi_report.txt")

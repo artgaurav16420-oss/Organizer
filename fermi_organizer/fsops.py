@@ -24,10 +24,7 @@ from .extraction import detect_watermark
 from .graph import is_chk_stem
 from .naming import folder_name_for
 
-try:
-    import pymupdf
-except ImportError:  # pragma: no cover
-    pymupdf = None
+import pymupdf
 
 
 def _native(path):
@@ -97,11 +94,6 @@ def _has_linked_ancestor(path, stop):
     return False
 
 
-def _strip_ext_prefix(path):
-    """Remove the extended-length prefix (see treescan.strip_ext_prefix)."""
-    return treescan.strip_ext_prefix(path)
-
-
 def _is_dir_link(path):
     """True for a directory that resolves elsewhere (see treescan.is_dir_link)."""
     return treescan.is_dir_link(path)
@@ -113,9 +105,11 @@ def _pdf_watermarked(path):
     Returns True when detect_watermark finds evidence; False (including on any
     read failure) otherwise, so undecidable copies are treated as clean rather
     than as reasons to delete parked orphan bytes.
+
+    pymupdf itself is a module-level import: extraction (imported above for
+    detect_watermark) already imports it unconditionally, so a local
+    "pymupdf is None" guard could never fire.
     """
-    if pymupdf is None:
-        return False
     try:
         doc = pymupdf.open(str(_native(path)))
     except Exception:
@@ -360,14 +354,19 @@ def planned_copy_count(children, roots):
     return sum(count(root) for root in roots)
 
 
-def ensure_placement_allowed(children, roots, log):
+def ensure_placement_allowed(children, roots, log, count=None):
     """Log + raise PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (or warn above the soft bound).
 
     Call this before building naming paths or touching the tree, so a refusal
-    can never exhaust memory/time or leave partial work behind.
+    can never exhaust memory/time or leave partial work behind. `count` is an
+    existing `_copy_counter(children)` closure to reuse: a caller that also
+    needs the counts (place_files) must not build a second memo, or every
+    depth-capped subtree is walked twice.
     """
-    planned = planned_copy_count(children, roots)
+    if count is None:
+        count = _copy_counter(children)
+    planned = sum(count(root) for root in roots)
     if planned > MAX_PLANNED_COPIES:
         log(f"  WARNING: {planned} copies planned exceeds the "
             f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
@@ -530,7 +529,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     folder_names = folder_names or {}
     renames = renames or {}
     count_copies = _copy_counter(children)
-    ensure_placement_allowed(children, roots, log)
+    ensure_placement_allowed(children, roots, log, count=count_copies)
 
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)

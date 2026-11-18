@@ -74,17 +74,24 @@ verified duplicate because `Path.is_file()` is blind past 260 characters.
 - **pymupdf==2.0** — the first release containing the CVE-2026-82035 fix, so
   the wheel no longer names an affected version and no longer downgrades an
   environment that already has 2.0. The runtime dependency closure grows from
-  three distributions to fifteen (onnxruntime, numpy, networkx,
+  three distributions to fourteen (onnxruntime, numpy, networkx,
   protobuf, flatbuffers, pyyaml, psutil, tabulate, pymupdf4llm,
   pymupdf-layout, packaging); THIRD_PARTY_NOTICES.md names every one.
 - **The ONNX layout model is disabled at import.** 2.0 runs it inside every
   find_tables() call: measured on 100 real drawings, 245.2 s with the model
   versus 47.1 s without (1.28.2 was 55.1 s). extraction.py clears
   pymupdf._get_layout behind a callable() guard.
+- **A parent number read as a BOM row is dropped.** pymupdf 2.0's text geometry
+  made F10119064 emit its USED ON value (F10126007) as a positional BOM row, and
+  with F10126007's own BOM naming F10119064 back that manufactures a
+  parent<->child cycle. The text path now applies the rule the OCR path already
+  used: an entry naming the drawing's own USED ON parent is boundary bleed, not
+  a child (`_drop_parent_refs`, commit `c386012`).
 - **Text extraction drifts slightly.** Same 100 drawings against 1.28.2: 98
-  identical, one gains a BOM row, one loses one — MuPDF's text geometry changed,
-  not the table finder. Re-run a tree after upgrading and read the placement
-  decisions.
+  identical, and the two differences were both that parent row (one apparent
+  gain, one loss) — MuPDF's text geometry changed, not the table finder. The
+  parent-row rule above now removes them, so a re-run should place nothing new
+  from this class of row.
 
 ## 0.3.0 — 2026-10-26
 

@@ -1,12 +1,13 @@
-"""Pin-freshness watch: PyMuPDF pin and Tesseract floor vs upstream releases.
+"""Pin-freshness watch: dependency pins and the Tesseract floor vs upstream.
 
 Stdlib only (runs on a bare runner python). Prints `pinned=`/`latest=` lines
 for the log. Opens a GitHub tracking issue (via `gh`, GH_TOKEN from the
-workflow) when a newer release exists and no open `cve-watch` issue already
-tracks it, per the standing re-check actions in THIRD_PARTY_NOTICES.md.
-Dedupe reads open `cve-watch` issues and matches titles locally (GitHub
-search parses version text oddly). Any `gh` failure aborts nonzero (loud red
-workflow) instead of risking duplicate or missing issues.
+workflow) when a newer release exists or an OSV advisory covers a version the
+hashed lock installs, and no open `cve-watch` issue already tracks it, per the
+standing re-check actions in THIRD_PARTY_NOTICES.md. Dedupe reads open
+`cve-watch` issues and matches titles locally (GitHub search parses version
+text oddly). Any `gh` failure aborts nonzero (loud red workflow) instead of
+risking duplicate or missing issues.
 """
 import json
 import re
@@ -20,6 +21,9 @@ PIN_RE = re.compile(r"^pymupdf==([^\s#]+)", re.M)
 PYPROJECT_PIN_RE = re.compile(r'"pymupdf==([^"]+)"', re.M)
 LOCK_PIN_RE = re.compile(r"^pymupdf==([^\s\\]+)", re.M)
 OPENPYXL_PIN_RE = re.compile(r"^openpyxl==([^\s#]+)", re.M)
+# One requirement line of requirements.lock: `name==version \` (uv writes a
+# trailing backslash before the --hash lines).
+LOCK_REQ_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)", re.M)
 OPENPYXL_PYPROJECT_PIN_RE = re.compile(r'"openpyxl==([^"]+)"', re.M)
 OPENPYXL_LOCK_PIN_RE = re.compile(r"^openpyxl==([^\s\\]+)", re.M)
 TESS_PIN = "5.5.3"
@@ -62,10 +66,30 @@ def advisories_for(package, version):
     return out
 
 
+def locked_pins():
+    """{package: version} for every distribution requirements.lock pins.
+
+    The lock is the closure CI actually installs. Checking only pymupdf and
+    openpyxl left the other pinned distributions (numpy, onnxruntime,
+    pymupdf-layout, pyyaml, ...) with no advisory gate at all.
+
+    requirements-dev.txt is deliberately out of scope: it pins test/lint
+    tooling, which ships in no artifact, and advisories against it would page
+    on packages no user installs. Code vendored inside a wheel (MuPDF, Brotli)
+    has no PyPI name, so OSV cannot see it either way - that gap is recorded
+    in THIRD_PARTY_NOTICES.md, not closable here.
+    """
+    text = (ROOT / "requirements.lock").read_text(encoding="utf-8")
+    return dict(LOCK_REQ_RE.findall(text))
+
+
 def check_advisories(open_titles):
     """Open a tracking issue for any advisory that covers a pinned version."""
-    pins = {"pymupdf": _pin(PIN_RE, "requirements.txt"),
-            "openpyxl": _pin(OPENPYXL_PIN_RE, "requirements.txt")}
+    pins = locked_pins()
+    if not pins:
+        print("WARNING: no pins read from requirements.lock; "
+              "skipping the advisory check")
+        return
     for package, version in pins.items():
         if not version:
             continue
@@ -120,7 +144,9 @@ def _track(title, body):
 
 def _pin(pattern, manifest):
     """Version `pattern` captures in `manifest`, or None when it has no pin."""
-    match = pattern.search((ROOT / manifest).read_text())
+    # encoding="utf-8": on Windows the default is cp1252, so a non-ASCII byte
+    # in a manifest would raise UnicodeDecodeError and kill the weekly watcher.
+    match = pattern.search((ROOT / manifest).read_text(encoding="utf-8"))
     return match.group(1) if match else None
 
 
