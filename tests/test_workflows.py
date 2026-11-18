@@ -58,7 +58,9 @@ def test_release_build_needs_the_whole_test_workflow():
     pytest_yml = _text("pytest.yml")
     assert re.search(r"^  workflow_call:\s*$", pytest_yml, re.M), (
         "pytest.yml must declare workflow_call for release.yml to call it")
-    for job in ("test-windows", "packaging", "ruff"):
+    # `test` is the Ubuntu suite that carries the coverage ratchet: a release
+    # that dropped it would still ship on a green build job.
+    for job in ("test", "test-windows", "packaging", "ruff"):
         assert re.search(rf"^  {job}:\s*$", pytest_yml, re.M), (
             f"pytest.yml lost its {job} job, so the release gate no longer covers it")
 

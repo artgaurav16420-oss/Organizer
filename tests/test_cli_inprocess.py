@@ -479,8 +479,8 @@ def test_plain_log_text_escapes_control_characters():
     # the operator's terminal, and the same bytes land in the .txt report.
     assert cli_module._plain_log_text("PWN\x1b[2Jowned\x07 x") == "PWN\\x1b[2Jowned\\x07 x"
     assert cli_module._plain_log_text("plain line") == "plain line"
-    # Structural whitespace is not touched: log("") writes a blank line.
-    assert cli_module._plain_log_text("a\tb\nc") == "a\tb\nc"
+    # Tab is the only whitespace the report layout uses.
+    assert cli_module._plain_log_text("a\tb") == "a\tb"
 
 
 def test_plain_log_text_escapes_carriage_return_and_bidi_overrides():
@@ -490,6 +490,13 @@ def test_plain_log_text_escapes_carriage_return_and_bidi_overrides():
     assert cli_module._plain_log_text("ok\rforged") == "ok\\x0dforged"
     assert cli_module._plain_log_text("part‮gnp.exe") == "part\\u202egnp.exe"
     assert cli_module._plain_log_text("a⁦b⁩c") == "a\\u2066b\\u2069c"
+
+
+def test_plain_log_text_escapes_newline_so_a_name_cannot_forge_a_line():
+    # A POSIX filename may contain LF; printed raw it starts an extra report
+    # line that reads like a finding of its own.
+    assert cli_module._plain_log_text("a\nb") == "a\\x0ab"
+    assert cli_module._plain_log_text("") == ""
 
 
 def test_control_char_name_is_escaped_in_report_and_workbook(

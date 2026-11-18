@@ -1625,6 +1625,22 @@ def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path, monkey
     assert any("truncated at depth" in line for line in logged)
 
 
+def test_place_files_accepts_a_one_shot_iterator_of_roots(tmp_path):
+    # place_files reads `roots` twice: the fan-out preflight, then the
+    # traversal. A generator consumed by the preflight would leave the
+    # traversal empty, so the call would copy nothing and report zero.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    logged = []
+
+    total = place_files({"F10126106": []}, iter(["F10126106"]),
+                        {"F10126106": pdf}, folder, False, logged.append)
+
+    assert total == 1
+    assert (folder / "F10126106" / "F10126106.pdf").is_file()
+
+
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
     out = tmp_path / "out"
     orphans_dir = out / "_orphans"

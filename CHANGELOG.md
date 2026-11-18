@@ -4,6 +4,22 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: review round (log newlines, orphan links, placement iterator)
+
+- **A newline in a drawing NAME can no longer forge a report line.** The log
+  sanitizer escaped control, CR and bidi characters but left LF, which a POSIX
+  filename may carry; it is now rendered as `\x0a` like the others.
+- **An Orphans row a full dry run marks "Planned" is no longer a link.** It
+  could open a live `_orphans/` copy of the same stem, a file the row does not
+  describe. Incremental and repair keep their links: their rows name copies
+  already in the tree.
+- **`place_files` accepts any iterable of roots.** It reads `roots` twice (the
+  fan-out preflight, then the traversal), so a generator was consumed by the
+  preflight and the traversal copied nothing; it is materialised once.
+- **The release-gate test pins the Ubuntu `test` job.** The loop covered the
+  Windows, packaging and ruff jobs only, so deleting the coverage-ratcheted
+  suite would not have failed it.
+
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 
 - **Release verify now enforces the coverage ratchet on both supported

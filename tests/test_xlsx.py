@@ -1050,7 +1050,10 @@ def test_review_rows_are_amber_whatever_the_category(tmp_path):
     from openpyxl import load_workbook
 
     out = tmp_path / "out"
-    out.mkdir()
+    (out / "_orphans").mkdir(parents=True)
+    # A parked orphan gives the Orphans row a "Review" pill under the category
+    # palette it would be orange, so the fixture has to reach that row too.
+    (out / "_orphans" / "F10126108.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     ctx = {
         "output": str(out),
         "run_mode": "DRY-RUN",
@@ -1073,7 +1076,7 @@ def test_review_rows_are_amber_whatever_the_category(tmp_path):
             seen += 1
             assert cell.fill.fgColor.rgb[-6:].upper() == amber, (
                 f"Review at {cell.coordinate} is {cell.fill.fgColor.rgb}")
-    assert seen >= 2
+    assert seen >= 3
 
 
 def test_orphans_sheet_dry_run_says_planned(tmp_path):
@@ -1099,6 +1102,15 @@ def test_orphans_sheet_dry_run_says_planned(tmp_path):
     assert rows[0][0] == "F10126108"
     assert rows[0][2] == "Planned"
     assert "Dry run" in rows[0][3]
+    # A live orphan of the same stem exists in the tree, but this row describes
+    # the copy the run would write, so it must not open that other file.
+    (out / "_orphans").mkdir(parents=True, exist_ok=True)
+    (out / "_orphans" / "F10126108.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    path2 = tmp_path / "orphans-live.xlsx"
+    fx.build_workbook(path2, ctx)
+    ws = load_workbook(path2)["Orphans"]
+    assert ws["A2"].value == "F10126108"
+    assert ws["A2"].hyperlink is None
 
 
 def test_orphans_sheet_calls_incremental_dry_run_rows_parked(tmp_path):

@@ -170,8 +170,9 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     doc.save(str(pdf))
     doc.close()
 
-    page = pymupdf.open(pdf)[0]
-    words = extraction._page_words(page)
+    doc = pymupdf.open(pdf)
+    words = extraction._page_words(doc[0])
+    doc.close()
     band = extraction._partslist_band(words)
     assert band is not None
     in_band = extraction._fermi_values_in_band(words, band)

@@ -955,8 +955,12 @@ def _orphans_sheet(orph, ctx, names, live=None):
     _table(orph, ["Stem (current file)", "Name", "Status", "Note"], (30, 38, 14, 60), rows,
            tab="orange", pills={3: "blue" if dry else "orange"},
            aligns=["left", "left", "center", "left"],
-           link_first=lambda i, row: _file_link(paths[row[0]], ctx.get("output", ""))
-           if row[0] in paths else None,
+           # A Planned row names a copy this run would write; a live orphan of
+           # the same stem is a different file, so the row stays plain rather
+           # than opening a PDF the row does not describe.
+           link_first=lambda i, row: None if dry else
+           (_file_link(paths[row[0]], ctx.get("output", ""))
+            if row[0] in paths else None),
            empty="No orphans - every part has a parent",
            note=("About this sheet",
                  ("A dry run copies nothing: these are the PDFs that would be parked "

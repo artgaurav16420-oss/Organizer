@@ -507,6 +507,8 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 lock=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
+    `roots` may be any iterable: it is materialised here because it is read
+    twice (preflight, then traversal).
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
@@ -528,6 +530,9 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     names_of = names_of or {}
     folder_names = folder_names or {}
     renames = renames or {}
+    # Iterated twice (the fan-out preflight, then the traversal), so a one-shot
+    # iterator would leave the second pass empty and place nothing.
+    roots = list(roots)
     count_copies = _copy_counter(children)
     ensure_placement_allowed(children, roots, log, count=count_copies)
 

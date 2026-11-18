@@ -28,7 +28,7 @@ from .runmodes import (
 
 
 _LOG_CTRL_RE = re.compile(
-    "[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+    "[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 
 
 def _jobs_arg(raw):
@@ -263,8 +263,9 @@ def _plain_log_text(msg):
     clears the operator's terminal, a carriage return overwrites the line it
     reports on, and a bidi override reverses the text that follows it - the
     same bytes persist in the .txt report. They are rendered as visible
-    escapes instead. Tab and newline are structural (``log("")`` writes a
-    blank line) and stay as they are.
+    escapes instead. A newline is escaped for the same reason: a filename can
+    carry one on POSIX and it would forge a whole extra report line. Tab stays
+    as it is - it is the only whitespace the report layout uses.
     """
     return _LOG_CTRL_RE.sub(_escape_char, str(msg))
 

@@ -1719,10 +1719,11 @@ def _full_place(children, roots, orphans, old, watermarked_dupes, index,
     Returns (copies, placement_refused, skipped_roots, placed_roots): an
     over-cap fan-out drops the largest roots (logged with their planned
     counts) and still places the rest; only when nothing fits is folder
-    placement skipped entirely. `placed_roots` is what actually reached the
-    tree - empty when the name plan refused, which is the only case where a
-    refusal leaves `skipped_roots` empty too. The bounded orphan/archive
-    copies always run so the run still reports."""
+    placement skipped entirely. `placed_roots` is the set this run committed
+    to placing - empty when the name plan refused, which is the only case
+    where a refusal leaves `skipped_roots` empty too. It is not a per-file
+    success report: guarded copy failures warn and continue. The bounded
+    orphan/archive copies always run so the run still reports."""
     log("--- Creating folder structure ---")
     renames = {new: f"{new}.pdf" for new in rekeyed.values()}
     # Cap check first: a pathological DAG must be trimmed before
