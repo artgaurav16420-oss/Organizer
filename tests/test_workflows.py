@@ -44,8 +44,12 @@ def test_release_build_needs_the_whole_test_workflow():
     # packaging smoke could all be red while the release still uploaded.
     text = _text("release.yml")
     assert re.search(r"^  verify:\s*$", text, re.M), "release.yml has no verify job"
-    verify = text.split("  verify:", 1)[1].split("\n  build:", 1)[0]
-    assert "uses: ./.github/workflows/pytest.yml" in verify, (
+    # Scope by the block boundary, not by "everything after verify up to build":
+    # with the two jobs reordered that slice silently widens to the rest of the
+    # file, and the assertion below then passes on a verify job that says nothing.
+    verify = re.search(r"^  verify:\n(.*?)(?=^  \S|\Z)", text, re.M | re.S)
+    assert verify, "release.yml has no verify job block"
+    assert "uses: ./.github/workflows/pytest.yml" in verify.group(1), (
         "the release gate must call the whole pytest workflow")
     # Scope the needs: assertion to the build job block. Searching the whole
     # file would pass if any other job kept `needs: verify` while build lost it.

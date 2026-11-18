@@ -102,6 +102,10 @@ HISTORY_MAX_RUNS = 200
 # " (pairs)" on load: the number stays visible, and the trend chart does not
 # draw two different units as one line.
 HISTORY_VERSION = 2
+# Fields per Run History row (the header in `_history_sheet` has one title for
+# each). A sidecar row shorter than this is corrupt, not short: the sheet reads
+# every field, so it is rejected with the rest of an unreadable sidecar.
+HISTORY_FIELDS = 8
 MAX_COL_WIDTH = 64
 ROW_H = 21
 
@@ -405,16 +409,24 @@ def _history_payload(data):
     """(rows, legacy) from a sidecar payload.
 
     Raises ValueError for anything that is not one of the two known shapes, so
-    the caller treats it like any other unreadable sidecar.
+    the caller treats it like any other unreadable sidecar. Each row is checked
+    too: `list(r)` on the sheet path would raise on a bare null and a short row
+    would write half a table, and corrupt history must cost the trend, never
+    the workbook.
     """
     if isinstance(data, dict):
         rows = data.get("runs")
         if not isinstance(rows, list):
             raise ValueError("run history is not a list")
-        return rows, data.get("version") != HISTORY_VERSION
-    if isinstance(data, list):
-        return data, True
-    raise ValueError("run history is not a list")
+        legacy = data.get("version") != HISTORY_VERSION
+    elif isinstance(data, list):
+        rows, legacy = data, True
+    else:
+        raise ValueError("run history is not a list")
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < HISTORY_FIELDS:
+            raise ValueError(f"run history row is not a list of {HISTORY_FIELDS} fields")
+    return rows, legacy
 
 
 def _mark_legacy_missing(rows):
@@ -426,8 +438,8 @@ def _mark_legacy_missing(rows):
     """
     marked = []
     for row in rows:
-        if (isinstance(row, (list, tuple)) and len(row) > 4
-                and isinstance(row[4], int) and row[4]):
+        # `_history_payload` guarantees a list/tuple of HISTORY_FIELDS fields.
+        if isinstance(row[4], int) and row[4]:
             row = list(row)
             row[4] = f"{row[4]} (pairs)"
         marked.append(row)

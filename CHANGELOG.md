@@ -41,6 +41,12 @@ All notable changes to the Fermi PDF organizer are recorded here.
   arrives.** `run_parallel` collected the whole batch before merging, so a
   large scanned run held every PDF's event delta alongside its payload until
   the last worker finished.
+- **A corrupt run-history row costs the trend, not the workbook.** A versioned
+  sidecar carrying a non-row entry (`{version: 2, runs: [null]}`) passed the
+  shape check, and the sheet's `list(r)` then raised, skipping the whole
+  workbook. Every row is validated against the sheet's eight fields now, so
+  such a sidecar is kept as `.corrupt` and loaded as empty history, like any
+  other unreadable one.
 
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 

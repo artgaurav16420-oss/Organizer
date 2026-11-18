@@ -72,7 +72,7 @@ def test_save_history_oserror_warns_without_crash(tmp_path, monkeypatch):
 
 def test_save_history_roundtrip_and_cap(tmp_path):
     xlsx = tmp_path / "organize_fermi_report.xlsx"
-    rows = [["run", i] for i in range(250)]
+    rows = [["run", i, 0, 0, 0, 0, 0, "r.txt"] for i in range(250)]
 
     fx._save_history(xlsx, rows)
 
@@ -108,6 +108,22 @@ def test_load_history_marks_pre_v2_pair_counts(tmp_path):
 
     fx._save_history(xlsx, rows)
     assert fx._load_history(xlsx) == rows
+
+
+def test_load_history_rejects_a_row_that_is_not_a_full_list(tmp_path):
+    # A versioned sidecar can still carry a hand-edited or truncated row. The
+    # sheet path does `list(r)`, so a bare null raised TypeError and the whole
+    # workbook was skipped; history is optional and a corrupt row must cost the
+    # trend only.
+    xlsx = tmp_path / "organize_fermi_report.xlsx"
+    sidecar = Path(str(xlsx) + ".history.json")
+    for bad in (None, [1, 2]):
+        sidecar.write_text(json.dumps({"version": fx.HISTORY_VERSION,
+                                       "runs": [bad]}), encoding="utf-8")
+        log = []
+        assert fx._load_history(xlsx, log.append) == []
+        assert any("row is not a list of 8 fields" in m for m in log)
+        assert Path(str(sidecar) + ".corrupt").exists()
 
 
 def test_build_workbook_creates_expected_sheets(tmp_path):
