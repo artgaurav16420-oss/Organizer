@@ -34,9 +34,9 @@ batches are all handled.
 | Component | Requirement |
 |---|---|
 | Python | 3.11 or newer |
-| PyMuPDF | `==2.0` (required) |
+| PyMuPDF | `==2.1` (required) |
 | openpyxl | `==3.1.5` (optional — only the `.xlsx` workbook) |
-| Tesseract OCR | Optional — needed only for scanned (image-only) PDFs; 5.5.3+ recommended |
+| Tesseract OCR | Optional — needed only for scanned (image-only) PDFs; 5.5.4+ recommended |
 
 Tesseract is auto-detected via the `TESSERACT_EXE` environment variable, then `PATH`,
 then the common install directories (`C:\Program Files\Tesseract-OCR`,
@@ -300,16 +300,16 @@ is not required.
   AGPL/commercial, so redistributing a combined work carries the AGPL obligations
   described there.
 - Security policy: [`SECURITY.md`](SECURITY.md).
-- PyMuPDF: **pinned to the fixed release**, `==2.0`. It carries the fix for
+- PyMuPDF: **pinned to the fixed release**, `==2.1`. It carries the fix for
   GHSA-434w-92hw-f2m3 / CVE-2026-82035 (a path traversal in the PyMuPDF **CLI**
   font path — `extract_objects()` in `src/__main__.py` — which this project
   never imported anyway, and still does not). Moving to 2.0 required dropping
   the Python 3.10 floor, since 3.10 reached end of life on 2026-10-01; see
   [`docs/adr/0004-python-311-floor.md`](docs/adr/0004-python-311-floor.md).
-  The ONNX layout model 2.0 imports is disabled at import: it makes
+  The ONNX layout model 2.x imports is disabled at import: it makes
   `find_tables()` ~4x slower for no benefit to parts lists.
-- Tesseract OCR: 5.5.3 or newer recommended; note that eight model-file
-  deserialization advisories (CVE-2026-88047..-88054, 2026-09-10) still apply to
-  5.5.3 with **no fixed release yet** — they trigger only on a malicious
+- Tesseract OCR: 5.5.4 or newer recommended. 5.5.4 fixes the eight model-file
+  deserialization advisories (CVE-2026-88047..-88054, published 2026-09-10)
+  that applied to 5.5.3 and earlier; they trigger only on a malicious
   tessdata `.traineddata`, never on drawings, see
   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

@@ -17,7 +17,7 @@ Operator runbook: `.opencode/skills/pdf-organizer/SKILL.md` (auto-loaded). That 
 ## Setup / env
 
 - Add deps: edit `requirements.txt`, then `uv pip compile requirements.txt --generate-hashes -o requirements.lock`; dev tools via `requirements-dev.in` -> `requirements-dev.txt` (`--universal --python-version 3.11`). No `uv.lock` and no `uv sync`: `uv.lock` is gitignored, so a local `uv sync` only recreates untracked noise - delete it, never commit it.
-- Always `import pymupdf`, never the `fitz` shim (deprecation notice leaks into captured stdout). Pinned `pymupdf==2.0`; its ONNX layout model is disabled at import in `extraction.py` (~4x extraction cost otherwise, ADR 0004). `openpyxl==3.1.5` is optional (workbook skipped on ImportError).
+- Always `import pymupdf`, never the `fitz` shim (deprecation notice leaks into captured stdout). Pinned `pymupdf==2.1`; its ONNX layout model is disabled at import in `extraction.py` (~4x extraction cost otherwise, ADR 0004). `openpyxl==3.1.5` is optional (workbook skipped on ImportError).
 - Python >=3.11. CI runs Ubuntu 3.11 and 3.12, so 3.11 stdlib is available (`tomllib`, `datetime.UTC`, `except*` groups); do not use 3.12-only syntax. Setuptools floor is >=80 because older releases reject the SPDX `license` string.
 - Tesseract only for scanned PDFs: resolution order `TESSERACT_EXE` -> PATH -> common Windows dirs.
 - One run per output folder is enforced by `<output>/.fermi_organizer.lock`: exit 1 if held (stale >2h is stolen with a warning), exit 2 if stolen mid-run. Network shares (SMB/NFS/mapped drives) are not lock-safe; coordinate manually.
