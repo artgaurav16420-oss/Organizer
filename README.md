@@ -49,20 +49,19 @@ scanned sheet itself (its own NAME and its own parts list), not placement by a p
 ## Install
 
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 ```
 
-For a reproducible install with SHA-256 hashes:
+That is the install CI and the release wheel are tested against. `requirements.txt`
+is the human-edited source; `requirements.lock` is generated from it with
+`uv pip compile requirements.txt --generate-hashes -o requirements.lock` and pins
+the full transitive closure with SHA-256 hashes. Installing `requirements.txt`
+directly resolves pymupdf's eleven transitive dependencies unpinned, so use it
+only while changing a pin.
 
-```bash
-uv pip install -r requirements.lock
-```
-
-`requirements.txt` is the human-edited dependency source; `requirements.lock` is
-generated from it with `uv pip compile requirements.txt --generate-hashes -o requirements.lock`
-and is what CI installs (`pip install --require-hashes -r requirements.lock`).
-
-Add `pip install -e .` when you want the `python -m fermi_organizer.cli` entry point.
+`pip install -e .` (or installing the built wheel) adds the `fermi-organize` console
+command; `python -m fermi_organizer.cli` runs from a repository checkout without any
+install.
 
 ## Quick start
 
@@ -178,8 +177,8 @@ file. It encodes the safe workflow (dry-run → review → execute), flag decisi
 to summarize a run, guardrails (originals are never modified) and troubleshooting.
 
 To organize a folder from outside a clone, install the repository's dependencies
-(`pip install -r requirements.txt`, plus `pip install -e .` for the module form) and
-run from the repository root:
+(`pip install --require-hashes -r requirements.lock`, plus `pip install -e .` for the
+module form) and run from the repository root:
 
 ```bash
 python -m fermi_organizer.cli "D:\data\drawings" --output "D:\data\drawings\Output" --dry-run
@@ -209,7 +208,13 @@ directory once installed editable).
 
 ## Known limits
 
-- Paths are capped at 250 characters (`MAX_PATH`). A placement that would exceed it is
+- Paths are capped at 250 units of the OS path limit (`MAX_PATH`). On Windows the
+  guard counts UTF-16 code units (`treescan.path_units`), so a character outside the
+  Basic Multilingual Plane counts twice and a path of 125 such characters is already
+  at the cap. On POSIX it counts characters, while the filesystem enforces byte
+  limits (255 bytes per name component), so a multibyte folder name near the cap can
+  still be refused by the OS — the cap is a margin against the Windows limit, not a
+  POSIX byte guarantee. A placement that would exceed it is
   **skipped with a warning only** and the run still exits 0, so an incomplete tree can
   look like a normal outcome — check the report's `Skipped N path(s) due to length
   limits` line when the output root is deeply nested. At that depth the `.txt` report
@@ -276,10 +281,8 @@ contributors and coding agents need.
 ## Tests
 
 ```bash
-# requirements-dev.txt is hash-pinned; installing it in the same invocation as
-# the unhashed requirements.txt makes pip demand hashes for everything. Install
-# the runtime deps and the dev lock separately.
-pip install -r requirements.txt
+# The runtime and dev locks are hash-pinned separately; install both.
+pip install --require-hashes -r requirements.lock
 pip install --require-hashes -r requirements-dev.txt
 python -m pytest -q
 ```

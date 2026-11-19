@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-import pymupdf as fitz
+import pymupdf
 import pytest
 
 from fermi_organizer import extraction, fsops, runmodes
@@ -247,6 +247,35 @@ def test_run_full_execute_builds_tree_and_orphans(tmp_path, make_pdf):
     assert re.search(r"Cycles broken:\s+0", text)
     assert re.search(r"PDF copies written:\s+3", text)
     assert "Stored 1 orphan(s) in _orphans/" in text
+
+
+def test_run_full_unparked_orphan_is_reported_as_unplaced(tmp_path, make_pdf,
+                                                          monkeypatch):
+    # copy_orphans warns and continues when a park fails, so the orphan then
+    # exists nowhere in the tree; it used to disappear from the Unplaced report
+    # as well, because every classified orphan was subtracted unconditionally.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    _write_standalone(make_pdf, in_dir)
+
+    real_copy = fsops._copy_atomic
+
+    def refuse_park(src, dst, root):
+        if Path(dst).parent.name == "_orphans":
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", refuse_park)
+    logged = []
+    run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert not (out / "_orphans" / "F10126108.pdf").exists()
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (1) ---" in text
+    assert "  F10126108" in text
 
 
 def test_run_full_adopts_parent_bom_name_for_scanned_child(tmp_path, make_pdf):
@@ -721,6 +750,105 @@ def test_run_full_cap_skips_only_oversized_roots(tmp_path, make_pdf,
     assert "Roots skipped (oversized): 1" in text
 
 
+def test_run_full_refused_name_plan_reports_no_placed_roots(tmp_path, make_pdf,
+                                                             monkeypatch):
+    # A name-plan refusal (over-cap path count) places nothing yet skips no
+    # individual root as oversized, so a filter built only from skipped roots
+    # would list every root in the Roots sheet and the ROOTS KPI although the
+    # tree is empty.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    monkeypatch.setattr("fermi_organizer.runmodes.plan_folder_names",
+                        lambda *args, **kwargs: None)
+    logged = []
+
+    ctx = run_full(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["skipped_roots"] == []
+    assert ctx["roots"] == []
+    assert ctx["counters"]["roots"] == 0
+    assert "Root assemblies:     0" in "\n".join(logged)
+
+
+def test_run_full_root_skipped_by_a_guard_is_not_reported_placed(
+        tmp_path, make_pdf, monkeypatch):
+    # place_files can skip a whole root subtree (a symlinked/junction ancestor
+    # on the planned folder, a failed mkdir). Taking `kept` as the placed set
+    # would list that root as an assembly of the tree and keep its PDFs out of
+    # the unplaced report, although nothing was copied.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    logged = []
+
+    def fake_place(*args, placed_out=None, **kwargs):
+        return 0
+
+    monkeypatch.setattr("fermi_organizer.runmodes.place_files", fake_place)
+
+    ctx = run_full(in_dir, out, True, logged.append, jobs=1)
+
+    assert ctx["roots"] == []
+    assert ctx["counters"]["roots"] == 0
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (2) ---" in text
+
+
+def test_run_full_all_roots_refused_is_a_placement_refusal(
+        tmp_path, make_pdf, monkeypatch):
+    # When a guard refuses every root, the run copied none of its own PDFs.
+    # placement_refused stayed False because it only tracked the cap, so the
+    # CLI exited 0 as if the tree had been built.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106 Test Parent")
+    logged = []
+
+    ctx = run_full(in_dir, out, False, logged.append, jobs=1)
+
+    assert ctx["placement_refused"] is True
+    assert ctx["roots"] == []
+    assert not (out / "F10126106 Test Parent").exists()
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (2) ---" in text
+
+
+def test_run_full_copy_failure_surfaces_in_the_unplaced_report(
+        tmp_path, make_pdf, monkeypatch):
+    # Reachability alone says the child belongs to a placed root, so a copy
+    # that failed used to vanish from the Unplaced report although no file of
+    # it reached the tree.
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out = tmp_path / "out"
+    _write_parent(make_pdf, in_dir)
+    _write_child(make_pdf, in_dir)
+    real_copy = fsops._copy_atomic
+
+    def flaky(src, dst, root):
+        if Path(src).name == "F10126107.pdf":
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", flaky)
+    logged = []
+    run_full(in_dir, out, False, logged.append, jobs=1)
+
+    text = "\n".join(logged)
+    assert "--- Unplaced PDFs (1) ---" in text
+    assert "  F10126107" in text
+
+
 def test_run_full_skipped_root_exclusive_child_reported_unplaced(
         tmp_path, make_pdf, monkeypatch):
     # Reachability for the unplaced report uses kept roots only: a child
@@ -994,7 +1122,7 @@ def test_run_full_reports_scanned_pdf(tmp_path, make_pdf):
     in_dir.mkdir()
     _write_parent(make_pdf, in_dir)
     _write_child(make_pdf, in_dir)
-    doc = fitz.open()
+    doc = pymupdf.open()
     doc.new_page()
     doc.save(str(in_dir / "F10126108.pdf"))
     doc.close()
@@ -2839,3 +2967,61 @@ def test_titleblock_mismatches_accepts_two_letter_revisions():
     assert _titleblock_mismatches(tb, logged.append) == [
         ("F10187622_AA", "revision", "AA", "AB"),
     ]
+
+
+def test_full_finalize_excludes_skipped_roots_from_context():
+    # A root refused by fit_roots_within_cap was never placed, so it must not
+    # appear in the Roots sheet or the ROOTS KPI as a top-level assembly.
+    from fermi_organizer.runmodes import _full_finalize
+
+    ctx = _full_finalize(
+        roots=["F10126106", "F10126107"], children={"F10126106": ["F10126107"]},
+        index={"F10126106": None, "F10126107": None},
+        orphans=[], removed=[], total_copies=0, warning_count=0, unmatched=[],
+        chk_stems=[], used_on_of={}, used_mism=[], used_on_bugs=[],
+        tb_mismatches=[], watermarks={}, names_of={}, bom_names={},
+        log=lambda m: None, refused=True, skipped=[("F10126106", 1)])
+
+    assert [r for r, _ in ctx["roots"]] == ["F10126107"]
+    assert ctx["counters"]["roots"] == 1
+
+
+def test_log_previous_report_read_failure_is_a_warning(tmp_path, monkeypatch):
+    class _LockedReport:
+        name = "organize_fermi_report.txt"
+
+        def read_text(self, *args, **kwargs):
+            raise OSError("file is locked by another process")
+
+    monkeypatch.setattr(runmodes, "find_latest_report", lambda out: _LockedReport())
+    logged = []
+    runmodes._log_previous_report(tmp_path, logged.append)
+    assert any("could not read previous report" in line for line in logged)
+
+
+def test_finish_repair_promotions_keeps_the_source_when_unlink_fails(
+        tmp_path, monkeypatch):
+    stem = "F10126106"
+    live = tmp_path / stem / f"{stem}.pdf"
+    live.parent.mkdir()
+    live.write_bytes(b"%PDF live")
+    src = tmp_path / "_superseded" / f"{stem}.pdf"
+    src.parent.mkdir()
+    src.write_bytes(b"%PDF live")
+
+    real_unlink = Path.unlink
+
+    def fake_unlink(self, *args, **kwargs):
+        if self == src:
+            raise OSError("held open")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    logged = []
+    removed = runmodes._finish_repair_promotions(
+        {stem: [live]}, {stem: src}, {stem}, tmp_path, False, logged.append)
+
+    assert removed == 0
+    assert src.exists()
+    assert any("could not remove promoted archive copy" in line
+               for line in logged)

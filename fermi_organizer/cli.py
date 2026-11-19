@@ -2,6 +2,7 @@
 """CLI entry point for the Fermi PDF organizer (split-layout version)."""
 import argparse
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -24,6 +25,11 @@ from .runmodes import (
     run_incremental,
     run_repair,
 )
+
+
+_LOG_CTRL_RE = re.compile(
+    "[\x00-\x08\x0a-\x1f\x7f-\x9f؜‎‏"
+    "\u2028\u2029\u202a-\u202e\u2066-\u206f]")
 
 
 def _jobs_arg(raw):
@@ -85,7 +91,11 @@ def _log_ocr_startup(log):
     else:
         reason = OCR.reason or "tesseract not found"
         log("OCR: disabled" if not OCR.enabled else
-            f"OCR: unavailable ({reason}; scanned PDFs stay orphans)")
+            f"OCR: unavailable ({reason}; text layers are still parsed, even on "
+            "a page short enough to be routed to OCR, but content that exists "
+            "only as an image cannot be read - such a sheet's NAME and parts "
+            "list are missed, and it is placed only when a readable parent's "
+            "parts list names it)")
 
 
 def run_mode_label(dry_run, incremental=False, repair=False):
@@ -249,6 +259,26 @@ def _refusal_exit_code(ctx):
     return 0
 
 
+def _plain_log_text(msg):
+    """Escape control and bidi characters before a line is printed and archived.
+
+    Drawing NAMEs are untrusted PDF text. An ESC/OSC sequence retitles or
+    clears the operator's terminal, a carriage return overwrites the line it
+    reports on, and a bidi override reverses the text that follows it - the
+    same bytes persist in the .txt report. They are rendered as visible
+    escapes instead. A newline is escaped for the same reason: a filename can
+    carry one on POSIX and it would forge a whole extra report line. Tab stays
+    as it is - it is the only whitespace the report layout uses.
+    """
+    return _LOG_CTRL_RE.sub(_escape_char, str(msg))
+
+
+def _escape_char(match):
+    """Render one matched character as a \\xNN or \\uNNNN escape."""
+    ch = match.group()
+    return "\\u%04x" % ord(ch) if ord(ch) > 0xff else "\\x%02x" % ord(ch)
+
+
 def main(argv=None):
     """Parse args, run the selected mode, write the report + live workbook."""
     parser, args = _parse_args(argv)
@@ -259,6 +289,7 @@ def main(argv=None):
     log_lines = []
 
     def log(msg):
+        msg = _plain_log_text(msg)
         print(msg)
         log_lines.append(msg)
 

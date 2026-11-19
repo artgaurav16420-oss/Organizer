@@ -6,31 +6,20 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: release-${{ github.ref }}
+  # Distinct from pytest.yml's `${{ github.workflow }}-${{ github.ref }}`: a
+  # called workflow sees the caller's name in github.workflow, so reusing that
+  # form here makes both workflows share one group - and pytest.yml's
+  # cancel-in-progress: true then cancels the release that called it.
+  group: release-tag-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   # A tag can point at any commit, including one whose suite is red. The build
-  # job needs this gate: a failed verify means no release asset is published.
+  # job needs this gate, and the gate is the whole pytest workflow (tests on
+  # 3.11/3.12, Windows, ruff, wheel packaging) rather than one Ubuntu job: a
+  # release that needed only pytest published a wheel from a commit whose ruff,
+  # Windows or packaging check was red, and never proved the wheel installs.
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.lock
-            requirements-dev.txt
-      - run: pip install --require-hashes -r requirements.lock
-      - run: pip install --require-hashes -r requirements-dev.txt
-      - run: python -m pytest -q --cov=fermi_organizer --cov=fermi_report_xlsx --cov=cve_watch --cov-fail-under=87
+    uses: ./.github/workflows/pytest.yml
   build:
     needs: verify
     runs-on: ubuntu-latest
@@ -46,7 +35,9 @@ jobs:
           cache-dependency-path: |
             requirements.lock
             requirements-dev.txt
-      - run: pip install --require-hashes -r requirements.lock
+      # Only the build toolchain is needed here: `python -m build --no-isolation`
+      # imports the project metadata, not pymupdf or openpyxl, so installing the
+      # runtime lock here only downloaded the largest dependency set for nothing.
       - run: pip install --require-hashes -r requirements-dev.txt
       - run: rm -rf build dist
       - run: python -m build --wheel --no-isolation
@@ -61,6 +52,16 @@ jobs:
               *) echo "ERROR: $(basename "$wheel") does not match tag v$tag"; exit 1 ;;
             esac
           done
+      # publish nothing that has not been installed and imported: the wheel is
+      # the artifact, and a dropped py-module or a broken console script only
+      # shows up on a real install.
+      - name: Install the wheel and smoke it before publishing
+        run: |
+          python -m venv "$RUNNER_TEMP/releaseenv"
+          "$RUNNER_TEMP/releaseenv/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/releaseenv/bin/fermi-organize" --help > /dev/null
+          "$RUNNER_TEMP/releaseenv/bin/python" -c "import fermi_report_xlsx"
       - name: Upload release assets
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:

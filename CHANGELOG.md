@@ -4,6 +4,89 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Fix: review rounds (log escaping, orphan links, history units)
+
+- **A newline in a drawing NAME can no longer forge a report line.** The log
+  sanitizer escaped control, CR and bidi characters but left LF, and also left
+  U+2028/U+2029 (line/paragraph separators that Unicode-aware readers break
+  on) and the free-standing marks (U+200E/U+200F/U+061C, the deprecated
+  U+206A-U+206F). All of them are rendered as escapes now.
+- **The Roots sheet lists roots that placed a file.** `place_files` now reports
+  the roots that put at least one copy in the tree, so a root whose whole
+  subtree a guard refused (a symlinked/junction ancestor, a failed mkdir) no
+  longer reads as an assembly of the tree and its PDFs surface under Unplaced.
+- **An Orphans row a full dry run marks "Planned" is no longer a link.** It
+  could open a live `_orphans/` copy of the same stem, a file the row does not
+  describe. Incremental and repair keep their links: their rows name copies
+  already in the tree.
+- **`place_files` accepts any iterable of roots.** It reads `roots` twice (the
+  fan-out preflight, then the traversal), so a generator was consumed by the
+  preflight and the traversal copied nothing; it is materialised once.
+- **The run-history sidecar is versioned (v2).** The Missing column now counts
+  distinct part numbers; rows written before that change are marked
+  "`n (pairs)`" on load, so they stay visible in the sheet while the trend
+  chart does not plot two units as one line.
+- **The OCR-unavailable line says text-layer PDFs are unaffected**, instead of
+  reading as if every drawing lost its NAME and parts list.
+- **The anonymous-document memo is bounded.** The OCR context pinned every
+  in-memory document (PyMuPDF documents take no weak reference); it now pins
+  the last 8, and an evicted document costs a memo miss, never a wrong key.
+- **The release-gate test pins the Ubuntu `test` job.** The loop covered the
+  Windows, packaging and ruff jobs only, so deleting the coverage-ratcheted
+  suite would not have failed it.
+- **README installs the hashed locks.** The external-clone note and the test
+  recipe still prescribed `pip install -r requirements.txt`, the unhashed
+  source manifest, contradicting the install section above them.
+- **Parallel extraction folds each worker's OCR events as its result
+  arrives.** `run_parallel` collected the whole batch before merging, so a
+  large scanned run held every PDF's event delta alongside its payload until
+  the last worker finished.
+- **A corrupt run-history row costs the trend, not the workbook.** A versioned
+  sidecar carrying a non-row entry (`{version: 2, runs: [null]}`) passed the
+  shape check, and the sheet's `list(r)` then raised, skipping the whole
+  workbook. Every row is validated against the sheet's eight fields now, so
+  such a sidecar is kept as `.corrupt` and loaded as empty history, like any
+  other unreadable one.
+- **The Dashboard's report link is relative**, like every other drawing link.
+  It used the absolute `file:///` URI, whose percent-encoding pushed a deep
+  output path past Excel's 255-character limit, leaving the note plain on
+  exactly the runs where the report is hardest to find.
+- **Run-history rows must be exactly the sheet's eight fields.** The check
+  accepted oversized rows, and the table then indexed past its eight alignment
+  entries, skipping the whole workbook; such a sidecar is now handled as
+  corrupt history like a short or null row.
+- **The Unplaced PDFs report is per file, not per root.** A file whose own
+  copy failed (or a subtree a guard dropped) inside a root that otherwise
+  placed was reachable from that root and disappeared from the report; the
+  placement step now hands back every stem it did not copy.
+- **An orphan with no parked copy is reported as unplaced.** A full run
+  subtracted every classified orphan from the Unplaced report, so when
+  `_orphans/` parking was refused (a symlinked ancestor) or a copy failed,
+  the PDF sat nowhere in the tree and in neither report; only orphans that
+  really landed (or would, in a dry run) are subtracted now.
+- **A shared drawing copied under one claimant is not unplaced.** One failed
+  copy attempt used to put the stem in the unplaced set even after another
+  claimant's copy reached the tree; `place_files` now reports only stems with
+  no successful copy anywhere.
+- **A history row with a non-scalar cell costs the trend, not the workbook.**
+  Rows were checked for shape only, and openpyxl refuses a dict or list cell
+  while writing the sheet, aborting the workbook refresh; such a sidecar is
+  handled as corrupt history like a short or null row.
+- **A dry run refuses what execution refuses.** The linked-ancestor guard sat
+  in the execute branch, so a plan reported a root as placed although a real
+  run would skip its whole subtree, and its PDFs never appeared under
+  Unplaced. The guard only stats the path, so both modes run it.
+- **A run whose every root a guard refused is a placement refusal.** The flag
+  tracked only the copy cap, so a run that copied none of its own drawings
+  still exited 0 and read as a successful build.
+- **The linked-ancestor guard walks each folder once per plan.** Running it in
+  dry-run too made a 500-deep chain cost O(depth^2) realpath calls, which
+  outlived the Windows CI job timeout; the pre-order traversal now caches the
+  verdict per folder and probes only the new component.
+- **The OCR-unavailable line is accurate about short text layers.** Pages
+  under the OCR text threshold still have their text parsed natively, so the
+  old wording claimed a readable NAME or parts list could not be read.
+
 ### Fix: codebase-review follow-ups (release gate, CLI streams, coverage scope)
 
 - **Release verify now enforces the coverage ratchet on both supported
@@ -74,17 +157,24 @@ verified duplicate because `Path.is_file()` is blind past 260 characters.
 - **pymupdf==2.0** — the first release containing the CVE-2026-82035 fix, so
   the wheel no longer names an affected version and no longer downgrades an
   environment that already has 2.0. The runtime dependency closure grows from
-  three distributions to fifteen (onnxruntime, numpy, networkx,
+  three distributions to fourteen (onnxruntime, numpy, networkx,
   protobuf, flatbuffers, pyyaml, psutil, tabulate, pymupdf4llm,
   pymupdf-layout, packaging); THIRD_PARTY_NOTICES.md names every one.
 - **The ONNX layout model is disabled at import.** 2.0 runs it inside every
   find_tables() call: measured on 100 real drawings, 245.2 s with the model
   versus 47.1 s without (1.28.2 was 55.1 s). extraction.py clears
   pymupdf._get_layout behind a callable() guard.
+- **A parent number read as a BOM row is dropped.** pymupdf 2.0's text geometry
+  made F10119064 emit its USED ON value (F10126007) as a positional BOM row, and
+  with F10126007's own BOM naming F10119064 back that manufactures a
+  parent<->child cycle. The text path now applies the rule the OCR path already
+  used: an entry naming the drawing's own USED ON parent is boundary bleed, not
+  a child (`_drop_parent_refs`, commit `c386012`).
 - **Text extraction drifts slightly.** Same 100 drawings against 1.28.2: 98
-  identical, one gains a BOM row, one loses one — MuPDF's text geometry changed,
-  not the table finder. Re-run a tree after upgrading and read the placement
-  decisions.
+  identical, and the two differences were both that parent row (one apparent
+  gain, one loss) — MuPDF's text geometry changed, not the table finder. The
+  parent-row rule above now removes them, so a re-run should place nothing new
+  from this class of row.
 
 ## 0.3.0 — 2026-10-26
 

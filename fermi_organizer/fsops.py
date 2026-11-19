@@ -24,10 +24,7 @@ from .extraction import detect_watermark
 from .graph import is_chk_stem
 from .naming import folder_name_for
 
-try:
-    import pymupdf
-except ImportError:  # pragma: no cover
-    pymupdf = None
+import pymupdf
 
 
 def _native(path):
@@ -97,11 +94,6 @@ def _has_linked_ancestor(path, stop):
     return False
 
 
-def _strip_ext_prefix(path):
-    """Remove the extended-length prefix (see treescan.strip_ext_prefix)."""
-    return treescan.strip_ext_prefix(path)
-
-
 def _is_dir_link(path):
     """True for a directory that resolves elsewhere (see treescan.is_dir_link)."""
     return treescan.is_dir_link(path)
@@ -113,9 +105,11 @@ def _pdf_watermarked(path):
     Returns True when detect_watermark finds evidence; False (including on any
     read failure) otherwise, so undecidable copies are treated as clean rather
     than as reasons to delete parked orphan bytes.
+
+    pymupdf itself is a module-level import: extraction (imported above for
+    detect_watermark) already imports it unconditionally, so a local
+    "pymupdf is None" guard could never fire.
     """
-    if pymupdf is None:
-        return False
     try:
         doc = pymupdf.open(str(_native(path)))
     except Exception:
@@ -360,14 +354,19 @@ def planned_copy_count(children, roots):
     return sum(count(root) for root in roots)
 
 
-def ensure_placement_allowed(children, roots, log):
+def ensure_placement_allowed(children, roots, log, count=None):
     """Log + raise PlacementRefusedError when the planned fan-out exceeds
     MAX_PLANNED_COPIES (or warn above the soft bound).
 
     Call this before building naming paths or touching the tree, so a refusal
-    can never exhaust memory/time or leave partial work behind.
+    can never exhaust memory/time or leave partial work behind. `count` is an
+    existing `_copy_counter(children)` closure to reuse: a caller that also
+    needs the counts (place_files) must not build a second memo, or every
+    depth-capped subtree is walked twice.
     """
-    planned = planned_copy_count(children, roots)
+    if count is None:
+        count = _copy_counter(children)
+    planned = sum(count(root) for root in roots)
     if planned > MAX_PLANNED_COPIES:
         log(f"  WARNING: {planned} copies planned exceeds the "
             f"{MAX_PLANNED_COPIES}-copy cap - placement refused (check the BOM "
@@ -505,9 +504,20 @@ def _copy_atomic(src, dst, stop=None):
 
 
 def place_files(children, roots, index, folder, dry_run, log, names_of=None, folder_names=None, renames=None,
-                lock=None):
+                lock=None, placed_out=None, failed_out=None):
     """Copy every root's subtree into nested folders; returns the copy count.
 
+    `roots` may be any iterable: it is materialised here because it is read
+    twice (preflight, then traversal). `placed_out`, when given, receives the
+    roots that placed at least one copy: a root whose whole subtree was
+    skipped (length cap, symlinked/junction ancestor, failed mkdir) is left
+    out, so its PDFs can be reported as unplaced. `failed_out`, when given,
+    receives every stem with no successful copy anywhere in the tree: a file
+    lost inside a root that did place keeps surfacing in the unplaced report,
+    and a refusal that drops a whole subtree (length cap, linked ancestor,
+    failed mkdir) adds that subtree, since its files are never attempted. A
+    stem a shared claimant copied under one parent stays out even if the same
+    copy failed under another - the tree holds it, so it is placed.
     Folder names come from `folder_names` (already path-shortened), falling
     back to `names_of`. `renames` maps a stem to the copied file's new name
     (re-keyed misnamed files). Dry-run logs planned copies without touching
@@ -526,16 +536,57 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
     total_copies = 0
     skipped_count = 0
     failed_count = 0
+    # `failed_out` is only filled once the traversal ends: a stem is unplaced
+    # only when no attempt copied it, so a shared child that failed under one
+    # claimant and was written under another is not in it.
+    failed_seen = set()
+    copied = set()
     names_of = names_of or {}
     folder_names = folder_names or {}
     renames = renames or {}
+    # Iterated twice (the fan-out preflight, then the traversal), so a one-shot
+    # iterator would leave the second pass empty and place nothing.
+    roots = list(roots)
     count_copies = _copy_counter(children)
-    ensure_placement_allowed(children, roots, log)
+    ensure_placement_allowed(children, roots, log, count=count_copies)
 
     def fname(stem):
         return folder_names.get(stem) or folder_name_for(stem, names_of)
 
+    def dropped(stem):
+        """Record `stem` and every descendant as not placed (cycle-safe)."""
+        todo, seen = [stem], set()
+        while todo:
+            s = todo.pop()
+            if s in seen:
+                continue
+            seen.add(s)
+            failed_seen.add(s)
+            todo.extend(children.get(s, ()))
+
+    # `_has_linked_ancestor` walks every component between the output root and
+    # the folder, resolving each one twice, so re-walking a chain costs
+    # O(depth^2) realpath calls for the plan (a 500-deep dry run outlived the
+    # CI job timeout on Windows). The traversal is pre-order - a child folder
+    # is pushed only after its parent was accepted - so a folder below a
+    # proven-clean parent needs one probe of its own component, not a new walk.
+    clean_folders = set()
+
+    def linked_folder(path):
+        """True when `path` or a folder above it inside the tree is a link."""
+        if path in clean_folders:
+            return False
+        if path.parent != folder and path.parent not in clean_folders:
+            # Not the top-down shape the cache assumes: keep the full walk
+            # rather than trusting a parent this pass never checked.
+            return _has_linked_ancestor(path, folder)
+        if _islink(path) or _is_dir_link(path):
+            return True
+        clean_folders.add(path)
+        return False
+
     for root in sorted(roots):
+        copies_before = total_copies
         stack = [(root, folder / fname(root), 0)]
         while stack:
             stem, current_folder, depth = stack.pop()
@@ -544,6 +595,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
                 log(f"  WARNING: placement truncated at depth {depth} in "
                     f"{current_folder.name} (deeper than any healthy tree) - manual review")
                 skipped_count += count_copies(stem)
+                dropped(stem)
                 continue
             kids = sorted(children.get(stem, ()))
             pdf = index[stem]
@@ -552,6 +604,7 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if _islink(pdf) or _islink(target):
                 log(f"  WARNING: {stem}: copy skipped (symlink refused): {pdf} -> {target}")
                 failed_count += 1
+                failed_seen.add(stem)
                 stack.extend((child, current_folder / fname(child), depth + 1)
                              for child in reversed(kids))
                 continue
@@ -559,40 +612,55 @@ def place_files(children, roots, index, folder, dry_run, log, names_of=None, fol
             if path_units(current_folder) > MAX_DIR or path_units(target) > MAX_PATH:
                 log(f"  WARNING: path too long ({path_units(target)} chars), skipping: {target}")
                 skipped_count += count_copies(stem)
+                dropped(stem)
+                continue
+            # The linked-ancestor check runs in dry-run too - it only stats the
+            # path - so a plan never reports a root as placed that execution
+            # would refuse. It has to run BEFORE mkdir: a junction at a planned
+            # folder would otherwise have parents=True create descendant
+            # directories outside the output tree, and the copy guard would
+            # only refuse the file afterwards.
+            if linked_folder(current_folder):
+                log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
+                    f"symlinked/junction ancestor, refusing): {current_folder}")
+                failed_count += count_copies(stem)
+                dropped(stem)
                 continue
             if dry_run:
                 log(f"  [DRY-RUN] mkdir+copy {target_name} -> {target}")
                 total_copies += 1
+                copied.add(stem)
             else:
                 # mkdir failure: the subtree's paths cannot exist - skip it;
                 # copy2 failure: only this file is lost, children are still tried.
                 # ValueError catches embedded-NUL style hostile names that
                 # raise before the syscall (guards must stay "not fatal").
-                #
-                # The linked-ancestor check has to run BEFORE mkdir: a junction
-                # at a planned folder would otherwise have parents=True create
-                # descendant directories outside the output tree, and the copy
-                # guard would only refuse the file afterwards.
-                if _has_linked_ancestor(current_folder, folder):
-                    log(f"  WARNING: {stem}: copy skipped (folder path traverses a "
-                        f"symlinked/junction ancestor, refusing): {current_folder}")
-                    failed_count += count_copies(stem)
-                    continue
                 try:
                     current_folder.mkdir(parents=True, exist_ok=True)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += count_copies(stem)
+                    dropped(stem)
                     continue
                 try:
                     _copy_atomic(pdf, target, folder)
                 except (OSError, ValueError) as e:
                     log(f"  WARNING: {stem}: copy failed ({target}): {e}")
                     failed_count += 1
+                    failed_seen.add(stem)
                 else:
                     total_copies += 1
+                    copied.add(stem)
             stack.extend((child, current_folder / fname(child), depth + 1)
                          for child in reversed(kids))
+        if placed_out is not None and total_copies > copies_before:
+            placed_out.append(root)
+
+    if failed_out is not None:
+        # Subtract the stems another claimant did copy: a shared drawing is
+        # written into every claimant's subtree, so one failed attempt does
+        # not make it unplaced while a copy sits in the tree.
+        failed_out.update(failed_seen - copied)
 
     if skipped_count:
         log(f"  Skipped {skipped_count} path(s) due to length limits")
@@ -1234,9 +1302,15 @@ def copy_watermarked_duplicates(paths, folder, dry_run, log):
     return n
 
 
-def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
+def copy_orphans(orphans, index, folder, dry_run, log, renames=None,
+                 parked_out=None):
     """Copy orphan PDFs into _orphans/ so later runs can adopt them.
-    Returns count copied."""
+
+    Returns count copied. `parked_out`, when given, receives the stems that
+    now have a parked copy (or would have one in dry-run): a refusal or a
+    failed copy leaves its stem out, so a caller reporting them as stored
+    does not hide a PDF that exists nowhere in the tree.
+    """
     n = 0
     renames = renames or {}
     orphans_dir = folder / "_orphans"
@@ -1262,6 +1336,8 @@ def copy_orphans(orphans, index, folder, dry_run, log, renames=None):
             except (OSError, ValueError) as e:
                 log(f"  WARNING: {o}: copy failed ({target}): {e}")
                 continue
+        if parked_out is not None:
+            parked_out.add(o)
         n += 1
     if dry_run:
         log(f"Would store {len(orphans)} orphan(s) in _orphans/ "

@@ -1,7 +1,7 @@
 """Tree-derived data for the Excel workbook.
 
 The workbook is fed the explicit structured run context returned by
-run_full / run_incremental; the human-readable .txt log is user-facing only
+run_full / run_incremental / run_repair; the human-readable .txt log is user-facing only
 and never parsed. `names_from_tree` remains the one structural fallback:
 organized tree folders are named 'BASE NAME'.
 """

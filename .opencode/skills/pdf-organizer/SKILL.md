@@ -182,7 +182,7 @@ Skipped roots are usually "bag" drawings such as procurement-kit lists, not real
 | Symptom | Action |
 |---|---|
 | `No module named fermi_organizer` | Use the venv interpreter, or reinstall editable: `uv pip install -e .` |
-| `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install -r requirements.txt -r requirements-dev.txt -e .` (the dev lock provides ruff, pytest-cov and coverage) |
+| `.venv` missing | `uv venv --python 3.11 .venv`, then `uv pip install --python .venv -r requirements.lock -r requirements-dev.txt -e .` (two hashed locks; installing unhashed `requirements.txt` beside `requirements-dev.txt` makes uv demand hashes for every package) |
 | `OCR: unavailable` | Tesseract is not installed. A scanned PDF has no readable BOM of its own. It is placed only if a readable parent BOM references it by filename; otherwise it lands in `_orphans/`. Offer installing Tesseract. |
 | Exit 2 with a placement-refused log line | Fan-out cap hit, not a crash. See Placement refusal above. |
 | `Report NOT saved (output folder missing)` on a dry run | The text report is skipped because the folder does not exist yet. The workbook step runs next and creates the folder, so it exists afterward. |

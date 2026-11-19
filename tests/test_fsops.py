@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fermi_organizer import fsops
+from fermi_organizer import fsops, treescan
 from fermi_organizer.config import canonical_stem
 from fermi_organizer.fsops import (
     RUN_LOCK_NAME,
@@ -1317,9 +1317,14 @@ def test_copy_orphans_failure_warns_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(fsops.shutil, "copyfileobj", fake_copyfileobj)
     logged = []
     index = {"F10126106": bad_pdf, "F10126107": good_pdf}
-    n = copy_orphans(["F10126106", "F10126107"], index, out, False, logged.append)
+    parked = set()
+    n = copy_orphans(["F10126106", "F10126107"], index, out, False,
+                     logged.append, parked_out=parked)
 
     assert n == 1
+    # Only the copy that landed counts as parked: a caller that subtracts
+    # every orphan from its unplaced report would hide the failed one.
+    assert parked == {"F10126107"}
     assert (out / "_orphans" / "F10126107.pdf").is_file()
     assert not (out / "_orphans" / "F10126106.pdf").exists()
     text = "\n".join(logged)
@@ -1607,16 +1612,160 @@ def test_place_files_iterative_below_default_recursion_limit(tmp_path, monkeypat
     assert total == TREE_MAX_DEPTH + 1
 
 
-def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path):
+def test_place_files_linked_guard_walks_each_folder_once(tmp_path, monkeypatch):
+    # Re-walking the whole ancestor chain for every folder made a deep plan
+    # quadratic in realpath calls: a 500-deep dry run outlived the Windows CI
+    # job timeout. The traversal is top-down, so one probe per folder answers
+    # the same question for its subtree.
+    depth = 40
+    chain = {f"F{10126000 + i}": [f"F{10126001 + i}"] for i in range(depth)}
+    chain[f"F{10126000 + depth}"] = []
+    index = {stem: tmp_path / (stem + ".pdf") for stem in chain}
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    probed = []
+
+    def probe(path):
+        probed.append(path)
+        return False
+
+    monkeypatch.setattr(fsops, "_is_dir_link", probe)
+
+    total = place_files(chain, ["F10126000"], index, tmp_path / "out",
+                        True, lambda msg: None)
+
+    assert total == depth + 1
+    # One probe per folder; the old full walk probed sum(1..depth+1) of them.
+    assert len(probed) <= depth + 1
+
+
+def test_place_files_cyclic_children_bounded_no_recursion_error(tmp_path, monkeypatch):
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    logged = []
+    # Lift the path guards: with them in place a self-cycle stops at whichever
+    # depth first exceeds MAX_PATH, which depends on the tmpdir length. The
+    # bound under test is the depth cap, so it has to be what fires.
+    monkeypatch.setattr(fsops, "MAX_DIR", 10 ** 9)
+    monkeypatch.setattr(fsops, "MAX_PATH", 10 ** 9)
+
+    total = place_files({"F10126106": ["F10126106"]}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True, logged.append)
+
+    assert total == fsops.TREE_MAX_DEPTH + 1
+    assert any("truncated at depth" in line for line in logged)
+
+
+def test_place_files_accepts_a_one_shot_iterator_of_roots(tmp_path):
+    # place_files reads `roots` twice: the fan-out preflight, then the
+    # traversal. A generator consumed by the preflight would leave the
+    # traversal empty, so the call would copy nothing and report zero.
     folder = tmp_path / "out"
     pdf = tmp_path / "F10126106.pdf"
     pdf.write_bytes(b"%PDF")
     logged = []
 
-    total = place_files({"F10126106": ["F10126106"]}, ["F10126106"],
-                        {"F10126106": pdf}, folder, True, logged.append)
+    total = place_files({"F10126106": []}, iter(["F10126106"]),
+                        {"F10126106": pdf}, folder, False, logged.append)
 
-    assert total >= 1
+    assert total == 1
+    assert (folder / "F10126106" / "F10126106.pdf").is_file()
+
+
+def test_place_files_reports_only_roots_that_placed_something(tmp_path, monkeypatch):
+    # A root whose whole subtree is refused has no file in the tree, so it
+    # must not be reported as placed (its PDFs belong in the unplaced list).
+    folder = tmp_path / "out"
+    pdfs = {}
+    for stem in ("F10126106", "F10126107"):
+        pdfs[stem] = tmp_path / f"{stem}.pdf"
+        pdfs[stem].write_bytes(b"%PDF")
+    placed = []
+    failed = set()
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106")
+
+    total = place_files({"F10126106": [], "F10126107": []},
+                        ["F10126106", "F10126107"], pdfs, folder, False,
+                        lambda m: None, placed_out=placed, failed_out=failed)
+
+    assert total == 1
+    assert placed == ["F10126107"]
+    # The refused subtree is reported per file too: its copy is never attempted,
+    # so nothing else would surface it in the unplaced list.
+    assert failed == {"F10126106"}
+
+
+def test_place_files_reports_a_file_it_could_not_copy(tmp_path, monkeypatch):
+    # A root that placed most of its subtree must still hand back the one file
+    # that failed: per-root reporting would mark the whole subtree placed.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    def boom(src, dst, root):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fsops, "_copy_atomic", boom)
+    failed = set()
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, False,
+                        lambda m: None, failed_out=failed)
+
+    assert total == 0
+    assert failed == {"F10126106"}
+
+
+def test_place_files_dry_run_refuses_a_linked_ancestor(tmp_path, monkeypatch):
+    # The guard only stats the path, so a dry run can run it. Before that it
+    # was in the execute branch alone: the plan reported the root as placed
+    # and its PDFs never appeared under Unplaced, although a real run refuses
+    # the whole subtree.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr(fsops, "_is_dir_link",
+                        lambda path: path.name == "F10126106")
+    placed, failed = [], set()
+
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True,
+                        lambda m: None, placed_out=placed, failed_out=failed)
+
+    assert total == 0
+    assert placed == []
+    assert failed == {"F10126106"}
+
+
+def test_place_files_does_not_report_a_shared_file_copied_under_another_parent(
+        tmp_path, monkeypatch):
+    # A claimed child is copied into every claimant's subtree. One failed
+    # attempt must not put the stem back after reachability marked it placed:
+    # the tree holds a copy, so the Unplaced report would name a file that is
+    # there. The failed root has to carry a real child for this to bite -
+    # with an empty children map the shared copy never runs.
+    folder = tmp_path / "out"
+    pdfs = {}
+    for stem in ("F10126106", "F10126107", "F10126108"):
+        pdfs[stem] = tmp_path / f"{stem}.pdf"
+        pdfs[stem].write_bytes(b"%PDF")
+    real_copy = fsops._copy_atomic
+
+    def flaky(src, dst, root):
+        if Path(dst).name == "F10126108.pdf" and "F10126106" in str(dst):
+            raise OSError("disk full")
+        return real_copy(src, dst, root)
+
+    monkeypatch.setattr(fsops, "_copy_atomic", flaky)
+    failed = set()
+    total = place_files({"F10126106": ["F10126108"],
+                         "F10126107": ["F10126108"]},
+                        ["F10126106", "F10126107"], pdfs, folder, False,
+                        lambda m: None, failed_out=failed)
+
+    assert total == 3
+    assert failed == set()
 
 
 def test_retire_adopted_orphans_unlink_failure_logs_warning_and_continues(tmp_path, monkeypatch):
@@ -1961,10 +2110,10 @@ def test_strip_ext_prefix_round_trips_both_forms():
     # _native prefixes only the side of a comparison that crosses 260 chars, so
     # the link check strips it from both: an unprefixed pair reported the first
     # long directory in a tree as a link and pruned its PDFs.
-    assert fsops._strip_ext_prefix(r"\\?\C:\tree\a") == r"C:\tree\a"
-    assert fsops._strip_ext_prefix(r"\\?\UNC\srv\share\a") == r"\\srv\share\a"
-    assert fsops._strip_ext_prefix(r"C:\tree\a") == r"C:\tree\a"
-    assert fsops._strip_ext_prefix(r"\\srv\share\a") == r"\\srv\share\a"
+    assert treescan.strip_ext_prefix(r"\\?\C:\tree\a") == r"C:\tree\a"
+    assert treescan.strip_ext_prefix(r"\\?\UNC\srv\share\a") == r"\\srv\share\a"
+    assert treescan.strip_ext_prefix(r"C:\tree\a") == r"C:\tree\a"
+    assert treescan.strip_ext_prefix(r"\\srv\share\a") == r"\\srv\share\a"
 
 
 def test_is_dir_link_is_false_for_a_plain_directory(tmp_path):
@@ -2439,3 +2588,24 @@ def test_has_linked_ancestor_names_a_link_between_stop_and_path(tmp_path):
         elif os.name == "nt" and link.exists():
             os.rmdir(link)
 
+
+
+def test_place_files_builds_one_copy_counter(tmp_path, monkeypatch):
+    # place_files used to build its own counter and then call
+    # ensure_placement_allowed, which built a second one: every depth-capped
+    # subtree was walked twice and the first memo was thrown away.
+    folder = tmp_path / "out"
+    pdf = tmp_path / "F10126106.pdf"
+    pdf.write_bytes(b"%PDF")
+    calls = []
+    real = fsops._copy_counter
+
+    def counting(children):
+        calls.append(children)
+        return real(children)
+
+    monkeypatch.setattr(fsops, "_copy_counter", counting)
+    total = place_files({"F10126106": []}, ["F10126106"],
+                        {"F10126106": pdf}, folder, True, lambda m: None)
+    assert total == 1
+    assert len(calls) == 1, f"copy counter built {len(calls)} times"

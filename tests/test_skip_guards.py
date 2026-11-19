@@ -4,7 +4,7 @@ Tesseract is absent in this environment, so these tests pin the documented
 skip shapes for oversized / page-capped PDFs using generated PDFs plus
 monkeypatched limits.
 """
-import pymupdf as fitz
+import pymupdf
 import pytest
 
 from fermi_organizer import extraction
@@ -27,7 +27,7 @@ def test_pdf_size_guard_message_and_stat_failure(tmp_path, make_pdf, monkeypatch
 
 def test_doc_pages_guard_message(tmp_path, make_pdf, monkeypatch):
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Parent"])
-    with fitz.open(pdf) as doc:
+    with pymupdf.open(pdf) as doc:
         assert extraction._doc_pages_issue(doc) is None
         monkeypatch.setattr(extraction, "MAX_PDF_PAGES", 0)
         msg = extraction._doc_pages_issue(doc)

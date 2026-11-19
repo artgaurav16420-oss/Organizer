@@ -66,3 +66,32 @@ def test_importing_the_read_only_layer_does_not_load_pymupdf():
             cwd=str(root), capture_output=True, text=True, timeout=60,
         )
         assert proc.returncode == 0, f"{module}: {proc.stdout}{proc.stderr}"
+
+
+def test_names_from_tree_skips_system_non_part_and_nameless_folders(tmp_path):
+    # Three skip branches the workbook fallback depends on: a folder inside a
+    # top-level system dir, a folder whose base is not a part number, and a
+    # folder with no NAME part at all.
+    out = tmp_path / "out"
+    (out / "_orphans" / "F10126106 Parked name").mkdir(parents=True)
+    (out / "ASSEMBLY Widget").mkdir()
+    (out / "F10126107").mkdir()
+    assert names_from_tree(out) == {}
+
+
+def test_names_from_tree_prefers_the_root_copy_over_a_stale_nested_one(tmp_path):
+    (tmp_path / "F10126106 Root name").mkdir()
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "F10126106 Stale name").mkdir()
+    assert names_from_tree(tmp_path) == {"F10126106": "Root name"}
+
+
+def test_names_from_tree_takes_the_first_nested_candidate_only(tmp_path):
+    # With no root-level folder, a nested copy becomes the candidate and every
+    # later nested copy is skipped as stale. The walk is sorted, so "a" wins
+    # regardless of creation order - that determinism is what is pinned here.
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "F10126106 Alpha name").mkdir()
+    (tmp_path / "a" / "F10126106 Beta name").mkdir()
+    assert names_from_tree(tmp_path) == {"F10126106": "Beta name"}

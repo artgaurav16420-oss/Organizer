@@ -152,6 +152,12 @@ def _shorten_names(placements, names, get_name, total_len):
     placement time."""
     cache = {}
     for _ in range(NAME_SHORTEN_MAX_PASSES):
+        # One clear per pass is the whole invalidation. The old code scanned
+        # every cached key after each renamed placement (O(N_over * N_under *
+        # depth) per pass); a stale entry now survives at most the rest of its
+        # pass and is recomputed by the next one, and names only shrink, so a
+        # recompute can never undo a rename.
+        cache.clear()
         changed = False
         for comps in placements:
             tl = cache.get(comps)
@@ -178,9 +184,6 @@ def _shorten_names(placements, names, get_name, total_len):
                             break
             if renamed:
                 changed = True
-                for key in list(cache):
-                    if any(c in renamed for c in key):
-                        cache.pop(key, None)
         if not changed:
             break
 

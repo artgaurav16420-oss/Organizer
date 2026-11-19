@@ -3,7 +3,7 @@ import os
 import types
 from pathlib import Path
 
-import pymupdf as fitz
+import pymupdf
 import pytest
 
 from fermi_organizer import extraction
@@ -135,7 +135,7 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "X"])
     # Hold the document: the page belongs to it, and opening inline would leave
     # only the page alive as a temporary.
-    src_doc = fitz.open(pdf)
+    src_doc = pymupdf.open(pdf)
     page = src_doc[0]
     seen = []
 
@@ -145,7 +145,7 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
 
     monkeypatch.setattr(extraction, "_tesseract_run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract")
-    extraction._ocr_words_zoom(page, fitz.Rect(0, 0, 100, 50), 2, "6")
+    extraction._ocr_words_zoom(page, pymupdf.Rect(0, 0, 100, 50), 2, "6")
     src_doc.close()
 
     assert seen, "tesseract was not invoked"
@@ -156,7 +156,7 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     # F10202541-style sheet: the parts list is a FERMI# column at x=450 and a
     # view balloon prints a bare part number at x=100. The balloon used to
     # become a phantom child (and an extra folder for a real PDF in the tree).
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page(width=1400, height=900)
     page.insert_text((400, 450), "FERMI PART LIST", fontsize=11)
     for text, x in [("ITEM", 400), ("FERMI", 450), ("#", 490),
@@ -170,8 +170,9 @@ def test_ocr_words_zoom_passes_psm_before_the_tsv_config(tmp_path, make_pdf, mon
     doc.save(str(pdf))
     doc.close()
 
-    page = fitz.open(pdf)[0]
-    words = extraction._page_words(page)
+    doc = pymupdf.open(pdf)
+    words = extraction._page_words(doc[0])
+    doc.close()
     band = extraction._partslist_band(words)
     assert band is not None
     in_band = extraction._fermi_values_in_band(words, band)
@@ -289,7 +290,7 @@ def test_normalize_and_is_fermi_value():
 def test_extract_used_on_and_drawing_name(tmp_path, make_pdf):
     pdf = make_pdf(tmp_path / "F10126107.pdf",
                    ["NAME", "CHILD PART", "USED ON", "F10126106"])
-    with fitz.open(pdf) as doc:
+    with pymupdf.open(pdf) as doc:
         assert extraction.extract_used_on(doc) == ["F10126106"]
         assert extraction.extract_drawing_name(doc) == "CHILD PART"
 
@@ -321,7 +322,7 @@ def test_extract_title_block_reads_number_and_revision(tmp_path, make_pdf):
         "F10126106",
         "SHEET 1 OF 1",
     ])
-    with fitz.open(pdf) as doc:
+    with pymupdf.open(pdf) as doc:
         assert extraction.extract_title_block(doc) == ("F10126106", "B")
 
 
@@ -334,7 +335,7 @@ def test_extract_title_block_dash_revision(tmp_path, make_pdf):
         "F10126106",
         "SHEET 1 OF 1",
     ])
-    with fitz.open(pdf) as doc:
+    with pymupdf.open(pdf) as doc:
         assert extraction.extract_title_block(doc) == ("F10126106", "-")
 
 
@@ -410,7 +411,7 @@ def test_ocr_partslist_ignores_titleblock_used_on_of_empty_parts_list(
 
     extraction.OCR.reset(enabled=True)
     pdf = make_pdf(tmp_path / "F10133759.pdf", ["NAME", "Part"])
-    page = fitz.open(str(pdf))[0]
+    page = pymupdf.open(str(pdf))[0]
     monkeypatch.setattr(extraction.OCR, "available", True)
     monkeypatch.setattr(extraction.OCR, "words_cached", lambda *a, **k: words)
     monkeypatch.setattr(extraction, "_ocr_words_zoom", lambda *a, **k: [])
@@ -462,8 +463,8 @@ def test_iso_page_scale_and_ocr_render_dpi():
 
     # The render dpi is capped so a 627 MP render never happens (PyMuPDF
     # fails with "Overly large image" and yields zero words).
-    assert _ocr_render_dpi(types.SimpleNamespace(rect=fitz.Rect(0, 0, 1191, 842))) == 300
-    assert _ocr_render_dpi(types.SimpleNamespace(rect=fitz.Rect(0, 0, 7152, 5051))) == 207
+    assert _ocr_render_dpi(types.SimpleNamespace(rect=pymupdf.Rect(0, 0, 1191, 842))) == 300
+    assert _ocr_render_dpi(types.SimpleNamespace(rect=pymupdf.Rect(0, 0, 7152, 5051))) == 207
 
 
 def test_ocr_drawing_number_variants():
@@ -638,7 +639,7 @@ def test_analyze_page_zoom_recovers_name_when_used_on_present(
     # USED ON was read - the full-page pass misses the small NAME label
     # (F10112629). OCR is simulated, so no Tesseract is needed.
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    page = fitz.open(str(pdf))[0]
+    page = pymupdf.open(str(pdf))[0]
 
     full_words = [
         (100.0, 500.0, 140.0, 510.0, "USED", 0, 0, 0),
@@ -693,6 +694,44 @@ def test_ocr_context_reset_clears_state_and_unique_doc_key_fallback():
     assert all("id(" not in k[0] for k in keys)
 
 
+def test_doc_key_is_stable_for_one_anonymous_document():
+    # Repeated calls on the same in-memory document must hit one memo entry;
+    # the old per-call sequence number made every OCR/scale lookup miss and
+    # created a phantom event row per call.
+    ocr = extraction.OCR
+    ocr.reset()
+
+    class _Doc:
+        pass
+
+    class _Page:
+        def __init__(self, parent):
+            self.parent = parent
+            self.number = 0
+
+    doc = _Doc()
+    first = ocr.doc_key(_Page(doc))
+    assert ocr.doc_key(_Page(doc)) == first
+    assert ocr.doc_key(_Page(_Doc())) != first
+
+
+def test_anon_doc_pins_are_bounded_and_never_collide():
+    # PyMuPDF documents support no weak reference, so the identity map that
+    # makes doc_key stable pins the document object. A long run of in-memory
+    # documents must not retain every wrapper; eviction may cost a memo miss
+    # (a fresh key) but must never hand a live document another one's key.
+    ocr = extraction._OcrContext()
+    pinned = object()
+    first = ocr._anon_key(pinned)
+    assert ocr._anon_key(pinned) == first
+    for _ in range(extraction.OCR_ANON_DOC_PINS * 3):
+        ocr._anon_key(object())
+    assert len(ocr._anon_docs) == extraction.OCR_ANON_DOC_PINS
+    evicted = ocr._anon_key(pinned)
+    assert evicted != first, "an evicted document must never inherit a key"
+    assert len(ocr._anon_docs) == extraction.OCR_ANON_DOC_PINS
+
+
 def test_ocr_tok_pipe_confusion():
     # A pipe *inside* a token is Tesseract's misread 1 (FLO|44633 -> F10144633)
     # and must survive correction; a leading table-border pipe must be
@@ -707,7 +746,7 @@ def test_worker_tasks_use_open_pdf_seam(tmp_path, make_pdf, monkeypatch):
     pdf = make_pdf(tmp_path / "F10126106.pdf",
                    ["FERMI PART LIST", "F10126107 CHILD PART", "NAME", "Parent"])
     calls = []
-    real_open = fitz.open
+    real_open = pymupdf.open
 
     def spy(path, *args, **kwargs):
         calls.append(path)
@@ -730,27 +769,27 @@ def test_worker_tasks_use_open_pdf_seam(tmp_path, make_pdf, monkeypatch):
 
 def test_detect_watermark_transparent_text(tmp_path):
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((120, 400), "ACME CONFIDENTIAL", fontsize=60,
                      fill_opacity=0.25, color=(0.8, 0.8, 0.8))
     doc.save(str(p))
     doc.close()
 
-    with fitz.open(str(p)) as doc:
+    with pymupdf.open(str(p)) as doc:
         assert extraction.detect_watermark(doc) == \
             "transparent text: ACME CONFIDENTIAL"
 
 
 def test_detect_watermark_keyword(tmp_path):
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 72), "PRELIMINARY", fontsize=12)
     doc.save(str(p))
     doc.close()
 
-    with fitz.open(str(p)) as doc:
+    with pymupdf.open(str(p)) as doc:
         assert extraction.detect_watermark(doc) == "watermark text: PRELIMINARY"
 
 
@@ -758,15 +797,15 @@ def test_detect_watermark_nx_style_transparent_diagonal(tmp_path):
     # Real NX/cgm2pdf watermarks: huge transparent diagonal text (the
     # PRE-RELEASED and DRAFT stamps seen in SSR2-ED Downloads).
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
-    pivot = fitz.Point(300, 400)
+    pivot = pymupdf.Point(300, 400)
     page.insert_text(pivot, "PRE-RELEASED", fontsize=80, fill_opacity=0.3,
-                     morph=(pivot, fitz.Matrix(45)))
+                     morph=(pivot, pymupdf.Matrix(45)))
     doc.save(str(p))
     doc.close()
 
-    with fitz.open(str(p)) as doc:
+    with pymupdf.open(str(p)) as doc:
         # get_text() can truncate the stamp; the texttrace opacity check
         # still reports the full string.
         assert extraction.detect_watermark(doc) == "transparent text: PRE-RELEASED"
@@ -775,15 +814,15 @@ def test_detect_watermark_nx_style_transparent_diagonal(tmp_path):
 def test_detect_watermark_diagonal_opaque(tmp_path):
     # Opaque diagonal large text (no keyword) is still a watermark.
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
-    pivot = fitz.Point(300, 400)
+    pivot = pymupdf.Point(300, 400)
     page.insert_text(pivot, "ACME INTERNAL", fontsize=80,
-                     morph=(pivot, fitz.Matrix(45)))
+                     morph=(pivot, pymupdf.Matrix(45)))
     doc.save(str(p))
     doc.close()
 
-    with fitz.open(str(p)) as doc:
+    with pymupdf.open(str(p)) as doc:
         assert extraction.detect_watermark(doc) == "diagonal text: ACME INTERNAL"
 
 
@@ -791,7 +830,7 @@ def test_detect_watermark_ignores_template_text(tmp_path):
     # 'Drafting' (title-block label) and a small rotated 'TEMPLATE VERSION'
     # must not be mistaken for watermarks.
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     for i, line in enumerate(["FERMI PART LIST", "F10126107 CHILD PART",
                               "NAME", "Drafting"]):
@@ -800,13 +839,13 @@ def test_detect_watermark_ignores_template_text(tmp_path):
     doc.save(str(p))
     doc.close()
 
-    with fitz.open(str(p)) as doc:
+    with pymupdf.open(str(p)) as doc:
         assert extraction.detect_watermark(doc) is None
 
 
 def test_scanned_pages_recorded_even_with_ocr_disabled(tmp_path):
     p = tmp_path / "F10126106.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     doc.new_page()
     doc.save(str(p))
     doc.close()
@@ -887,7 +926,7 @@ def test_ocr_strip_tokens_utf8_decode_and_none_stdout(monkeypatch, tmp_path, mak
     import subprocess as sp
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
     calls = []
 
@@ -898,7 +937,7 @@ def test_ocr_strip_tokens_utf8_decode_and_none_stdout(monkeypatch, tmp_path, mak
     monkeypatch.setattr(extraction.subprocess, "run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
-    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+    out = extraction._ocr_strip_tokens(page, pymupdf.Rect(72, 72, 220, 95), psm="7")
 
     assert out == []
     assert calls, "tesseract subprocess must be invoked"
@@ -946,7 +985,7 @@ def test_ocr_strip_tokens_survives_single_pass_failure(monkeypatch, tmp_path, ma
     import subprocess as sp
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
     calls = []
 
@@ -959,7 +998,7 @@ def test_ocr_strip_tokens_survives_single_pass_failure(monkeypatch, tmp_path, ma
     monkeypatch.setattr(extraction.subprocess, "run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
-    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+    out = extraction._ocr_strip_tokens(page, pymupdf.Rect(72, 72, 220, 95), psm="7")
 
     assert out == ["F10126107"]
     assert len(calls) == 3
@@ -970,7 +1009,7 @@ def test_ocr_strip_tokens_all_passes_failing_raises(monkeypatch, tmp_path, make_
     import subprocess as sp
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
 
     def fake_run(cmd, **kw):
@@ -980,7 +1019,7 @@ def test_ocr_strip_tokens_all_passes_failing_raises(monkeypatch, tmp_path, make_
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
     with pytest.raises(RuntimeError, match="tesseract exit 3"):
-        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+        extraction._ocr_strip_tokens(page, pymupdf.Rect(72, 72, 220, 95), psm="7")
     doc.close()
 
 
@@ -990,7 +1029,7 @@ def test_extract_title_block_ocr_failure_recorded_not_silent(monkeypatch, tmp_pa
     # no record, so the file silently skipped mismatch reporting. Failures now
     # land in the caller's issues list (same idiom as the USED ON zoom path).
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     assert len(doc[0].get_text().strip()) < extraction.OCR_MIN_CHARS
     monkeypatch.setattr(extraction.OCR, "enabled", True)
     monkeypatch.setattr(extraction.OCR, "available", True)
@@ -1025,7 +1064,7 @@ def test_short_text_parts_list_survives_ocr_reading_nothing(monkeypatch, tmp_pat
     # _orphans/ with exit 0. The autouse OCR-off fixture hid it from the suite.
     pdf = make_pdf(tmp_path / "F10126106.pdf",
                    ["FERMI PART LIST", "F10126107 CHILD PART"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     # Force the image-only branch on a page that does carry a text-layer list.
     monkeypatch.setattr(extraction, "OCR_MIN_CHARS", 10_000)
     monkeypatch.setattr(extraction.OCR, "enabled", True)
@@ -1047,7 +1086,7 @@ def test_short_text_parts_list_survives_ocr_used_on_only(monkeypatch, tmp_path,
     # called USED ON stays excluded, because it is a title-block parent.
     pdf = make_pdf(tmp_path / "F10126106.pdf",
                    ["FERMI PART LIST", "F10126107 CHILD PART"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     monkeypatch.setattr(extraction, "OCR_MIN_CHARS", 10_000)
     monkeypatch.setattr(extraction.OCR, "enabled", True)
     monkeypatch.setattr(extraction.OCR, "available", True)
@@ -1492,7 +1531,7 @@ def test_drawing_name_skips_parts_list_header_pair(tmp_path, make_pdf):
         "ITEM", "PART", "NAME", "1",
         "BRACKET",
         "NAME", "ACTUAL BRACKET NAME"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     assert extraction.extract_drawing_name(doc) == "ACTUAL BRACKET NAME"
     doc.close()
 
@@ -1528,7 +1567,7 @@ def test_ocr_strip_tokens_tempfile_security_and_cleanup(monkeypatch, tmp_path, m
     import subprocess as sp
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
 
     created_tempfiles = []
@@ -1547,7 +1586,7 @@ def test_ocr_strip_tokens_tempfile_security_and_cleanup(monkeypatch, tmp_path, m
     monkeypatch.setattr(extraction.subprocess, "run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
-    out = extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+    out = extraction._ocr_strip_tokens(page, pymupdf.Rect(72, 72, 220, 95), psm="7")
 
     assert out == ["F10126107"]
     assert len(created_tempfiles) > 0
@@ -1562,7 +1601,7 @@ def test_ocr_words_zoom_tempfile_security_and_cleanup(monkeypatch, tmp_path, mak
     import subprocess as sp
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
 
     created_tempfiles = []
@@ -1586,7 +1625,7 @@ def test_ocr_words_zoom_tempfile_security_and_cleanup(monkeypatch, tmp_path, mak
     monkeypatch.setattr(extraction.subprocess, "run", fake_run)
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
-    clip = fitz.Rect(0, 0, 100, 100)
+    clip = pymupdf.Rect(0, 0, 100, 100)
     words = extraction._ocr_words_zoom(page, clip, zoom=8, psm="11")
 
     assert len(words) == 1
@@ -1601,7 +1640,7 @@ def test_ocr_words_zoom_tempfile_security_and_cleanup(monkeypatch, tmp_path, mak
 
 def test_ocr_strip_tokens_cleanup_on_pix_save_failure(monkeypatch, tmp_path, make_pdf):
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["NAME", "Part"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
 
     created_tempfiles = []
@@ -1622,7 +1661,7 @@ def test_ocr_strip_tokens_cleanup_on_pix_save_failure(monkeypatch, tmp_path, mak
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "tesseract-fake")
 
     with pytest.raises(RuntimeError, match="pix.save failed"):
-        extraction._ocr_strip_tokens(page, fitz.Rect(72, 72, 220, 95), psm="7")
+        extraction._ocr_strip_tokens(page, pymupdf.Rect(72, 72, 220, 95), psm="7")
 
     assert len(created_tempfiles) == 1
     tmp_file = created_tempfiles[0]
@@ -1637,7 +1676,7 @@ def test_words_cached_normalises_ocr_words_to_iso_points(monkeypatch, tmp_path,
     # window looks at them. Nothing tested this: every OCR test stubs
     # words_cached itself, so an inverted scale stayed green.
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
     monkeypatch.setattr(extraction.OCR, "enabled", True)
     monkeypatch.setattr(extraction.OCR, "available", True)
@@ -1665,7 +1704,7 @@ def test_words_cached_timeout_is_recorded_not_raised(monkeypatch, tmp_path,
     import threading
 
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
     started = threading.Event()
     release = threading.Event()
@@ -1705,7 +1744,7 @@ def test_survey_task_keeps_doc_open_for_an_abandoned_ocr_worker(
     import threading
 
     pdf = tmp_path / "scanned.pdf"
-    blank = fitz.open()
+    blank = pymupdf.open()
     blank.new_page()
     blank.save(str(pdf))
     blank.close()
@@ -1723,15 +1762,15 @@ def test_survey_task_keeps_doc_open_for_an_abandoned_ocr_worker(
 
     monkeypatch.setattr(extraction.pymupdf.Page, "get_textpage_ocr", blocked)
     closed = []
-    real_close = fitz.Document.close
+    real_close = pymupdf.Document.close
 
     def tracking_close(self):
         closed.append(self)
         return real_close(self)
 
-    monkeypatch.setattr(fitz.Document, "close", tracking_close)
+    monkeypatch.setattr(pymupdf.Document, "close", tracking_close)
     opened = []
-    real_open = fitz.open
+    real_open = pymupdf.open
 
     def tracking_open(*args, **kwargs):
         doc = real_open(*args, **kwargs)
@@ -1781,7 +1820,7 @@ def test_words_cached_engine_error_is_recorded_as_an_issue(monkeypatch, tmp_path
     # pymupdf surfaces mupdf failures as RuntimeError; they must reach the run's
     # issue list instead of escaping (or silently vanishing).
     pdf = make_pdf(tmp_path / "F10126106.pdf", ["x"])
-    doc = fitz.open(pdf)
+    doc = pymupdf.open(pdf)
     page = doc[0]
 
     def boom(self, **kw):
@@ -1905,7 +1944,7 @@ def test_extract_bom_entries_reports_an_unreadable_pdf(tmp_path):
     entries, method, issues = extraction.extract_bom_entries(str(bad))
     assert entries == []
     assert method == "skipped"
-    assert issues and any("not a pdf" in m.lower() or m for m in issues)
+    assert issues and any("failed to open" in m.lower() for m in issues)
 
 
 def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
@@ -1939,7 +1978,7 @@ def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
     extraction.OCR.reset(enabled=False)
 
 
-def test_pymupdf_layout_model_is_disabled():
+def test_pymupdf_layout_model_is_disabled(monkeypatch):
     # pymupdf 2.0 activates an ONNX layout model at import and find_tables()
     # runs it per page (~4x the whole extraction cost). extraction.py clears it;
     # this pins the side effect so a refactor cannot quietly re-enable it.
@@ -1948,6 +1987,18 @@ def test_pymupdf_layout_model_is_disabled():
     import fermi_organizer.extraction  # noqa: F401  (import applies the guard)
 
     assert not callable(getattr(pymupdf, "_get_layout", None))
+
+
+def test_disable_layout_model_clears_a_present_hook(monkeypatch):
+    # The import-time assertion above passes vacuously if a future pymupdf
+    # drops or renames _get_layout while still shipping the model. Drive the
+    # guard with a callable injected onto the attribute it knows how to clear.
+    import pymupdf
+
+    monkeypatch.setattr(pymupdf, "_get_layout", lambda *a, **k: object(),
+                        raising=False)
+    extraction._disable_layout_model()
+    assert pymupdf._get_layout is None
 
 
 def test_bom_rows_equal_to_used_on_are_dropped():
@@ -1964,3 +2015,50 @@ def test_bom_rows_equal_to_used_on_are_dropped():
     # No USED ON means nothing to cross-check against: rows are left alone.
     assert extraction._drop_parent_refs(entries, []) == entries
     assert extraction._drop_parent_refs(entries, None) == entries
+
+
+def test_native_helper_does_not_import_fsops():
+    # extraction and fsops imported each other (fsops at module level, the
+    # reverse inside _native), so every PDF open pulled the whole namespace of
+    # destructive tree operations into the extraction/worker layer. The helper
+    # must resolve through treescan, which imports nothing but os/pathlib.
+    import sys
+    saved = sys.modules.pop("fermi_organizer.fsops", None)
+    try:
+        assert extraction._native("plain.pdf") == "plain.pdf"
+        assert "fermi_organizer.fsops" not in sys.modules
+    finally:
+        if saved is not None:
+            sys.modules["fermi_organizer.fsops"] = saved
+
+
+class _BoomPage:
+    def get_text(self):
+        raise RuntimeError("text boom")
+
+    def annots(self):
+        raise ValueError("annots boom")
+
+    def get_texttrace(self):
+        raise RuntimeError("trace boom")
+
+
+class _BoomDoc:
+    def get_ocgs(self):
+        raise RuntimeError("ocg boom")
+
+    def __iter__(self):
+        return iter([_BoomPage()])
+
+
+def test_detect_watermark_fails_open_when_every_check_raises():
+    # survey_task relies on detect_watermark returning None instead of raising,
+    # or one malformed PDF aborts the whole scan. Drive all four handlers.
+    issues = []
+    assert extraction.detect_watermark(_BoomDoc(), issues) is None
+    text = " ".join(issues)
+    for expected in ("watermark layer check failed",
+                     "watermark text check failed",
+                     "watermark annotation check failed",
+                     "watermark visual check failed"):
+        assert expected in text

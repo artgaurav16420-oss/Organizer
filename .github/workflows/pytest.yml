@@ -1,22 +1,30 @@
 name: pytest
 on:
   push:
+    # `branches` excludes tag pushes: a `v*` tag is gated by release.yml, which
+    # calls this workflow itself, so running it twice would duplicate the suite.
+    branches: ["**"]
     paths:
       - "**.py"
       - "**.md"
       - "requirements*.txt"
+      - "requirements*.in"
       - "requirements*.lock"
       - "pyproject.toml"
       - "setup.cfg"
       - "setup.py"
       - ".github/workflows/pytest.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/cve-watch.yml"
   # No `paths` filter here on purpose: these jobs are required status checks on
   # main, and a filtered-out PR leaves them "Expected" forever, so a docs-only
   # change could never merge. Markdown is in the push list because
   # tests/test_cve_watch.py pins the Tesseract floor stated in README.md and
   # THIRD_PARTY_NOTICES.md.
   pull_request:
+  # release.yml gates its `build` job on this workflow, so a tag publishes a
+  # wheel only from a commit that passes every check a PR must pass.
+  workflow_call:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -138,4 +146,6 @@ jobs:
       - run: pip install --require-hashes -r requirements-dev.txt
       # .github/scripts is part of the shipped CI surface: leaving it out let a
       # broken cve_watch.py pass every gate until the Monday cron failed.
-      - run: ruff check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py .github/scripts
+      # `tools` is in AGENTS.md's pre-push command; leaving it out of CI let a
+      # tools/ file pass here while the documented local lint failed.
+      - run: ruff check --select F,E9,B fermi_organizer tests fermi_report_xlsx.py organize_fermi_pdfs.py .github/scripts tools
