@@ -22,13 +22,17 @@ import pymupdf
 if hasattr(pymupdf, "no_recommend_layout"):
     pymupdf.no_recommend_layout()
 
-# pymupdf 2.0 activates an ONNX layout model at import, and find_tables() then
-# runs it on every page: 1.48 s per call on real drawings, which is ~4x the
-# whole extraction cost (100 drawings: 55 s on 1.28.2 vs 245 s on 2.0). The
-# classic table finder is enough for parts lists, so disable the model. Guarded:
-# the attribute is private and may disappear in a later release.
+# pymupdf 2.x can run an ONNX layout model inside find_tables(): 1.48 s per
+# call on real drawings, which is ~4x the whole extraction cost (100 drawings:
+# 55 s on 1.28.2 vs 245 s on 2.0). The classic table finder is enough for parts
+# lists, so disable the model. 2.0 installs the hook at import; 2.1 defers the
+# pymupdf.layout import to Page.get_layout() and gates it on `_layout_enabled`,
+# so clearing only the hook is undone by the first lazy import, whose
+# activate() re-installs it. Both attributes are private, hence the guards.
 def _disable_layout_model():
-    """Clear pymupdf's ONNX layout hook when the private attribute exists."""
+    """Turn off pymupdf's ONNX layout hook wherever the release keeps it."""
+    if hasattr(pymupdf, "_layout_enabled"):
+        pymupdf._layout_enabled = False
     if callable(getattr(pymupdf, "_get_layout", None)):
         pymupdf._get_layout = None
 

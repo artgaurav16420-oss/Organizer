@@ -17,7 +17,7 @@ license = "AGPL-3.0-only"
 # third-party notice has to travel with the AGPL code it explains.
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
-    "pymupdf==2.0",
+    "pymupdf==2.1",
 ]
 
 [project.optional-dependencies]

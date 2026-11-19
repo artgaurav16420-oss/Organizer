@@ -26,7 +26,7 @@ OPENPYXL_PIN_RE = re.compile(r"^openpyxl==([^\s#]+)", re.M)
 LOCK_REQ_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)", re.M)
 OPENPYXL_PYPROJECT_PIN_RE = re.compile(r'"openpyxl==([^"]+)"', re.M)
 OPENPYXL_LOCK_PIN_RE = re.compile(r"^openpyxl==([^\s\\]+)", re.M)
-TESS_PIN = "5.5.3"
+TESS_PIN = "5.5.4"
 TESS_API = "https://api.github.com/repos/tesseract-ocr/tesseract/releases/latest"
 OSV_API = "https://api.osv.dev/v1/query"
 LABEL = "cve-watch"

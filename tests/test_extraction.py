@@ -1979,14 +1979,36 @@ def test_analyze_page_drops_an_implausible_ocr_name(tmp_path, monkeypatch):
 
 
 def test_pymupdf_layout_model_is_disabled(monkeypatch):
-    # pymupdf 2.0 activates an ONNX layout model at import and find_tables()
-    # runs it per page (~4x the whole extraction cost). extraction.py clears it;
-    # this pins the side effect so a refactor cannot quietly re-enable it.
+    # pymupdf 2.x can run an ONNX layout model inside find_tables() (~4x the
+    # whole extraction cost). extraction.py switches it off; this pins the side
+    # effect so a refactor cannot quietly re-enable it.
     import pymupdf
 
     import fermi_organizer.extraction  # noqa: F401  (import applies the guard)
 
-    assert not callable(getattr(pymupdf, "_get_layout", None))
+    if hasattr(pymupdf, "_layout_enabled"):
+        # 2.1 gates the hook on a switch and imports pymupdf.layout lazily, so
+        # the switch is what must stay off (a stray import could re-install
+        # the hook, but get_layout never consults it).
+        assert pymupdf._layout_enabled is False
+    else:
+        assert not callable(getattr(pymupdf, "_get_layout", None))
+
+
+def test_layout_model_stays_off_through_the_lazy_import(make_pdf, tmp_path):
+    # 2.1 imports pymupdf.layout lazily from Page.get_layout(), and that
+    # module's activate() re-installs the hook, so clearing only the hook did
+    # not hold there. The switch is what keeps the model off.
+    import pymupdf
+
+    import fermi_organizer.extraction  # noqa: F401
+
+    if not hasattr(pymupdf, "_layout_enabled"):
+        return  # 2.0 keeps the hook at import; the test above pins it
+    with pymupdf.open(make_pdf(tmp_path / "blank.pdf", [])) as doc:
+        page = doc[0]
+        page.get_layout()
+        assert page.layout_information is None
 
 
 def test_disable_layout_model_clears_a_present_hook(monkeypatch):

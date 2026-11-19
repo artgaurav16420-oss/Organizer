@@ -66,6 +66,12 @@ def _load_watch():
     return mod
 
 
+def _bump(version, by=1):
+    """`version` with its patch number raised (or lowered) by `by`."""
+    major, minor, patch = (int(x) for x in version.split("."))
+    return f"{major}.{minor}.{patch + by}"
+
+
 def test_cve_watch_parses_and_runs_with_stubbed_network():
     # The watcher used to be a file no test ever imported: a syntax error or a
     # refactor break merged green and only the Monday cron failed. Import it and
@@ -79,7 +85,7 @@ def test_cve_watch_parses_and_runs_with_stubbed_network():
         # exercised after a pin bump, so do not hard-code the current pin.
         {"info": {"version": "99.0"}} if "pymupdf" in url
         else {"info": {"version": "3.1.5"}} if "openpyxl" in url
-        else {"tag_name": "5.5.3"})
+        else {"tag_name": "v" + watch.TESS_PIN})
     watch._post_json = lambda url, payload: {"vulns": [
         {"id": "OSV-TEST-1", "summary": "test advisory"}]}
     watch.main()
@@ -116,14 +122,16 @@ def test_advisory_check_covers_every_locked_distribution():
 
 def test_tesseract_release_detection_files_then_dedupes():
     # The detection branch no test reached before: a newer tag must file one
-    # issue, and the same open title must suppress a duplicate.
+    # issue, and the same open title must suppress a duplicate. The tag is
+    # derived from the floor so a floor bump does not make this vacuous.
     watch = _load_watch()
+    newer = _bump(watch.TESS_PIN)
     tracked = []
-    watch._get_json = lambda url: {"tag_name": "v5.5.4"}
+    watch._get_json = lambda url: {"tag_name": "v" + newer}
     watch._track = lambda title, body: tracked.append(title)
     watch.check_tesseract([])
     assert len(tracked) == 1
-    assert "Tesseract 5.5.4" in tracked[0]
+    assert f"Tesseract {newer}" in tracked[0]
 
     watch.check_tesseract(tracked)
     assert len(tracked) == 1, "an open tracking issue must dedupe the next run"
@@ -133,7 +141,7 @@ def test_tesseract_floor_current_files_nothing():
     watch = _load_watch()
     tracked = []
     watch._track = lambda title, body: tracked.append(title)
-    for tag in ("v5.5.3", "v5.5.2", ""):
+    for tag in ("v" + watch.TESS_PIN, "v" + _bump(watch.TESS_PIN, -1), ""):
         watch._get_json = lambda url, tag=tag: {"tag_name": tag}
         watch.check_tesseract([])
     assert tracked == []
