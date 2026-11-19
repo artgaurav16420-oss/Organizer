@@ -21,7 +21,8 @@ All notable changes to the Fermi PDF organizer are recorded here.
   `find_tables()` would have run the ONNX model again. `extraction.py` now also
   clears the `_layout_enabled` switch the release gates the hook on.
 - **The Tesseract-floor tests derive their sample tags from the floor**, so a
-  bump cannot leave the release-detection test passing against an old pin.
+  bump cannot leave the release-detection test passing against an old pin; the
+  older-tag sample borrows at a `.0` patch instead of producing a `.-1`.
 
 ### Fix: review rounds (log escaping, orphan links, history units)
 

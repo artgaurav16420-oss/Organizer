@@ -66,10 +66,25 @@ def _load_watch():
     return mod
 
 
-def _bump(version, by=1):
-    """`version` with its patch number raised (or lowered) by `by`."""
+def _bump(version):
+    """`version` with its patch number raised by one."""
     major, minor, patch = (int(x) for x in version.split("."))
-    return f"{major}.{minor}.{patch + by}"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _below(version):
+    """A release strictly below `version` (borrowing at a `.0` patch).
+
+    `_bump(..., -1)` would produce `5.6.-1`, which `_ver_tuple` reads as
+    patch 1 - newer than the floor, so the test would fail for the wrong
+    reason the first time TESS_PIN lands on a `.0` patch.
+    """
+    major, minor, patch = (int(x) for x in version.split("."))
+    if patch:
+        return f"{major}.{minor}.{patch - 1}"
+    if minor:
+        return f"{major}.{minor - 1}.99"
+    return f"{major - 1}.99.99"
 
 
 def test_cve_watch_parses_and_runs_with_stubbed_network():
@@ -141,7 +156,7 @@ def test_tesseract_floor_current_files_nothing():
     watch = _load_watch()
     tracked = []
     watch._track = lambda title, body: tracked.append(title)
-    for tag in ("v" + watch.TESS_PIN, "v" + _bump(watch.TESS_PIN, -1), ""):
+    for tag in ("v" + watch.TESS_PIN, "v" + _below(watch.TESS_PIN), ""):
         watch._get_json = lambda url, tag=tag: {"tag_name": tag}
         watch.check_tesseract([])
     assert tracked == []
