@@ -4,6 +4,31 @@ All notable changes to the Fermi PDF organizer are recorded here.
 
 ## Unreleased
 
+### Dependencies: PyMuPDF 2.1, and the Tesseract floor moves to 5.5.4
+
+- **`pymupdf==2.1`** (`requirements.txt`, `pyproject.toml`, and a regenerated
+  `requirements.lock`). 2.1 contains the CVE-2026-82035 fix (`b2c8f3a`, first
+  shipped in 2.0; verified against the upstream tags), so the pin moves off 2.0
+  with no security regression. `pymupdf4llm` and `pymupdf_layout` move with it;
+  the ONNX layout model stays disabled at import.
+- **The Tesseract floor is 5.5.4.** All eight `.traineddata` deserialization
+  advisories (CVE-2026-88047..-88054) are fixed there: each advisory's fix
+  commit is an ancestor of the 5.5.4 tag. README and THIRD_PARTY_NOTICES state
+  the new floor, and `cve_watch.py` tracks it.
+- **The layout model stays off on 2.1.** 2.1 imports `pymupdf.layout` lazily
+  from `Page.get_layout()`, and that module's `activate()` re-installs the hook,
+  so clearing `_get_layout` at import (the 2.0 guard) no longer held and
+  `find_tables()` would have run the ONNX model again. `extraction.py` now also
+  clears the `_layout_enabled` switch the release gates the hook on.
+- **A Tesseract below 5.5.4 is called out at startup.** The floor is a
+  recommendation, not a refusal - the advisories need a malicious local
+  `.traineddata`, which the operator supplies - so the run now logs
+  `OCR: WARNING: tesseract vX.Y.Z is older than v5.5.4` after the enabled
+  line instead of staying silent.
+- **The Tesseract-floor tests derive their sample tags from the floor**, so a
+  bump cannot leave the release-detection test passing against an old pin; the
+  older-tag sample borrows at a `.0` patch instead of producing a `.-1`.
+
 ### Fix: review rounds (log escaping, orphan links, history units)
 
 - **A newline in a drawing NAME can no longer forge a report line.** The log

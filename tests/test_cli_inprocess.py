@@ -296,13 +296,33 @@ def test_log_ocr_startup_enabled_with_version_and_old_warning(monkeypatch):
     monkeypatch.setattr(extraction.OCR, "tesseract_path", "/x/tesseract")
     monkeypatch.setattr(extraction.OCR, "version", "5.5.3")
     cli_module._log_ocr_startup(logged.append)
-    assert logged == ["OCR: enabled (tesseract: /x/tesseract, v5.5.3)"]
+    assert logged[0] == "OCR: enabled (tesseract: /x/tesseract, v5.5.3)"
+    # 5.5.3 predates the .traineddata fixes: warn, never refuse (the
+    # advisories need a malicious local model, which the operator supplies).
+    assert "CVE-2026-88047..-88054" in logged[1]
+
+    logged.clear()
+    monkeypatch.setattr(extraction.OCR, "version", "5.5.4")
+    cli_module._log_ocr_startup(logged.append)
+    assert logged == ["OCR: enabled (tesseract: /x/tesseract, v5.5.4)"]
 
     logged.clear()
     monkeypatch.setattr(extraction.OCR, "version", "4.1.0")
     cli_module._log_ocr_startup(logged.append)
     assert logged[0] == "OCR: enabled (tesseract: /x/tesseract, v4.1.0)"
     assert "older than v5" in logged[1]
+
+
+def test_log_ocr_startup_unparseable_version_stays_quiet(monkeypatch):
+    # ensure_tesseract leaves version None when --version has no X.Y.Z token;
+    # that must not read as older than the floor.
+    logged = []
+    monkeypatch.setattr(extraction.OCR, "enabled", True)
+    monkeypatch.setattr(extraction.OCR, "ensure_tesseract", lambda: "/x/tesseract")
+    monkeypatch.setattr(extraction.OCR, "tesseract_path", "/x/tesseract")
+    monkeypatch.setattr(extraction.OCR, "version", None)
+    cli_module._log_ocr_startup(logged.append)
+    assert logged == ["OCR: enabled (tesseract: /x/tesseract)"]
 
 
 def test_cli_main_locked_output_exits_1(monkeypatch, tmp_path, make_pdf):

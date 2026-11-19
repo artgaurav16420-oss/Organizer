@@ -80,14 +80,31 @@ def build_parser():
     return parser
 
 
+def _ocr_version_tuple(version):
+    """(major, minor, patch) from `version`; () when it is not X.Y.Z."""
+    parts = re.findall(r"\d+", version or "")[:3]
+    return tuple(int(p) for p in parts) if len(parts) == 3 else ()
+
+
+# First release containing the CVE-2026-88047..-88054 fixes
+# (THIRD_PARTY_NOTICES.md). A recommendation, not a refusal: the advisories
+# need a malicious local .traineddata, which the operator supplies.
+_OCR_SECURITY_FLOOR = (5, 5, 4)
+
+
 def _log_ocr_startup(log):
     if OCR.enabled and OCR.ensure_tesseract():
         major = int(OCR.version.split(".")[0]) if OCR.version else None
         ver_txt = f", v{OCR.version}" if OCR.version else ""
         log(f"OCR: enabled (tesseract: {OCR.tesseract_path}{ver_txt})")
+        detected = _ocr_version_tuple(OCR.version)
         if major is not None and major < 5:
             log(f"OCR: WARNING: tesseract v{major} is older than v5; "
                 "scanned-page accuracy may suffer")
+        elif detected and detected < _OCR_SECURITY_FLOOR:
+            log(f"OCR: WARNING: tesseract v{OCR.version} is older than "
+                "v5.5.4; it carries the CVE-2026-88047..-88054 "
+                ".traineddata advisories (see THIRD_PARTY_NOTICES.md)")
     else:
         reason = OCR.reason or "tesseract not found"
         log("OCR: disabled" if not OCR.enabled else
