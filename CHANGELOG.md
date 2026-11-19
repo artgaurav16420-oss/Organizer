@@ -20,6 +20,11 @@ All notable changes to the Fermi PDF organizer are recorded here.
   so clearing `_get_layout` at import (the 2.0 guard) no longer held and
   `find_tables()` would have run the ONNX model again. `extraction.py` now also
   clears the `_layout_enabled` switch the release gates the hook on.
+- **A Tesseract below 5.5.4 is called out at startup.** The floor is a
+  recommendation, not a refusal - the advisories need a malicious local
+  `.traineddata`, which the operator supplies - so the run now logs
+  `OCR: WARNING: tesseract vX.Y.Z is older than v5.5.4` after the enabled
+  line instead of staying silent.
 - **The Tesseract-floor tests derive their sample tags from the floor**, so a
   bump cannot leave the release-detection test passing against an old pin; the
   older-tag sample borrows at a `.0` patch instead of producing a `.-1`.
